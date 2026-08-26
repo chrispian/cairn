@@ -217,6 +217,63 @@ memory service was unreachable" — and those mean opposite things. Supply a
 `SlotResult.Err` is non-nil. That is the library's own documented extension
 point, not a reimplementation: resolvers, budgets and provenance stay adopted.
 
+### The installed layer
+
+`cairn install <binding|profile>` renders a different, shorter set into
+`~/.claude`:
+
+```
+~/.claude/
+  AGENTS.md              composed body + rendered sections, + a provenance comment
+  CLAUDE.md              @AGENTS.md, byte-exactly, no marker
+  settings.json          ← spec.settings, verbatim, no marker (JSON has no comments)
+  skills/                ← spec.skills, directory trees
+```
+
+Three artifacts are deliberately absent:
+
+- **No `boot.md`.** Slots resolve at materialization; this layer is not
+  materialized per session.
+- **No `.mcp.json`.** §6 drops the audit, and user-level MCP configuration is
+  not a file in that directory.
+- **No `spec.files`.** `boot` writes into a directory Cairn creates fresh and
+  refuses if it already exists; `install` writes into a directory that already
+  exists and is full of the operator's live state. Arbitrary path→content
+  planting is safe in the first and not the second — and rendering it here
+  would make Cairn claim ownership of paths in the operator's home for the
+  orphan report below.
+
+Both layers run the **same renderers**. A second renderer per artifact is two
+renderings that drift; the prior tree carried them and they did.
+
+### Cairn owns four things in `~/.claude`, not the directory
+
+`install --check` reports against an explicit claim: the exact file paths its
+renderers can produce, plus the directories it fills whole (`skills/`).
+**Anything else in that directory is invisible to it, whatever it is.**
+
+This is not a convenience. `settings.local.json`, `.credentials.json`,
+`projects/`, `todos/` and `history.jsonl` all live there and Cairn renders none
+of them; a sweep that called them orphans would make `--check` exit non-zero
+forever, which is a gate configured not to gate. Narrowing the claim to the
+subtree instead would lose the orphan worth finding: a `settings.json` left by
+a profile that stopped declaring one is a path Cairn claims, so Cairn reports
+it.
+
+`--check` reports and repairs nothing. It exits non-zero when out of sync.
+
+An occupied destination — a directory or a symlink where a file renders — is
+refused, and refused for the whole layer before anything moves. Half an
+installed layer is not recoverable; a refusal is.
+
+### Directory modes follow the umask
+
+Files are chmod'd past the umask, because a skill's exec bit is load-bearing.
+Directories are not, so `~/.claude` lands 0700 or 0755 depending on the shell
+`install` ran from. Left alone deliberately per §1 — single user, own home. If
+it is ever made explicit, 0700 is the right value, not 0755: that directory
+sits beside `.credentials.json`.
+
 ### Skills are directories, deliberately
 
 `agentlaunch.NativeFileSkill` resolves to a flat `.claude/skills/<id>.md`.
