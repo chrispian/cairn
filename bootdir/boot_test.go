@@ -26,27 +26,48 @@ func TestBootIsAbsentWhenNothingWasAssembled(t *testing.T) {
 	}
 }
 
-// TestBootIsWrittenVerbatim holds the boot file to the bytes the slot
-// assembly produced, trailing newline and all. The content is another
-// package's output; reformatting it here would make a boot directory disagree
-// with the assembly it was rendered from.
+// TestBootIsWrittenVerbatim holds the boot file to the bytes the slot assembly
+// produced. The content is another package's output; reformatting it here
+// would make a boot directory disagree with the assembly it was rendered from.
+//
+// The one byte this package adds is the final newline. The assembler emits a
+// section heading with no body for a slot that resolved empty, so whether the
+// assembled string ends in a newline depends on which slot happened to come
+// last — which is not a property a file's last byte should have.
 func TestBootIsWrittenVerbatim(t *testing.T) {
-	assembled := "## repo\n\nthe assembled slot content, with no trailing newline"
-	inst := testInstance(t, profile.Resolved{ID: "reviewer"})
-	inst.Boot = assembled
+	cases := map[string]struct{ assembled, want string }{
+		"a trailing newline is kept as one": {
+			assembled: "## repo\n\nbranch=main\n",
+			want:      "## repo\n\nbranch=main\n",
+		},
+		"a missing trailing newline is added": {
+			assembled: "## repo\n\nbranch=main",
+			want:      "## repo\n\nbranch=main\n",
+		},
+		"an empty last slot still ends the file in a newline": {
+			assembled: "## repo\n\nbranch=main\n\n## tasks",
+			want:      "## repo\n\nbranch=main\n\n## tasks\n",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			inst := testInstance(t, profile.Resolved{ID: "reviewer"})
+			inst.Boot = tc.assembled
 
-	files, err := renderBoot(inst)
-	if err != nil {
-		t.Fatalf("renderBoot(): %v", err)
-	}
-	if len(files) != 1 {
-		t.Fatalf("renderBoot() wrote %v, want exactly one file", filePaths(files))
-	}
-	if want := inst.Layout.Boot.RelPath; files[0].Path != want {
-		t.Errorf("rendered at %q, want %q", files[0].Path, want)
-	}
-	if got := string(files[0].Content); got != assembled {
-		t.Errorf("the boot file is %q, want %q", got, assembled)
+			files, err := renderBoot(inst)
+			if err != nil {
+				t.Fatalf("renderBoot(): %v", err)
+			}
+			if len(files) != 1 {
+				t.Fatalf("renderBoot() wrote %v, want exactly one file", filePaths(files))
+			}
+			if want := inst.Layout.Boot.RelPath; files[0].Path != want {
+				t.Errorf("rendered at %q, want %q", files[0].Path, want)
+			}
+			if got := string(files[0].Content); got != tc.want {
+				t.Errorf("the boot file is %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
