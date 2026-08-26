@@ -249,10 +249,16 @@ installed layer already configured an MCP server.
 ## 7. Commands
 
 ```
-cairn boot <binding|profile> [--scope <path>]    materialize a boot dir, print its path
-cairn install                                    render the installed layer
-cairn install --check                            re-render, diff against disk, report drift
+cairn boot <binding|profile> [--scope <path>]       materialize a boot dir, print its path
+cairn install <binding|profile>                     render the installed layer
+cairn install <binding|profile> --check             re-render, diff against disk, report drift
 ```
+
+`install` takes the same argument as `boot`, and there is no default. A
+well-known id like `base` would mean Cairn knowing the name of a profile it
+does not ship; a reserved binding is the same magic with indirection. Unlike
+`boot`, `install` may be given an `abstract` profile — the installed layer is
+normally rendered from the abstract root of the cascade.
 
 `cairn install` is human-executed, permanently. Every agent working on Cairn
 runs under `~/.claude`; an agent running `install` rewrites its own live
