@@ -148,9 +148,20 @@ the keys it renders. Anything else is carried and ignored.
   "mcp":      [ /* agentlaunch.MCPServerSpec */ ],
   "skills":   [ "code-review", "capture-decision" ],
   "settings": { /* verbatim into .claude/settings.json */ },
-  "files":    { "rel/path.md": "content" }
+  "files":    {
+    "rel/path.md":             "literal content",
+    "tasks/current/task.md":   { "kind": "cmd", "cmd": { "run": "torque task get $TASK --format md" } },
+    "process/implement.md":    { "kind": "static_file", "static_file": { "path": "~/.config/agents/process/implement.md" } }
+  }
 }
 ```
+
+A `files` value is **either a literal string or an `agentcontext.SlotSource`**,
+resolved by the same resolvers `slots` uses. This is what gives parity with
+Torque, which plants a task bundle — `tasks/<id>/task.md`, `task.json`, and a
+per-task `process.md` — all rendered from live state, not from static profile
+content. Slots render into `boot.md`; `files` renders the same sources to
+arbitrary paths.
 
 ### Cascade
 
@@ -209,13 +220,17 @@ at materialization and may therefore vary between two runs — that is a propert
 of the resolver, and `agentcontext` hashes the request rather than the result
 for exactly this reason.
 
-**A failed slot must be distinguishable from an empty one.** `agentcontext`'s
-`DefaultRenderer` emits a bare heading with no body for both, so an agent
-reading `boot.md` cannot tell "the memory service returned nothing" from "the
-memory service was unreachable" — and those mean opposite things. Supply a
-`agentcontext.Renderer` that emits a one-line provenance for a slot whose
-`SlotResult.Err` is non-nil. That is the library's own documented extension
-point, not a reimplementation: resolvers, budgets and provenance stay adopted.
+**A slot that resolves empty, and a slot that fails, both render nothing at
+all** — no heading, no marker. `agentcontext`'s `DefaultRenderer` emits a bare
+heading for both; Cairn's renderer omits the section entirely, matching Tether's
+template behaviour.
+
+An earlier revision had a failed slot render `**Unavailable.**` plus the error,
+to distinguish it from an empty one. That was wrong twice over: it is Cairn
+authoring prose into the agent's context, which §1 forbids, and it is
+unnecessary now that agents pull current truth from tools rather than from
+`boot.md`. An absent section is correct — an agent that needs the data queries
+the tool. **The failure still reports on stderr, to the operator.**
 
 ### The installed layer
 
