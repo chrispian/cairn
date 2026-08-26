@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/chrispian/cairn/bootdir"
+	"github.com/chrispian/cairn/install"
 	"github.com/chrispian/cairn/profile"
 	"github.com/chrispian/cairn/scope"
 	"github.com/chrispian/cairn/slots"
@@ -27,21 +28,39 @@ import (
 const usage = `cairn assembles files and writes them into a directory.
 
 usage:
-  cairn boot <binding|profile> [flags]   materialize a boot directory, print its path
-  cairn install [--check]                render the installed layer
+  cairn boot <binding|profile> [flags]      materialize a boot directory, print its path
+  cairn install <binding|profile> [flags]   render the installed layer
 
 flags for boot:
   --scope <path|alias>   the directory the instance works in; overrides the binding's
-  --db <path>            the database; defaults to $CAIRN_DB, else $XDG_CONFIG_HOME/agents/cairn.db
   --boot-root <path>     where boot directories are planted; defaults to $CAIRN_BOOT_ROOT
   --session <name>       the session segment; defaults to a UTC timestamp and a random suffix
+
+flags for install:
+  --check                re-render, diff against disk, report drift, write nothing
+  --root <path>          where the installed layer goes; defaults to the home directory
+
+flags for both:
+  --db <path>            the database; defaults to $CAIRN_DB, else $XDG_CONFIG_HOME/agents/cairn.db
+
+cairn install is human-executed. Every agent working under ~/.claude that runs
+it rewrites its own live configuration mid-session.
 `
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintf(os.Stderr, "cairn: %v\n", err)
-		os.Exit(1)
+	err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if err == nil {
+		return
 	}
+	// Drift is a finding, not a failure: `install --check` has already printed
+	// its report to stdout, and writing it again to stderr as an error would
+	// say the same thing twice in two voices.
+	var code exitCode
+	if errors.As(err, &code) {
+		os.Exit(int(code))
+	}
+	fmt.Fprintf(os.Stderr, "cairn: %v\n", err)
+	os.Exit(1)
 }
 
 // run is main's body with its inputs and outputs passed in, so that the
@@ -55,7 +74,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	case "boot":
 		return runBoot(ctx, args[1:], stdout, stderr)
 	case "install":
-		return runInstall(args[1:])
+		return runInstall(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		_, _ = fmt.Fprint(stdout, usage)
 		return nil
@@ -65,23 +84,117 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 }
 
-// runInstall reports that the installed layer is not rendered yet. It is a
-// separate function so that the day it does something, nothing above it
-// changes.
+// exitCode is an error that carries only a process exit status. It is how
+// `install --check` reports drift: drift is a finding, not a failure, so the
+// report goes to stdout and nothing is written to stderr, but the status has
+// to be non-zero for a shell to branch on it.
+type exitCode int
+
+// Error implements error.
+func (c exitCode) Error() string { return fmt.Sprintf("exit status %d", int(c)) }
+
+// runInstall renders the installed layer, or checks it against disk.
 //
-// cairn install is human-executed, permanently: every agent working on Cairn
-// runs under ~/.claude, and an agent running install rewrites its own live
-// configuration mid-session.
-func runInstall(args []string) error {
+// cairn install is human-executed, permanently. Every agent working on Cairn
+// runs under the directory this writes; an agent that runs it rewrites its own
+// live configuration mid-session. Nothing here enforces that — plan §1 rules
+// out validation whose only job is to stop the operator doing what the
+// operator meant — so the convention is documented and not policed.
+func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("cairn install", flag.ContinueOnError)
-	check := fs.Bool("check", false, "re-render, diff against disk, report drift")
-	if err := fs.Parse(args); err != nil {
+	fs.SetOutput(stderr)
+	var (
+		check    = fs.Bool("check", false, "re-render, diff against disk, report drift, write nothing")
+		dbFlag   = fs.String("db", "", "the database path")
+		rootFlag = fs.String("root", "", "the directory the installed layer is written beneath")
+	)
+	target, rest := splitTarget(args)
+	if err := fs.Parse(rest); err != nil {
 		return err
 	}
-	if *check {
-		return errors.New("install --check is not implemented yet — see docs/plan.md §8 step 7")
+	if target == "" {
+		target = fs.Arg(0)
+	} else if fs.NArg() > 0 {
+		_, _ = fmt.Fprint(stderr, usage)
+		return fmt.Errorf("install takes one binding or profile, and was given %q as well", fs.Arg(0))
 	}
-	return errors.New("install is not implemented yet — see docs/plan.md §8 step 7")
+	if target == "" || fs.NArg() > 1 {
+		_, _ = fmt.Fprint(stderr, usage)
+		return errors.New("install takes exactly one binding or profile")
+	}
+
+	home, _ := os.UserHomeDir()
+
+	st, err := openStore(ctx, *dbFlag, home)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	_, profileID, _, err := lookup(ctx, st, target)
+	if err != nil {
+		return err
+	}
+	// No abstract check. The installed layer is normally rendered from the
+	// abstract root of the cascade, and refusing one here would refuse the
+	// profile this command mostly exists to render. `cairn boot` is where a
+	// direct boot of an abstract profile is refused — plan §7.
+	resolved, err := profile.Resolve(ctx, st, profileID)
+	if err != nil {
+		return err
+	}
+
+	dir := *rootFlag
+	if strings.TrimSpace(dir) == "" {
+		if strings.TrimSpace(home) == "" {
+			return fmt.Errorf("%w: pass --root to say where the installed layer goes", install.ErrNoRoot)
+		}
+		dir = home
+	}
+	root, err := install.NewRoot(dir)
+	if err != nil {
+		return err
+	}
+	lay := &install.Layer{Root: root, Profile: resolved, Home: home}
+
+	if *check {
+		report, err := install.Check(lay)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprint(stdout, report.String()); err != nil {
+			return err
+		}
+		if code := report.ExitCode(); code != 0 {
+			return exitCode(code)
+		}
+		return nil
+	}
+
+	res, err := install.Install(lay)
+	if err != nil {
+		return err
+	}
+	for _, rel := range res.Files {
+		if _, err := fmt.Fprintln(stdout, filepath.Join(res.Root, filepath.FromSlash(rel))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// openStore resolves the database path and opens it. Both commands need it and
+// both resolve it the same way: the flag, then CAIRN_DB, then XDG, then home.
+func openStore(ctx context.Context, flagValue, home string) (*store.Store, error) {
+	path := flagValue
+	if strings.TrimSpace(path) == "" {
+		var err error
+		path, err = store.DefaultPath(os.Getenv(store.EnvDB), os.Getenv(store.EnvXDGConfigHome), home)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return store.Open(ctx, path)
 }
 
 // runBoot materializes one boot directory and prints its path.
@@ -111,15 +224,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 
 	home, _ := os.UserHomeDir()
 
-	dbPath := *dbFlag
-	if strings.TrimSpace(dbPath) == "" {
-		var err error
-		dbPath, err = store.DefaultPath(os.Getenv(store.EnvDB), os.Getenv(store.EnvXDGConfigHome), home)
-		if err != nil {
-			return err
-		}
-	}
-	st, err := store.Open(ctx, dbPath)
+	st, err := openStore(ctx, *dbFlag, home)
 	if err != nil {
 		return err
 	}

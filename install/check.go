@@ -27,9 +27,15 @@ const (
 	// like.
 	StatusUnreadable Status = "unreadable"
 
-	// StatusOrphan means a file sits inside a directory cairn owns that this
-	// render does not produce. It is what is left behind when a profile stops
-	// declaring something.
+	// StatusOrphan means cairn claims a path, this render does not produce it,
+	// and something is there anyway. It is what a profile leaves behind when
+	// it stops declaring something.
+	//
+	// Cairn claims the exact file paths its renderers can write, plus the
+	// directories it fills whole — and nothing else. The provider directory
+	// itself is not claimed: ~/.claude is a live harness's home, and calling
+	// every unrendered file in it an orphan would report the harness's own
+	// state on every run. See [SweepPlan].
 	StatusOrphan Status = "orphan"
 )
 
