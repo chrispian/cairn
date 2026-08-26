@@ -30,8 +30,9 @@ in a sqlite database at `$XDG_CONFIG_HOME/agents/cairn.db` (override with
 ```
 
 It writes an abstract `base`, a concrete `engineer` that extends it, a
-`reviewer` that exists only to be dispatched, two scope aliases, and two
-bindings. Read it — it is the profile-authoring documentation.
+`reviewer` that exists only to be dispatched, two scope aliases, two bindings,
+and the templates those profiles name. Read it — it is the profile-authoring
+documentation.
 
 Three things it demonstrates that are easy to get wrong:
 
@@ -66,26 +67,49 @@ What lands:
 
 ```
 <boot-dir>/
-  AGENTS.md              body from the cascade + a scalar Profile block
-  CLAUDE.md              @AGENTS.md, and nothing else
-  boot.md                slots, resolved just now
+  <spec.templates>       your text, markers substituted; any path, any number
   .mcp.json              spec.mcp
   .claude/settings.json  spec.settings, verbatim
   .claude/skills/        spec.skills, whole directory trees
   .claude/agents/<id>.md spec.subagents, one per named profile
+  <spec.trees>           source directories, copied whole
   <spec.files>           arbitrary paths, literal or resolved
 ```
 
-**`boot.md` is where the leverage is.** It is resolved at materialization, so
-it carries live state rather than a paragraph that went stale a month ago. The
-seeded `engineer` pulls `git status` and `git log`; the same mechanism reaches
-an HTTP endpoint or any command, which is how memory and task state get in:
+**Cairn names none of those files.** `AGENTS.md`, `CLAUDE.md` and `boot.md` are
+destinations the seeded profiles happen to declare. Declare none and you get no
+prose; declare fifty and you get fifty. Cairn composes no heading, no section
+and no ordering of its own.
+
+### Templates and markers
+
+A template is your text with markers in it. Two verbs, nothing else:
+
+```markdown
+<!-- cairn:slot memory -->     one of spec.slots, by name
+<!-- cairn:value scope -->     one of: binding, model, profile, provider, scope, session
+```
+
+An HTML comment, so it is invisible in rendered markdown and cannot be mistaken
+for the harness's own `@AGENTS.md` import — which a template has to be able to
+pass through untouched, since that is how `CLAUDE.md` points at the file beside
+it.
+
+A marker Cairn cannot act on — an unknown verb, a missing name, a value that is
+not one of the six — is a **refusal**, because leaving it would plant the
+marker's own text where an agent reads it. Everything outside `cairn:` is left
+alone.
+
+**Slots are where the leverage is.** They resolve at materialization, so they
+carry live state rather than a paragraph that went stale a month ago. The seeded
+`engineer` pulls `git status` and `git log`; the same mechanism reaches an HTTP
+endpoint or any command, which is how memory and task state get in:
 
 ```jsonc
 "slots": [
   { "name": "memory", "section": "## Memory",
     "source": { "kind": "http_json",
-                "http_json": { "url": "http://127.0.0.1:8089/v1/recall?limit=20" } } },
+                "http_json": { "url": "${TESSERACT_URL}/v1/recall?limit=20" } } },
   { "name": "tasks", "section": "## Open tasks",
     "source": { "kind": "cmd",
                 "cmd": { "run": "torque tasks list --status in_progress --format brief" } } }
@@ -93,19 +117,23 @@ an HTTP endpoint or any command, which is how memory and task state get in:
 ```
 
 Kinds: `static_file`, `static_dir`, `inline`, `cmd`, `http_text`, `http_json`,
-`role_summary`.
-
-**Nothing expands `$VAR` or `${VAR}`** in a slot's URL or path — no resolver in
-`agentcontext` reads the environment, so the string is used verbatim. Tether's
-own boot profiles do expand them, which makes this an easy mistake to carry
-across. A `cmd` slot can shell out if you need the environment. Write `"kind"`, not `"type"` — Cairn will say so if you forget.
+`role_summary`. Write `"kind"`, not `"type"` — Cairn will say so if you forget.
 
 **A slot that fails renders nothing at all** — no heading, no marker — and so
 does one that resolves empty. Cairn writes no sentence of its own into an
 agent's context, and a section that says "unavailable" is one nobody declared
 and nobody can correct. An agent that needs the data asks the tool, which is
-current where `boot.md` is a snapshot. The failure is not lost: it goes to
-**stderr**, where the operator reads.
+current where a planted file is a snapshot. The failure is not lost: it goes to
+**stderr**, where the operator reads, and so does a marker that filled nothing.
+
+**Put the heading on the slot, not in the template.** `"section": "## Memory"`
+comes back with the content or not at all. Write `## Memory` in the template
+above the marker and you keep that heading on the day the slot fails, which is
+the one thing this rule exists to prevent.
+
+`$VAR` and `${VAR}` are expanded in a source's **path** and **URL**, so a
+profile can name a service without hardcoding a host. A `cmd`'s command line is
+not expanded — it already runs through a shell that does its own.
 
 ### `files`: the same sources, at arbitrary paths
 
@@ -133,6 +161,22 @@ directory behind.
 
 A source that resolves *empty* is not a failure and plants an empty file — the
 resolver answered, and what it answered is content, which Cairn does not read.
+
+### `trees`: copying a directory whole
+
+```jsonc
+"trees": { "docs/engineering": "~/.config/agents/docs/engineering" }
+```
+
+Destination on the left, source directory on the right, copied recursively with
+executable bits preserved. A single file rides `files` with a `static_file`
+source instead. **Do not reach for a `static_dir` slot** — that concatenates
+every file it finds into one string, which is right for a slot and destroys a
+directory.
+
+A symlink to a file is followed and copied by value. A symlink to a directory,
+or one that dangles, is refused by name — Cairn does not walk into linked
+directories, and saying so beats planting something that is not a file.
 
 ### `subagents`: naming other profiles
 

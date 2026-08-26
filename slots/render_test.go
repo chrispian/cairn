@@ -229,3 +229,77 @@ func TestTheKindDiagnosticListsWhatIsActuallyWired(t *testing.T) {
 func slotted(raw string) string {
 	return `{"` + profile.SpecKeySlots + `": ` + raw + `}`
 }
+
+// TestSectionsRenderOnePerSlot is what makes a template able to place a slot.
+// The assembled rendering is one string in the library's own order; a template
+// decides both, so each section is wanted on its own, formatted the way the
+// assembled one would have formatted it.
+func TestSectionsRenderOnePerSlot(t *testing.T) {
+	res := &agentcontext.ContextResult{Slots: []agentcontext.SlotResult{
+		{Name: "repo", Section: "## Repository", Content: "on branch main"},
+		{Name: "memory", Section: "## Memory", Content: "recalled"},
+	}}
+
+	got, err := slots.Sections(res)
+	if err != nil {
+		t.Fatalf("slots.Sections(): %v", err)
+	}
+	want := map[string]string{
+		"repo":   "## Repository\non branch main",
+		"memory": "## Memory\nrecalled",
+	}
+	for name, section := range want {
+		if got[name] != section {
+			t.Errorf("slots.Sections()[%q] = %q, want %q", name, got[name], section)
+		}
+	}
+}
+
+// TestSectionsDropWhatProducedNothing is docs/plan.md §5 at the level a
+// template sees. A slot that failed and one that resolved empty both come back
+// as nothing at all — the heading included, which is what keeps a template from
+// holding a heading with nothing under it.
+func TestSectionsDropWhatProducedNothing(t *testing.T) {
+	res := &agentcontext.ContextResult{Slots: []agentcontext.SlotResult{
+		{Name: "failed", Section: "## Failed", Content: "partial", Err: errors.New("unreachable")},
+		{Name: "empty", Section: "## Empty", Content: ""},
+		{Name: "blank", Section: "## Blank", Content: "   \n\t"},
+	}}
+
+	got, err := slots.Sections(res)
+	if err != nil {
+		t.Fatalf("slots.Sections(): %v", err)
+	}
+	for name := range got {
+		if got[name] != "" {
+			t.Errorf("slots.Sections()[%q] = %q, want nothing at all", name, got[name])
+		}
+	}
+}
+
+// TestSectionsRefuseTwoSlotsOfOneName covers the ambiguity a template makes
+// reachable. A marker addresses a slot by name, so a repeated name names two
+// sections and cairn cannot say which the marker meant.
+func TestSectionsRefuseTwoSlotsOfOneName(t *testing.T) {
+	res := &agentcontext.ContextResult{Slots: []agentcontext.SlotResult{
+		{Name: "repo", Section: "## First", Content: "a"},
+		{Name: "repo", Section: "## Second", Content: "b"},
+	}}
+
+	if _, err := slots.Sections(res); !errors.Is(err, slots.ErrSlotName) {
+		t.Fatalf("slots.Sections() = %v, want slots.ErrSlotName", err)
+	}
+}
+
+// TestSectionsOfNothing covers a profile that declared no slots at all: an
+// empty map, so a template's markers substitute away rather than the caller
+// having to check.
+func TestSectionsOfNothing(t *testing.T) {
+	got, err := slots.Sections(nil)
+	if err != nil {
+		t.Fatalf("slots.Sections(nil): %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Errorf("slots.Sections(nil) = %v, want an empty map", got)
+	}
+}

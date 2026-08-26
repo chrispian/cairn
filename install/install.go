@@ -88,6 +88,20 @@ type Layer struct {
 	// written with a leading "~/". Carried rather than read, for the reason
 	// [bootdir.Instance].Home is.
 	Home string
+
+	// Templates is the manifest's templates, keyed by destination, with every
+	// value already resolved to its text. It arrives resolved for the reason
+	// [bootdir.Instance].Templates does: a template may name a source, and
+	// resolving one is I/O.
+	//
+	// Only the two destinations [ClaudeRenderers] registers are rendered. The
+	// rest are boot-directory artifacts.
+	Templates map[string]string
+
+	// Values are the instance values a template may substitute. This layer is
+	// not one session, so the ones that describe a session — scope, and the
+	// session segment — are empty here and substitute nothing.
+	Values map[string]string
 }
 
 // Result is what one [Install] wrote.
@@ -138,30 +152,34 @@ type Renderer struct {
 // the audit that used to guard it, and user-level MCP is not a file in this
 // directory.
 //
-// There are no spec.files, and that one follows from where the two layers
-// write rather than from anyone's taste. A boot directory is created fresh and
-// refuses to plant if it already exists, so an arbitrary path→content map can
-// only ever land on empty ground. The installed layer writes into a directory
-// that already exists and is full of the operator's live state, where the same
-// map lands on whatever is already there. It compounds with the sweep:
-// rendering spec.files here would make cairn start claiming ownership of
-// arbitrary paths in a home directory for orphan-reporting purposes, and
-// having claimed them, report on them.
+// There are no spec.files, no spec.trees, and no subagent definitions, and
+// that follows from where the two layers write rather than from anyone's
+// taste. A boot directory is created fresh and refuses to plant if it already
+// exists, so an arbitrary path→content map can only ever land on empty ground.
+// The installed layer writes into a directory that already exists and is full
+// of the operator's live state, where the same map lands on whatever is already
+// there. It compounds with the sweep: rendering them here would make cairn
+// start claiming ownership of arbitrary paths in a home directory for
+// orphan-reporting purposes, and having claimed them, report on them.
+//
+// Templates are rendered, but only the two destinations this list registers.
+// A template free to name any path in the operator's home would be the same
+// problem in a new key, and it would cost the check its whole point: the claim
+// set comes from this registration rather than from a render, which is what
+// lets it report a file left behind by a profile that stopped declaring one.
+// A claim set derived from the profile being checked cannot see that case at
+// all. A template declared for any other destination is a boot-directory
+// artifact and is not rendered here.
 //
 // The caller receives a fresh slice it may modify.
 func ClaudeRenderers() []Renderer {
 	return []Renderer{
-		{Artifact: bootdir.AgentsFileName, Render: bootdir.RenderAgents},
-		{Artifact: pointerFileName, Render: bootdir.RenderPointer},
+		{Artifact: bootdir.AgentsFileName, Render: bootdir.RenderAgentsTemplate},
+		{Artifact: bootdir.PointerFileName, Render: bootdir.RenderPointerTemplate},
 		{Artifact: SettingsFileName, Render: bootdir.RenderSettings},
 		{Artifact: SkillsDirName, Render: bootdir.RenderSkills, Tree: true},
 	}
 }
-
-// pointerFileName is the harness's own instruction file inside the provider
-// directory. It never carries content of its own — see
-// [bootdir.PointerFileContent].
-const pointerFileName = "CLAUDE.md"
 
 // ClaudeLayout returns the [bootdir.Layout] the installed layer is rendered
 // through: the same artifact names a boot directory uses, at the paths the
@@ -174,7 +192,7 @@ func ClaudeLayout() bootdir.Layout {
 	return bootdir.Layout{
 		Provider:  profile.ProviderClaude,
 		Agents:    bootdir.Artifact{RelPath: ClaudeDirName + "/" + bootdir.AgentsFileName},
-		Pointer:   bootdir.Artifact{RelPath: ClaudeDirName + "/" + pointerFileName},
+		Pointer:   bootdir.Artifact{RelPath: ClaudeDirName + "/" + bootdir.PointerFileName},
 		Settings:  bootdir.Artifact{RelPath: ClaudeDirName + "/" + SettingsFileName},
 		SkillsDir: ClaudeDirName + "/" + SkillsDirName,
 	}

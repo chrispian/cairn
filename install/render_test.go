@@ -43,7 +43,19 @@ func fixtureLayer(t *testing.T, resolved profile.Resolved) *Layer {
 	if err != nil {
 		t.Fatalf("NewRoot on a temporary directory: %v", err)
 	}
-	return &Layer{Root: root, Profile: &resolved}
+	return &Layer{
+		Root:    root,
+		Profile: &resolved,
+		// Templates and values reach a layer already resolved, the way the
+		// composition root supplies them: a template may name a source, and
+		// reading one is I/O a renderer may not do.
+		Templates: map[string]string{
+			bootdir.AgentsFileName:  "# <!-- cairn:value profile -->\n\n" + resolved.Body + "\n",
+			bootdir.PointerFileName: "@" + bootdir.AgentsFileName + "\n",
+			"boot.md":               "a boot-directory destination this layer does not render\n",
+		},
+		Values: map[string]string{"profile": resolved.ID, "provider": resolved.Provider.String()},
+	}
 }
 
 // fixtureSkill writes one skill directory under root: files maps
@@ -102,7 +114,9 @@ func declaredManifest(skillsDir string) string {
 	  "skills":     ["code-review"],
 	  "skills_dir": %s,
 	  "settings":   {"model": "opus"},
-	  "files":      {"notes/todo.md": "do the thing"}
+	  "files":      {"notes/todo.md": "do the thing"},
+	  "trees":      {"docs": "/nonexistent-on-purpose"},
+	  "templates":  {"AGENTS.md": "declared, and resolved onto the layer"}
 	}`, strconv.Quote(skillsDir))
 }
 
@@ -202,8 +216,8 @@ func TestRenderPointerIsTheIncludeAndNothingElse(t *testing.T) {
 		t.Fatalf("Render a fully declared profile: %v", err)
 	}
 	pointer := renderedFile(t, files, ".claude/CLAUDE.md")
-	if string(pointer.Content) != bootdir.PointerFileContent {
-		t.Errorf(".claude/CLAUDE.md rendered %q, want %q", pointer.Content, bootdir.PointerFileContent)
+	if want := "@" + bootdir.AgentsFileName + "\n"; string(pointer.Content) != want {
+		t.Errorf(".claude/CLAUDE.md rendered %q, want the template's own text %q", pointer.Content, want)
 	}
 }
 
@@ -263,9 +277,10 @@ func TestBootDirectoryInstructionFileCarriesNoGeneratedMarker(t *testing.T) {
 	}
 	resolved := profile.Resolved{ID: "base", Name: "Base", Provider: profile.ProviderClaude, Body: "prose"}
 	files, err := bootdir.Render(&bootdir.Instance{
-		Dir:     filepath.Join(t.TempDir(), "boot"),
-		Layout:  layout,
-		Profile: &resolved,
+		Dir:       filepath.Join(t.TempDir(), "boot"),
+		Layout:    layout,
+		Profile:   &resolved,
+		Templates: map[string]string{bootdir.AgentsFileName: "# base\n"},
 	})
 	if err != nil {
 		t.Fatalf("bootdir.Render: %v", err)
@@ -383,8 +398,8 @@ func TestRenderMultiFileSkillLandsAsADirectoryTree(t *testing.T) {
 		t.Errorf("references/style.md rendered %q", reference.Content)
 	}
 	script := renderedFile(t, files, ".claude/skills/code-review/run.sh")
-	if script.Mode != bootdir.SkillExecFileMode {
-		t.Errorf("run.sh rendered with mode %v, want %v", script.Mode, bootdir.SkillExecFileMode)
+	if script.Mode != bootdir.ExecFileMode {
+		t.Errorf("run.sh rendered with mode %v, want %v", script.Mode, bootdir.ExecFileMode)
 	}
 }
 
@@ -480,15 +495,15 @@ func TestPlanterForClaude(t *testing.T) {
 	if layout.Provider != profile.ProviderClaude {
 		t.Errorf("PlanterFor returned a layout for %q", layout.Provider)
 	}
-	if layout.Boot.Declared() || layout.MCP.Declared() {
-		t.Errorf("the installed layout declares a boot or MCP path: %+v", layout)
+	if layout.MCP.Declared() {
+		t.Errorf("the installed layout declares an MCP path: %+v", layout)
 	}
 	want := []struct {
 		artifact string
 		tree     bool
 	}{
 		{bootdir.AgentsFileName, false},
-		{pointerFileName, false},
+		{bootdir.PointerFileName, false},
 		{SettingsFileName, false},
 		{SkillsDirName, true},
 	}

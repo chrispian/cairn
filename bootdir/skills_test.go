@@ -80,9 +80,9 @@ func TestSkillsArePlantedAsDirectories(t *testing.T) {
 		t.Errorf("SKILL.md is mode %v, want %v", entry.Mode, DefaultFileMode)
 	}
 	script := fileByPath(t, files, ".claude/skills/code-review/scripts/run.sh")
-	if script.Mode != SkillExecFileMode {
+	if script.Mode != ExecFileMode {
 		t.Errorf("the script is mode %v, want %v — a skill's script has to still run",
-			script.Mode, SkillExecFileMode)
+			script.Mode, ExecFileMode)
 	}
 	reference := fileByPath(t, files, ".claude/skills/code-review/references/checklist.md")
 	if reference.Mode != DefaultFileMode {
@@ -276,8 +276,61 @@ func TestSkillsRefuseSomethingThatIsNotAFile(t *testing.T) {
 	}
 
 	_, err := RenderSkills(skillsInstance(t, source, "code-review"))
-	if !errors.Is(err, ErrSkillContent) {
-		t.Fatalf("RenderSkills() error = %v, want ErrSkillContent", err)
+	if !errors.Is(err, ErrTreeContent) {
+		t.Fatalf("RenderSkills() error = %v, want ErrTreeContent", err)
+	}
+	// The refusal names the link and what it points at. A copier that walks a
+	// docs tree will meet this far more often than one that walks a skill, and
+	// "not a regular file" without a path is a message that sends the operator
+	// looking.
+	for _, want := range []string{"linked", elsewhere} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestTreeCopyRefusesADanglingSymlink is the other half of the symlink rule,
+// and the one a skills package almost never hits. A link whose target was
+// removed is refused by the same sentinel rather than surfacing as a bare stat
+// failure, so a caller can tell it from a filesystem going wrong.
+func TestTreeCopyRefusesADanglingSymlink(t *testing.T) {
+	source := t.TempDir()
+	if err := os.Symlink(filepath.Join(t.TempDir(), "never-written.md"),
+		filepath.Join(source, "dangling.md")); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+
+	_, err := CopyTree(source, "docs")
+	if !errors.Is(err, ErrTreeContent) {
+		t.Fatalf("CopyTree() error = %v, want ErrTreeContent", err)
+	}
+	if !strings.Contains(err.Error(), "dangling.md") {
+		t.Errorf("the refusal %q does not name the link", err)
+	}
+}
+
+// TestTreeCopyFollowsALinkToAFile records a property rather than guarding a
+// decision. A symlink to a regular file is copied by value even when its target
+// lies outside the source directory. That is what the skills copier has always
+// done; narrowing it while generalizing the copier would be a behaviour change
+// smuggled into a feature.
+func TestTreeCopyFollowsALinkToAFile(t *testing.T) {
+	source := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "target.md")
+	if err := os.WriteFile(outside, []byte("from outside the source\n"), 0o644); err != nil {
+		t.Fatalf("write the target: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(source, "link.md")); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+
+	files, err := CopyTree(source, "docs")
+	if err != nil {
+		t.Fatalf("CopyTree(): %v", err)
+	}
+	if got := string(fileByPath(t, files, "docs/link.md").Content); got != "from outside the source\n" {
+		t.Errorf("the link planted %q, want its target's bytes", got)
 	}
 }
 
@@ -356,13 +409,13 @@ func TestSkillFileModeMapsOnlyTheExecutableBit(t *testing.T) {
 		{0o644, DefaultFileMode},
 		{0o600, DefaultFileMode},
 		{0o400, DefaultFileMode},
-		{0o755, SkillExecFileMode},
-		{0o700, SkillExecFileMode},
-		{0o111, SkillExecFileMode},
+		{0o755, ExecFileMode},
+		{0o700, ExecFileMode},
+		{0o111, ExecFileMode},
 	}
 	for _, tt := range tests {
-		if got := skillFileMode(tt.source); got != tt.want {
-			t.Errorf("skillFileMode(%v) = %v, want %v", tt.source, got, tt.want)
+		if got := treeFileMode(tt.source); got != tt.want {
+			t.Errorf("treeFileMode(%v) = %v, want %v", tt.source, got, tt.want)
 		}
 	}
 }

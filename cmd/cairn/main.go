@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -155,7 +156,26 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
-	lay := &install.Layer{Root: root, Profile: resolved, Home: home}
+	// Templates resolve here for the reason they do in a boot: a template may
+	// name a source, and reading one is I/O. No slots are resolved — see
+	// install.layerInstance — so a template's slot markers substitute nothing
+	// in this layer.
+	templates, err := slots.ResolveEntries(ctx, resolved.Spec, profile.SpecKeyTemplates, slots.Options{})
+	if err != nil {
+		return fmt.Errorf("profile %q: %w", resolved.ID, err)
+	}
+	lay := &install.Layer{
+		Root:      root,
+		Profile:   resolved,
+		Home:      home,
+		Templates: templates,
+		Values: instanceValues(map[string]string{
+			"binding":  target,
+			"profile":  resolved.ID,
+			"provider": resolved.Provider.String(),
+			"model":    resolved.Model,
+		}),
+	}
 
 	if *check {
 		report, err := install.Check(lay)
@@ -303,16 +323,31 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
-	boot := ""
 	if assembled != nil {
-		boot = assembled.Rendered
 		reportSlotFailures(stderr, assembled)
+	}
+	// One rendered section per declared slot, addressed by name. The assembled
+	// rendering the library returns is discarded: a template decides what order
+	// sections appear in and whether they appear at all, so what is wanted is
+	// each section on its own.
+	sections, err := slots.Sections(assembled)
+	if err != nil {
+		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
 
 	// Files resolve here for the same reason slots do, and unlike a slot a
 	// source that fails fails the boot: a missing section is degraded context,
 	// a missing file is a hole at a path the profile promised.
 	planted, err := slots.ResolveFiles(ctx, resolved.Spec, slots.Options{Workdir: scopeDir})
+	if err != nil {
+		return fmt.Errorf("profile %q: %w", resolved.ID, err)
+	}
+
+	// A template's text resolves the same way a file's does, and for the same
+	// reason: a profile keeps its prose in a file more often than in the
+	// database, and reading one is I/O.
+	templates, err := slots.ResolveEntries(ctx, resolved.Spec, profile.SpecKeyTemplates,
+		slots.Options{Workdir: scopeDir})
 	if err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
@@ -332,9 +367,24 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		Home:      home,
 		Profile:   resolved,
 		Scope:     scopeDir,
-		Boot:      boot,
 		Files:     planted,
 		Subagents: subagents,
+		Templates: templates,
+		Sections:  sections,
+		Values: instanceValues(map[string]string{
+			"binding":  name,
+			"profile":  resolved.ID,
+			"provider": resolved.Provider.String(),
+			"model":    resolved.Model,
+			"scope":    scopeDir,
+			"session":  session,
+		}),
+	}
+	// Reported before the write rather than after it, so that an operator
+	// reading stderr sees the missing block named beside the slot failure that
+	// explains it.
+	if err := reportUnfilledMarkers(stderr, templates, sections); err != nil {
+		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
 	files, err := bootdir.Render(inst)
 	if err != nil {
@@ -422,6 +472,48 @@ func pathLike(raw string) bool {
 		strings.ContainsRune(raw, filepath.Separator) ||
 		strings.HasPrefix(raw, "~") ||
 		filepath.IsAbs(raw)
+}
+
+// instanceValues returns the values a template may substitute, checked against
+// [bootdir.ValueNames] so that a value added here and not there — or the
+// reverse — fails at the composition root rather than as a marker that
+// substitutes nothing.
+func instanceValues(values map[string]string) map[string]string {
+	out := make(map[string]string, len(values))
+	for _, name := range bootdir.ValueNames() {
+		out[name] = values[name]
+	}
+	return out
+}
+
+// reportUnfilledMarkers prints every slot marker that stood for nothing: one
+// naming a slot the manifest never declared, and one whose slot resolved to
+// nothing. Both leave a template shorter than it reads, and neither is visible
+// in the file that results.
+//
+// It is a report and not a refusal, matching the slot rule it follows from: a
+// section that is not there is degraded context and the agent asks its tools.
+// The operator hears about it because they are the only one who can fix it.
+//
+// The destinations are walked in sorted order so that two boots of one profile
+// report in the same order.
+func reportUnfilledMarkers(stderr io.Writer, templates, sections map[string]string) error {
+	dests := make([]string, 0, len(templates))
+	for dest := range templates {
+		dests = append(dests, dest)
+	}
+	sort.Strings(dests)
+	for _, dest := range dests {
+		unfilled, err := bootdir.Unfilled(templates[dest], sections)
+		if err != nil {
+			return fmt.Errorf("%s: %w", dest, err)
+		}
+		for _, marker := range unfilled {
+			_, _ = fmt.Fprintf(stderr, "cairn: %s: slot %q filled nothing, so %s renders no section\n",
+				dest, marker.Name, dest)
+		}
+	}
+	return nil
 }
 
 // reportSlotFailures prints every non-required slot that failed to resolve.

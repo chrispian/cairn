@@ -17,16 +17,20 @@ import (
 	goprovider "github.com/hollis-labs/go-providers/provider"
 )
 
-// AgentsFileName is the instruction file every boot directory carries. Cairn
-// declares it rather than reading it from a provider's BootDirSpec: it is the
-// one artifact whose name is the same for every harness, which is what makes
-// the pointer file below possible.
+// AgentsFileName is the template destination the installed layer renders its
+// instruction file from. Cairn declares the name rather than reading it from a
+// provider's BootDirSpec: it is the one artifact whose name is the same for
+// every harness.
+//
+// It is not a file cairn insists on. A boot directory renders whatever
+// templates a profile declares, at whatever paths it declares them; this name
+// matters only where a layout has to map a destination onto a path of its own.
 const AgentsFileName = "AGENTS.md"
 
-// PointerFileContent is the entire content of a provider's pointer file — a
-// one-line include of [AgentsFileName] and nothing else, so that a reader who
-// opens either file knows which one carries the content.
-const PointerFileContent = "@" + AgentsFileName + "\n"
+// PointerFileName is the harness's own instruction file. Cairn declares the
+// name because a layout has to know which template destination lands there;
+// what the file holds is the profile's, like every other template.
+const PointerFileName = "CLAUDE.md"
 
 // SkillsDirName is the directory, relative to the boot directory root,
 // declared skills are planted into. No provider's BootDirSpec declares it;
@@ -72,7 +76,7 @@ func (a Artifact) Declared() bool { return a.RelPath != "" }
 // Layout is where one provider's harness reads each boot-directory artifact
 // from.
 //
-// Four of its artifacts — Pointer, Boot, MCP and Settings — are taken from
+// Three of its artifacts — Pointer, MCP and Settings — are taken from
 // go-providers' BootDirSpec, which is the library that owns each harness's
 // on-disk convention. Cairn takes the path and the mode from there and
 // supplies its own content: the spec's own render functions are never called,
@@ -85,16 +89,12 @@ type Layout struct {
 	// Provider is the harness this layout describes.
 	Provider profile.Provider
 
-	// Agents is the instruction file, always [AgentsFileName].
+	// Agents is where a template declared for [AgentsFileName] is written.
 	Agents Artifact
 
-	// Pointer is the harness's own instruction file, holding
-	// [PointerFileContent]. Undeclared when the harness reads
-	// [AgentsFileName] directly.
+	// Pointer is where a template declared for [PointerFileName] is written.
+	// Undeclared when the harness reads [AgentsFileName] directly.
 	Pointer Artifact
-
-	// Boot is the file the assembled slots are written to.
-	Boot Artifact
 
 	// MCP is the MCP server configuration.
 	MCP Artifact
@@ -141,15 +141,14 @@ func LayoutFor(p profile.Provider) (Layout, error) {
 // claudeLayout derives the Claude Code layout from that adapter's BootDirSpec.
 func claudeLayout() (Layout, error) {
 	spec := goprovider.NewClaudeAdapter().BootDirSpec()
-	declared, err := artifacts(spec, "CLAUDE.md", "boot.md", ".mcp.json", ".claude/settings.json")
+	declared, err := artifacts(spec, PointerFileName, ".mcp.json", ".claude/settings.json")
 	if err != nil {
 		return Layout{}, fmt.Errorf("claude: %w", err)
 	}
 	return Layout{
 		Provider:      profile.ProviderClaude,
 		Agents:        Artifact{RelPath: AgentsFileName},
-		Pointer:       declared["CLAUDE.md"],
-		Boot:          declared["boot.md"],
+		Pointer:       declared[PointerFileName],
 		MCP:           declared[".mcp.json"],
 		Settings:      declared[".claude/settings.json"],
 		SkillsDir:     SkillsDirName,

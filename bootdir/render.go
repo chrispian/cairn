@@ -77,11 +77,24 @@ type Instance struct {
 	// containment check that guards the write lives in package scope.
 	Scope string
 
-	// Boot is the assembled slot content that becomes the boot file. It is
-	// resolved before rendering, because resolving a slot runs commands and
-	// makes requests and a renderer may do neither. Empty renders no boot
-	// file.
-	Boot string
+	// Templates is the manifest's templates, keyed by boot-directory-relative
+	// destination, with every value already resolved to its text. It arrives
+	// resolved because a template may name a source rather than a literal, and
+	// resolving one runs commands and makes requests. Nil renders no prose at
+	// all.
+	Templates map[string]string
+
+	// Sections is each declared slot's rendered section, keyed by slot name: a
+	// heading and its content together, or the empty string for a slot that
+	// failed to resolve or resolved to nothing. A marker standing for an empty
+	// section leaves nothing behind, which is how a template's own headings
+	// avoid outliving the content under them.
+	Sections map[string]string
+
+	// Values are the instance values a template may substitute, keyed by the
+	// names in [ValueNames]. A name in that list and absent here substitutes
+	// nothing, which is what an undeclared scope looks like.
+	Values map[string]string
 
 	// Files is the manifest's arbitrary files, keyed by boot-directory-relative
 	// path, with every value already resolved. It arrives resolved for the

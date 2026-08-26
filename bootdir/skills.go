@@ -7,16 +7,20 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/chrispian/cairn/profile"
 )
 
-// SkillExecFileMode is the mode a skill file is planted with when the file it
-// was copied from is executable. Skills carry scripts, and a script that
-// arrives without its executable bit is a skill that fails halfway through
-// instead of at boot.
-const SkillExecFileMode fs.FileMode = 0o755
+// ExecFileMode is the mode a copied file is planted with when the file it was
+// copied from is executable. A tree carries scripts, and a script that arrives
+// without its executable bit fails halfway through instead of at boot.
+const ExecFileMode fs.FileMode = 0o755
+
+// ErrTreeContent reports a file in a copied directory that cannot be planted:
+// it is not a regular file, or it is a symlink to a directory or to nothing.
+var ErrTreeContent = errors.New("unusable tree content")
 
 // ErrSkillsSource reports that skills were declared but the directory to copy
 // them from is unusable: the manifest names none, the one it names is not
@@ -158,8 +162,9 @@ func expandHomePrefix(dir, home string) (string, error) {
 	return filepath.Join(home, strings.TrimPrefix(dir, "~")), nil
 }
 
-// copySkill reads every file of the skill named name under source and returns
-// them as artifacts under target, with their bytes carried in memory.
+// copySkill returns the skill named name under source as artifacts under
+// target, refusing one a harness would not load. The copying itself is
+// [CopyTree]'s; what is here is the part that is about skills.
 func copySkill(source, target, name string) ([]File, error) {
 	dir := filepath.Join(source, name)
 	info, err := os.Stat(dir)
@@ -173,54 +178,99 @@ func copySkill(source, target, name string) ([]File, error) {
 		return nil, fmt.Errorf("%w: skill %q at %s is not a directory", ErrSkillContent, name, dir)
 	}
 
-	var files []File
-	hasEntryFile := false
-	walkErr := filepath.WalkDir(dir, func(current string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return fmt.Errorf("read skill %q under %s: %w", name, dir, err)
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(dir, current)
-		if err != nil {
-			return fmt.Errorf("locate %s inside skill %q: %w", current, name, err)
-		}
-		// Stat rather than the walk entry's own type: a symlink to a regular
-		// file is copied by value, which is the point, while a symlink to a
-		// directory is refused rather than planted as a file that is not one.
-		file, err := os.Stat(current)
-		if err != nil {
-			return fmt.Errorf("stat %s inside skill %q: %w", current, name, err)
-		}
-		if !file.Mode().IsRegular() {
-			return fmt.Errorf("%w: skill %q holds %s, which is not a regular file",
-				ErrSkillContent, name, current)
-		}
-		content, err := os.ReadFile(current)
-		if err != nil {
-			return fmt.Errorf("read %s inside skill %q: %w", current, name, err)
-		}
-		relSlash := filepath.ToSlash(rel)
-		if relSlash == SkillFileName {
-			hasEntryFile = true
-		}
-		files = append(files, File{
-			Path:    path.Join(target, name, relSlash),
-			Content: content,
-			Mode:    skillFileMode(file.Mode()),
-		})
-		return nil
-	})
-	if walkErr != nil {
-		return nil, walkErr
+	files, err := CopyTree(dir, path.Join(target, name))
+	if err != nil {
+		return nil, fmt.Errorf("skill %q: %w", name, err)
 	}
 	if len(files) == 0 {
 		return nil, fmt.Errorf("%w: skill %q at %s holds no files", ErrSkillContent, name, dir)
 	}
-	if !hasEntryFile {
+	entry := path.Join(target, name, SkillFileName)
+	if !slices.ContainsFunc(files, func(f File) bool { return f.Path == entry }) {
 		return nil, fmt.Errorf("%w: skill %q at %s has no %s, so a harness would not load it",
 			ErrSkillContent, name, dir, SkillFileName)
+	}
+	return files, nil
+}
+
+// CopyTree reads every file under source and returns them as artifacts under
+// target, with their bytes carried in memory.
+//
+// Files are copied, never linked. Each file's bytes are read here and carried
+// in a [File], so a planted tree cannot reference the directory it came from:
+// editing the source leaves every already-planted boot directory as it was,
+// and the next boot picks the change up. The [File] contract is what makes that
+// structural rather than a convention — a renderer has no way to emit a link.
+//
+// The output is deterministic: files in the lexical order [filepath.WalkDir]
+// walks. Empty directories are not reproduced, because a [File] names a file.
+//
+// # Symlinks
+//
+// A symlink to a regular file is copied by value, including one whose target
+// lies outside source. That is a property rather than a decision: it is what
+// the skills copier has always done, and narrowing it here would be a change in
+// behaviour smuggled into a new feature.
+//
+// A symlink to a directory, and a symlink that dangles, are both refused with
+// [ErrTreeContent] naming the link. [filepath.WalkDir] does not descend a
+// symlinked directory, so one arrives as a leaf that is not a file; following
+// it instead would mean loop detection and a containment rule, and nothing
+// needs either yet. Refusing by name is what keeps the answer diagnosable until
+// something does.
+func CopyTree(source, target string) ([]File, error) {
+	var files []File
+	err := filepath.WalkDir(source, func(current string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("read %s under %s: %w", current, source, err)
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(source, current)
+		if err != nil {
+			return fmt.Errorf("locate %s inside %s: %w", current, source, err)
+		}
+		// Stat rather than the walk entry's own type: a symlink to a regular
+		// file is copied by value, which is the point, while a symlink to a
+		// directory or to nothing is refused rather than planted as a file
+		// that is not one.
+		info, err := os.Stat(current)
+		if errors.Is(err, fs.ErrNotExist) && entry.Type()&fs.ModeSymlink != 0 {
+			link, readErr := os.Readlink(current)
+			if readErr != nil {
+				link = "a path that cannot be read"
+			}
+			return fmt.Errorf("%w: %s is a symlink to %s, which does not exist",
+				ErrTreeContent, current, link)
+		}
+		if err != nil {
+			return fmt.Errorf("stat %s inside %s: %w", current, source, err)
+		}
+		if !info.Mode().IsRegular() {
+			if entry.Type()&fs.ModeSymlink != 0 && info.IsDir() {
+				link, readErr := os.Readlink(current)
+				if readErr != nil {
+					link = "a directory"
+				}
+				return fmt.Errorf("%w: %s is a symlink to the directory %s, which cairn does not follow",
+					ErrTreeContent, current, link)
+			}
+			return fmt.Errorf("%w: %s is not a regular file", ErrTreeContent, current)
+		}
+		content, err := os.ReadFile(current)
+		if err != nil {
+			return fmt.Errorf("read %s inside %s: %w", current, source, err)
+		}
+		files = append(files, File{
+			Path:    path.Join(target, filepath.ToSlash(rel)),
+			Content: content,
+			Mode:    treeFileMode(info.Mode()),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return files, nil
 }
@@ -241,13 +291,13 @@ func checkSkillName(name string) error {
 	return nil
 }
 
-// skillFileMode maps a source file's mode onto the mode its copy is planted
+// treeFileMode maps a source file's mode onto the mode its copy is planted
 // with: executable stays executable, everything else is [DefaultFileMode]. The
 // source's exact bits are deliberately not carried through, so that a stray
-// 0600 in the source cannot plant a skill the harness cannot read.
-func skillFileMode(mode fs.FileMode) fs.FileMode {
+// 0600 in the source cannot plant a file the harness cannot read.
+func treeFileMode(mode fs.FileMode) fs.FileMode {
 	if mode.Perm()&0o111 != 0 {
-		return SkillExecFileMode
+		return ExecFileMode
 	}
 	return DefaultFileMode
 }

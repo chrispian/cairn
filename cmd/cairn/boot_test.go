@@ -71,19 +71,39 @@ func TestBootEndToEnd(t *testing.T) {
 		}
 	}
 
+	// The pointer is a template like any other: what it holds is what the
+	// profile wrote there, not a line cairn contributed.
 	if got := read(t, dir, "CLAUDE.md"); got != "@AGENTS.md\n" {
-		t.Errorf("CLAUDE.md = %q, want the one-line pointer", got)
+		t.Errorf("CLAUDE.md = %q, want the template's own text", got)
 	}
 
+	// Every block is one the profile put there, in the order the profile put
+	// them in. Cairn composes no heading, no section, and no order of its own.
 	agents := read(t, dir, "AGENTS.md")
-	for _, want := range []string{"# Engineer", "base persona", "engineer persona", scopeDir} {
+	for _, want := range []string{
+		"# engineer on claude",       // two value markers on one line
+		"base persona",               // ancestor prose the leaf restated in its own template
+		"engineer persona",           // and its own, after it
+		scopeDir,                     // a value marker mid-line, substituted
+		"## Note\nthe standing note", // a slot marker: heading and content together
+	} {
 		if !strings.Contains(agents, want) {
 			t.Errorf("AGENTS.md does not carry %q:\n%s", want, agents)
 		}
 	}
+	// A slot that resolved empty and one that failed both left nothing —
+	// heading included, because the heading came back from the slot rather
+	// than being written around the marker.
+	for _, absent := range []string{"Quiet", "Memory", "cairn:"} {
+		if strings.Contains(agents, absent) {
+			t.Errorf("AGENTS.md carries %q, which nothing filled:\n%s", absent, agents)
+		}
+	}
 
+	// The same slot, addressed by name from a second template. Nothing about
+	// boot.md is special any more: it is a destination a profile named.
 	if got := read(t, dir, "boot.md"); !strings.Contains(got, "the standing note") {
-		t.Errorf("boot.md does not carry the assembled slot:\n%s", got)
+		t.Errorf("boot.md does not carry the slot it names:\n%s", got)
 	}
 
 	// A literal files entry is planted as written; a source entry is planted
@@ -502,6 +522,15 @@ func seed(t *testing.T, ctx context.Context, dbPath, skillsDir, scopeDir string)
 		Body:     "base persona",
 		Spec: profile.Spec{
 			"settings": json.RawMessage(`{"env":{"CAIRN":"whateverTheOperatorWrote"}}`),
+			// Every file of prose in the boot directory is a template a profile
+			// declared. Cairn names none of them: the destinations, the order
+			// of the blocks, and whether an instruction file exists at all are
+			// all here.
+			"templates": json.RawMessage(`{
+				"AGENTS.md": "# <!-- cairn:value profile --> on <!-- cairn:value provider -->\n\nbase persona\n\nscope: <!-- cairn:value scope -->\n\n<!-- cairn:slot note -->\n\n<!-- cairn:slot quiet -->\n\n<!-- cairn:slot memory -->\n",
+				"CLAUDE.md": "@AGENTS.md\n",
+				"boot.md":   "<!-- cairn:slot note -->\n"
+			}`),
 			// An unknown key: carried through the cascade and ignored by every
 			// renderer, never an error.
 			"somethingCairnHasNeverHeardOf": json.RawMessage(`{"nested":[1,2,3]}`),
@@ -545,6 +574,15 @@ func seed(t *testing.T, ctx context.Context, dbPath, skillsDir, scopeDir string)
 		Body:    "engineer persona",
 		Spec: profile.Spec{
 			"subagents": json.RawMessage(`["reviewer"]`),
+			// The leaf restates the whole template, which is how closest-wins
+			// works for every other key. Ordering is the operator's: the
+			// ancestor's prose is here because this profile put it here, not
+			// because a cascade concatenated it first.
+			"templates": json.RawMessage(`{
+				"AGENTS.md": "# <!-- cairn:value profile --> on <!-- cairn:value provider -->\n\nbase persona\n\nengineer persona\n\nscope: <!-- cairn:value scope -->\n\n<!-- cairn:slot note -->\n\n<!-- cairn:slot quiet -->\n\n<!-- cairn:slot memory -->\n",
+				"CLAUDE.md": "@AGENTS.md\n",
+				"boot.md":   "<!-- cairn:slot note -->\n"
+			}`),
 			// Three slots on purpose: one that resolves, one that resolves
 			// empty, and one that fails. The last two are the pair docs/plan.md
 			// §5 says must leave nothing behind.

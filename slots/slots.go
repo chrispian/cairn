@@ -44,6 +44,11 @@ type Options struct {
 	// Provider overrides the assembled ContextProvider. Nil means the default
 	// wiring: agentcontext.NewProvider(resolvers.Default(), DropUnresolved{}).
 	Provider agentcontext.ContextProvider
+
+	// Env answers an environment variable named in a source's path or URL. Nil
+	// means the process environment. See [expandSources] for which fields are
+	// expanded and why it is only those.
+	Env Expander
 }
 
 // Assemble resolves a profile manifest's slots into the boot file's content.
@@ -52,9 +57,10 @@ type Options struct {
 // returns a nil result and a nil error. That is not a failure: it means there
 // is no boot file to write, and the caller renders none.
 //
-// Otherwise the declared slots are handed to the provider exactly as the
-// manifest carried them, in declared order. Nothing here filters, re-orders,
-// validates or normalises them; [agentcontext.ContextRequest.Validate] does
+// Otherwise the declared slots are handed to the provider in declared order,
+// with $VAR and ${VAR} expanded in the two fields that name somewhere to read
+// from — see [expandSources]. Nothing else here filters, re-orders, validates
+// or normalises them; [agentcontext.ContextRequest.Validate] does
 // that inside Assemble, and doing it twice would only let the two answers
 // drift. Errors are wrapped to name the manifest they came from and stay
 // [errors.Is]-comparable against the library's sentinels.
@@ -78,7 +84,7 @@ func Assemble(ctx context.Context, spec profile.Spec, opts Options) (*agentconte
 	}
 
 	result, err := provider.Assemble(ctx, agentcontext.ContextRequest{
-		Slots:      declared,
+		Slots:      expandSources(declared, opts.Env),
 		Limits:     opts.Limits,
 		Workdir:    opts.Workdir,
 		Provenance: opts.Provenance,

@@ -36,7 +36,12 @@ func contractInstance(t *testing.T) *Instance {
 			"tasks/T-1/task.md": map[string]any{"kind": "cmd", "cmd": map[string]any{"run": "torque task get T-1"}},
 		},
 		profile.SpecKeySubagents: []string{"scribe"},
-		"a key nothing renders":  "carried and ignored",
+		profile.SpecKeyTemplates: map[string]any{
+			AgentsFileName:  "declared elsewhere and resolved onto the instance",
+			PointerFileName: "so is this",
+			"boot.md":       "and this",
+		},
+		"a key nothing renders": "carried and ignored",
 	})
 	if err != nil {
 		t.Fatalf("encode the manifest: %v", err)
@@ -52,7 +57,16 @@ func contractInstance(t *testing.T) *Instance {
 		Spec:        testSpec(t, string(manifest)),
 	})
 	inst.Scope = "/Users/chrispian/dev/projects/cairn"
-	inst.Boot = "## repo\n\nthe assembled slot content\n"
+	// Templates reach a renderer already resolved, for the same reason files
+	// do, and carry the markers the renderer substitutes. Nothing here is a
+	// file cairn named: every destination came out of the manifest.
+	inst.Templates = map[string]string{
+		AgentsFileName:  "# <!-- cairn:value profile -->\n\n<!-- cairn:slot repo -->\n",
+		PointerFileName: "@" + AgentsFileName + "\n",
+		"boot.md":       "<!-- cairn:slot repo -->\n",
+	}
+	inst.Sections = map[string]string{"repo": "## repo\n\nthe assembled slot content"}
+	inst.Values = map[string]string{"profile": "reviewer", "scope": "/Users/chrispian/dev/projects/cairn"}
 	// Files reach a renderer already resolved: a manifest entry may name a
 	// slot source, and resolving one runs commands and makes requests, which a
 	// renderer may not do.
@@ -99,11 +113,14 @@ func TestRenderProducesTheOutputContract(t *testing.T) {
 			t.Errorf("%s was rendered with no bytes", f.Path)
 		}
 	}
-	if got := string(fileByPath(t, files, "CLAUDE.md").Content); got != PointerFileContent {
-		t.Errorf("the pointer holds %q, want %q", got, PointerFileContent)
+	if got, want := string(fileByPath(t, files, PointerFileName).Content), "@"+AgentsFileName+"\n"; got != want {
+		t.Errorf("the pointer holds %q, want the template's own text %q", got, want)
 	}
-	if got := string(fileByPath(t, files, "boot.md").Content); got != inst.Boot {
-		t.Errorf("the boot file holds %q, want the assembled content %q", got, inst.Boot)
+	// The instruction file is a template like any other: a value marker became
+	// the profile id and a slot marker became that slot's whole section.
+	if got, want := string(fileByPath(t, files, AgentsFileName).Content),
+		"# reviewer\n\n## repo\n\nthe assembled slot content\n"; got != want {
+		t.Errorf("the instruction file holds\n%q\nwant\n%q", got, want)
 	}
 	stored, declared := inst.Profile.Spec.Settings()
 	if !declared {
@@ -189,8 +206,8 @@ func TestRenderersAreRegisteredOnce(t *testing.T) {
 		}
 		seen[renderer.Artifact] = struct{}{}
 	}
-	if len(seen) != 8 {
-		t.Errorf("%d artifacts are registered, want the 8 of the output contract: %v",
+	if len(seen) != 7 {
+		t.Errorf("%d artifacts are registered, want the 7 of the output contract: %v",
 			len(seen), seen)
 	}
 }

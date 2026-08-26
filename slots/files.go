@@ -41,7 +41,19 @@ var ErrFileSource = errors.New("unresolved file source")
 // A manifest that declares no files, or only literals, resolves nothing and
 // makes no calls.
 func ResolveFiles(ctx context.Context, spec profile.Spec, opts Options) (map[string]string, error) {
-	declared, err := spec.Files()
+	return ResolveEntries(ctx, spec, profile.SpecKeyFiles, opts)
+}
+
+// ResolveEntries is [ResolveFiles] over any manifest key holding a
+// path-to-entry map.
+//
+// Two keys hold that shape: spec.files, whose values are planted verbatim, and
+// spec.templates, whose values have their markers substituted first. What is
+// resolved is the same in both — a literal passes through, a source is
+// resolved — so resolving them through one function is what keeps a template
+// source and a file source from ever behaving differently.
+func ResolveEntries(ctx context.Context, spec profile.Spec, key string, opts Options) (map[string]string, error) {
+	declared, err := entriesOf(spec, key)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +77,7 @@ func ResolveFiles(ctx context.Context, spec profile.Spec, opts Options) (map[str
 	// same entry twice; a map has no order and this one reaches a resolver.
 	slices.Sort(sourced)
 
-	if err := checkFileKinds(spec[profile.SpecKeyFiles], declared, sourced); err != nil {
+	if err := checkEntryKinds(spec[key], key, declared, sourced); err != nil {
 		return nil, err
 	}
 
@@ -88,13 +100,13 @@ func ResolveFiles(ctx context.Context, spec profile.Spec, opts Options) (map[str
 	for _, rel := range sourced {
 		req.Slots = append(req.Slots, agentcontext.SlotSpec{
 			Name:   rel,
-			Source: *declared[rel].Source,
+			Source: expandSource(*declared[rel].Source, opts.Env),
 		})
 	}
 
 	result, err := provider.Assemble(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("resolve profile manifest files: %w", err)
+		return nil, fmt.Errorf("resolve profile manifest %s: %w", key, err)
 	}
 	// Every failure is on its own result, because no slot is required. That is
 	// what lets the error name the path: the library records the resolver's
@@ -103,7 +115,7 @@ func ResolveFiles(ctx context.Context, spec profile.Spec, opts Options) (map[str
 		for _, s := range result.Slots {
 			if s.Err != nil {
 				return nil, fmt.Errorf("%w: spec.%s entry %q: %w",
-					ErrFileSource, profile.SpecKeyFiles, s.Name, s.Err)
+					ErrFileSource, key, s.Name, s.Err)
 			}
 			out[s.Name] = s.Content
 		}
@@ -115,21 +127,33 @@ func ResolveFiles(ctx context.Context, spec profile.Spec, opts Options) (map[str
 	for _, rel := range sourced {
 		if _, resolved := out[rel]; !resolved {
 			return nil, fmt.Errorf("%w: spec.%s entry %q: the provider returned no result for it",
-				ErrFileSource, profile.SpecKeyFiles, rel)
+				ErrFileSource, key, rel)
 		}
 	}
 	return out, nil
 }
 
-// checkFileKinds reports a files entry whose source kind is missing or is not
-// one the library recognizes, naming the path it would have been planted at.
+// entriesOf reads the path-to-entry map under key.
+func entriesOf(spec profile.Spec, key string) (map[string]profile.FileEntry, error) {
+	switch key {
+	case profile.SpecKeyFiles:
+		return spec.Files()
+	case profile.SpecKeyTemplates:
+		return spec.Templates()
+	default:
+		return nil, fmt.Errorf("%w: spec.%s does not hold path-to-entry values", ErrFileSource, key)
+	}
+}
+
+// checkEntryKinds reports an entry whose source kind is missing or is not one
+// the library recognizes, naming the path it would have been planted at.
 //
 // It is the slot check of [checkKinds] asked of the other place a
 // [agentcontext.SlotSource] is written, for the same reason: the YAML habit
 // that spells the kind key `type:` does not stop at the slots key, and an
 // operator who moves a working source into a files entry carries the habit
 // with it.
-func checkFileKinds(raw json.RawMessage, declared map[string]profile.FileEntry, sourced []string) error {
+func checkEntryKinds(raw json.RawMessage, key string, declared map[string]profile.FileEntry, sourced []string) error {
 	// A manifest that will not re-decode is not this check's problem: it
 	// decoded once already to produce declared, and the kind check below still
 	// runs without the raw entry objects.
@@ -140,7 +164,7 @@ func checkFileKinds(raw json.RawMessage, declared map[string]profile.FileEntry, 
 		var source map[string]json.RawMessage
 		_ = json.Unmarshal(entries[rel], &source)
 
-		named := fmt.Sprintf("spec.%s entry %q", profile.SpecKeyFiles, rel)
+		named := fmt.Sprintf("spec.%s entry %q", key, rel)
 		if err := kindDiagnostic(named, declared[rel].Source.Kind, source); err != nil {
 			return err
 		}

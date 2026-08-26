@@ -13,7 +13,11 @@ NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Where your skill packages live: one directory per skill, each holding a
 # SKILL.md. Cairn copies whole trees, so references/ and scripts come along.
-SKILLS_DIR="${SKILLS_DIR:-$HOME/dev/chrispian/agent-setup/skills}"
+SKILLS_DIR="${SKILLS_DIR:-$HOME/.config/agents/skills}"
+
+# Where your templates live. Cairn ships none: a profile that declares no
+# template renders no prose at all.
+TEMPLATES_DIR="${TEMPLATES_DIR:-$HOME/.config/agents/templates}"
 
 mkdir -p "$(dirname "$DB")"
 
@@ -35,22 +39,30 @@ SQL
 # ---------------------------------------------------------------------------
 # base — abstract, the root of the cascade and the profile `install` renders.
 #
-# The body is IDENTITY AND POINTERS, not rules. Keep it short: every line here
-# lands in every session's context whether or not it is relevant.
+# The prose is a TEMPLATE, not a body column. Cairn substitutes markers in it
+# and writes it where the profile said; it composes no heading, no section and
+# no order of its own, and it renders nothing for a profile that declares no
+# template.
+#
+# CLAUDE.md is a template too. `@AGENTS.md` is the harness's own import syntax
+# and cairn leaves it alone — markers are `<!-- cairn:... -->` precisely so the
+# two cannot collide.
 # ---------------------------------------------------------------------------
 sqlite3 "$DB" <<SQL
 INSERT OR REPLACE INTO profiles
   (id, extends, abstract, name, description, provider, model, body, spec, created_at, updated_at)
 VALUES (
   'base', '', 1, 'Base', 'The floor every profile extends.', 'claude', '',
-  'You are working with Chrispian on his machine.
-
-Conventions live in the project you are scoped to — read its own AGENTS.md
-before you change anything in it.',
+  '',
   json('{
     "skills_dir": "$SKILLS_DIR",
     "settings": {
       "permissions": { "defaultMode": "acceptEdits" }
+    },
+    "templates": {
+      "AGENTS.md": { "kind": "static_file",
+                     "static_file": { "path": "$TEMPLATES_DIR/base.md" } },
+      "CLAUDE.md": "@AGENTS.md\n"
     }
   }'),
   '$NOW', '$NOW');
@@ -67,6 +79,14 @@ SQL
 # "subagents" names other profiles. Each renders .claude/agents/<id>.md from
 # THAT profile's own spec.subagent — see reviewer below.
 #
+# "templates" is closest-wins like every other key, so a leaf that wants a
+# different shape restates the whole map. Ordering is yours: nothing puts an
+# ancestor's prose first unless the template does.
+#
+# "trees" copies a directory whole. A single file rides "files" with a
+# static_file source; do NOT reach for a static_dir slot, which concatenates
+# what it finds into one string.
+#
 # Note the `|| true`. A slot that fails is survivable and Cairn carries on; a
 # FILE source that fails REFUSES THE BOOT, because a missing file is a hole at
 # a path the profile promised and nothing downstream notices. Guard anything
@@ -77,10 +97,18 @@ INSERT OR REPLACE INTO profiles
   (id, extends, abstract, name, description, provider, model, body, spec, created_at, updated_at)
 VALUES (
   'engineer', 'base', 0, 'Engineer', 'Implements one task end to end.', 'claude', '',
-  'You implement one task end to end.',
+  '',
   json('{
     "skills": ["capture-decision"],
     "subagents": ["reviewer"],
+    "templates": {
+      "AGENTS.md": { "kind": "static_file",
+                     "static_file": { "path": "$TEMPLATES_DIR/engineer.md" } },
+      "CLAUDE.md": "@AGENTS.md\n"
+    },
+    "trees": {
+      "docs/engineering": "$HOME/.config/agents/docs/engineering"
+    },
     "slots": [
       { "name": "git",
         "section": "## Repository",
@@ -143,6 +171,46 @@ INSERT OR REPLACE INTO bindings (name, profile_id, scope) VALUES
   ('eng',        'engineer', 'cairn'),
   ('eng-nanite', 'engineer', 'nanite');
 SQL
+
+# ---------------------------------------------------------------------------
+# The templates the profiles above name. Cairn ships none of these; they are
+# the operator's, and this is what one looks like.
+#
+# A marker is `<!-- cairn:slot NAME -->` for a slot the manifest declared, or
+# `<!-- cairn:value NAME -->` for one of: binding, model, profile, provider,
+# scope, session. A slot that fails or resolves empty leaves NOTHING — its
+# heading comes back with it, which is why the heading is on the slot and not
+# in the template.
+# ---------------------------------------------------------------------------
+mkdir -p "$TEMPLATES_DIR"
+
+cat > "$TEMPLATES_DIR/base.md" <<'TEMPLATE'
+# <!-- cairn:value profile -->
+
+You are working with Chrispian on his machine.
+
+Conventions live in the project you are scoped to — read its own AGENTS.md
+before you change anything in it.
+
+- scope: <!-- cairn:value scope -->
+- session: <!-- cairn:value session -->
+TEMPLATE
+
+cat > "$TEMPLATES_DIR/engineer.md" <<'TEMPLATE'
+# <!-- cairn:value profile -->
+
+You implement one task end to end.
+
+Conventions live in the project you are scoped to — read its own AGENTS.md
+before you change anything in it.
+
+- scope: <!-- cairn:value scope -->
+- session: <!-- cairn:value session -->
+
+<!-- cairn:slot git -->
+
+<!-- cairn:slot recent -->
+TEMPLATE
 
 echo "seeded $DB"
 sqlite3 -header -column "$DB" \

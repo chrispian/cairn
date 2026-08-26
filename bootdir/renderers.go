@@ -1,26 +1,27 @@
 package bootdir
 
+import "github.com/chrispian/cairn/profile"
+
 // Renderers returns the artifact renderers a boot directory is rendered from,
 // in render order.
 //
 // The order is the order files appear in a rendering, and it is also the order
-// a failure is reported in, so the instruction file comes first: a profile
-// with a broken manifest should fail on the manifest, not on a skill.
+// a failure is reported in, so the templates come first: a profile with a
+// broken marker should fail on the marker, not on a skill.
 //
-// Each Artifact is the name of one line of the output contract, which is what
-// a diagnostic quotes. It is a label and never a path: the path an artifact is
-// written to comes from the instance's [Layout], four of whose artifacts
-// belong to the provider rather than to cairn, while the skills renderer emits
-// a tree and the subagents and files renderers each emit many files.
+// Each Artifact is the name of one manifest key or one line of the output
+// contract, which is what a diagnostic quotes. It is a label and never a path.
+// Two of the artifacts take their paths from the provider's BootDirSpec; the
+// rest take them from the manifest, and the templates, skills, subagents,
+// trees and files renderers each emit many files.
 func Renderers() []Renderer {
 	return []Renderer{
-		{Artifact: AgentsFileName, Render: RenderAgents},
-		{Artifact: "CLAUDE.md", Render: RenderPointer},
-		{Artifact: "boot.md", Render: renderBoot},
+		{Artifact: profile.SpecKeyTemplates, Render: renderTemplates},
 		{Artifact: ".mcp.json", Render: renderMCP},
 		{Artifact: ".claude/settings.json", Render: RenderSettings},
 		{Artifact: SkillsDirName, Render: RenderSkills},
 		{Artifact: SubagentsDirName, Render: renderSubagents},
-		{Artifact: "files", Render: renderFiles},
+		{Artifact: profile.SpecKeyTrees, Render: renderTrees},
+		{Artifact: profile.SpecKeyFiles, Render: renderFiles},
 	}
 }

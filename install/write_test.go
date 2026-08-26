@@ -111,7 +111,7 @@ func TestInstallWritesModesPastTheUmask(t *testing.T) {
 		".claude/CLAUDE.md":                   bootdir.DefaultFileMode,
 		".claude/settings.json":               bootdir.DefaultFileMode,
 		".claude/skills/code-review/SKILL.md": bootdir.DefaultFileMode,
-		".claude/skills/code-review/run.sh":   bootdir.SkillExecFileMode,
+		".claude/skills/code-review/run.sh":   bootdir.ExecFileMode,
 	} {
 		path, err := lay.Root.Path(rel)
 		if err != nil {
@@ -167,8 +167,8 @@ func TestInstallGeneratedMarkerSurvivesToDisk(t *testing.T) {
 		t.Errorf("the installed .claude/AGENTS.md opens\n%s\nwant it to open with\n%s", content, want)
 	}
 	pointer := string(installed(t, lay.Root, ".claude/CLAUDE.md"))
-	if pointer != bootdir.PointerFileContent {
-		t.Errorf("the installed .claude/CLAUDE.md holds %q, want %q", pointer, bootdir.PointerFileContent)
+	if want := "@" + bootdir.AgentsFileName + "\n"; pointer != want {
+		t.Errorf("the installed .claude/CLAUDE.md holds %q, want the template's own text %q", pointer, want)
 	}
 }
 
@@ -347,7 +347,9 @@ func TestInstallOverwritesItsOwnOutput(t *testing.T) {
 	if _, err := Install(lay); err != nil {
 		t.Fatalf("the first Install: %v", err)
 	}
-	lay.Profile.Body = "second"
+	// The template is what the instruction file is rendered from now, so
+	// changing the profile means changing that.
+	lay.Templates[bootdir.AgentsFileName] = "second\n"
 	if _, err := Install(lay); err != nil {
 		t.Fatalf("the second Install: %v", err)
 	}
@@ -450,8 +452,8 @@ func TestWriteModeSubstitutesTheDefault(t *testing.T) {
 	if got := writeMode(File{}); got != bootdir.DefaultFileMode {
 		t.Errorf("writeMode of the zero mode = %v, want %v", got, bootdir.DefaultFileMode)
 	}
-	if got := writeMode(File{Mode: bootdir.SkillExecFileMode}); got != bootdir.SkillExecFileMode {
-		t.Errorf("writeMode of %v = %v", bootdir.SkillExecFileMode, got)
+	if got := writeMode(File{Mode: bootdir.ExecFileMode}); got != bootdir.ExecFileMode {
+		t.Errorf("writeMode of %v = %v", bootdir.ExecFileMode, got)
 	}
 }
 

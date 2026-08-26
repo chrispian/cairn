@@ -58,7 +58,7 @@ to end exactly that; Cairn was becoming the fourth.
 
 | Library | What Cairn takes |
 |---|---|
-| `agentkit/agentcontext` + `.../resolvers` | The entire slot mechanism. 8 slot kinds (`static_file`, `static_dir`, `inline`, `cmd`, `http_text`, `http_json`, `role_summary`, `skill_index`), 7 shipped resolvers, per-slot timeouts and headers, byte/token budgets, per-slot provenance, a determinism contract, and non-required-slot failure that records the error instead of blocking. Entry point: `DefaultProvider.Assemble(ctx, ContextRequest) (*ContextResult, error)`. `ContextResult.Rendered` becomes `boot.md`. |
+| `agentkit/agentcontext` + `.../resolvers` | The entire slot mechanism. 8 slot kinds (`static_file`, `static_dir`, `inline`, `cmd`, `http_text`, `http_json`, `role_summary`, `skill_index`), 7 shipped resolvers, per-slot timeouts and headers, byte/token budgets, per-slot provenance, a determinism contract, and non-required-slot failure that records the error instead of blocking. Entry point: `DefaultProvider.Assemble(ctx, ContextRequest) (*ContextResult, error)`. Cairn renders each `SlotResult` on its own, so a template can place them; `ContextResult.Rendered` is discarded. |
 | `agentkit/agentlaunch` | Vocabulary, not pipeline: `MCPServerSpec{Name, Command, Args, Env}` for MCP server definitions, `NativeFile{Kind: raw, RelPath, Content, Mode}` for arbitrary planted files, and `ValidateBootDirRelPath` as a second path-safety opinion. |
 | `go-agent-wrapper/plant` | `plant.Planter` / `plant.Spec` as the write boundary, so Cairn speaks the same planting contract as Nanite. |
 | `go-providers/provider` | Per-provider layout convention via `BootDirSpec`: which files, at which relative paths, cwd preference, the `--add-dir` argument pattern, and per-file modes (codex `auth.json` is 0600). This is also how codex and opencode arrive without inventing their layouts. |
@@ -101,7 +101,16 @@ under every spelling, and a conflict error for one profile reached through two
 dispatchers. How agents relate to each other is not Cairn's concern, and Cairn
 has no `tools` concept to intersect with. What survives is the artifact and
 nothing else: a profile names other profiles and each is rendered from its own
-declaration — see §5. Instance identity and liveness
+declaration — see §5. The four-block instruction file — a fixed pipeline of title, description,
+cascaded body and a `## Profile` block of scalars, with no way to reorder it,
+omit a block, or put anything resolved-at-boot inside it. It forecloses the
+thing Cairn exists for: a profile naming Torque, Tesseract and `hollis-labs`
+paths is right for one slice of the operator's work and wrong for a client
+repository, and there was no way to get a different shape without a different
+Cairn. It also silently answered questions that are the operator's — whether a
+`## Profile` block exists at all, and whether an ancestor's prose lands before a
+role's or after it. See §5: prose is a template now, and `body` is one value
+among several rather than a privileged column. Instance identity and liveness
 (`internal/identity`, 885 lines) — that is a registry function. Override
 discipline (`overrides/`, 2,235 lines) — judging whether a correction is
 well-formed is content review; if scoped content needs planting it rides the
@@ -155,12 +164,17 @@ the keys it renders. Anything else is carried and ignored.
 
 ```jsonc
 {
-  "slots":     [ /* agentcontext.SlotSpec */ ],
+  "templates": {
+    "AGENTS.md": { "kind": "static_file", "static_file": { "path": "~/.config/agents/templates/base.md" } },
+    "CLAUDE.md": "@AGENTS.md\n"
+  },
+  "slots":     [ /* agentcontext.SlotSpec — addressed by name from a template */ ],
   "mcp":       [ /* agentlaunch.MCPServerSpec */ ],
   "skills":    [ "code-review", "capture-decision" ],
   "settings":  { /* verbatim into .claude/settings.json */ },
   "subagents": [ "reviewer", "worker" ],   // profile ids; each renders a definition
   "subagent":  { /* this profile's own definition, when another names it */ },
+  "trees":     { "docs/engineering": "~/.config/agents/docs/engineering" },
   "files":    {
     "rel/path.md":             "literal content",
     "tasks/current/task.md":   { "kind": "cmd", "cmd": { "run": "torque task get $TASK --format md" } },
@@ -169,18 +183,29 @@ the keys it renders. Anything else is carried and ignored.
 }
 ```
 
+A `templates` value takes the same two shapes a `files` value does, and for the
+same reason: a template is text, and text a profile already knows is a literal
+while text that lives on disk is a source. What separates the two keys is what
+happens afterwards — a template's markers are substituted, a file's bytes are
+not.
+
+A `trees` value is a source **directory**, copied whole. Deliberately not a
+`static_dir` slot source: that resolver concatenates the files it finds into one
+string, which is right for a slot and destroys a directory. A single file rides
+`files` with a `static_file` source.
+
 A `files` value is **either a literal string or an `agentcontext.SlotSource`**,
 resolved by the same resolvers `slots` uses. This is what gives parity with
 Torque, which plants a task bundle — `tasks/<id>/task.md`, `task.json`, and a
 per-task `process.md` — all rendered from live state, not from static profile
-content. Slots render into `boot.md`; `files` renders the same sources to
-arbitrary paths. A value that is neither of those two shapes is refused, by
+content. Slots are addressed by name from a template; `files` renders the same
+sources to arbitrary paths, unsubstituted. A value that is neither of those two shapes is refused, by
 path — a silent coercion would plant bytes nobody wrote at a path a profile
 promised.
 
 **A file source that fails fails the boot**, which is deliberately the opposite
-of a slot. A slot that does not resolve leaves a section out of `boot.md` and
-the agent asks its tools instead; a file that does not resolve leaves a hole at
+of a slot. A slot that does not resolve leaves a section out of the template
+that named it and the agent asks its tools instead; a file that does not resolve leaves a hole at
 a path the profile promised, and whatever reads that path cannot tell "never
 declared" from "the command that fills it fell over". Sources resolve before
 any file is rendered, so a refusal writes nothing at all rather than half a
@@ -208,6 +233,15 @@ provider renderer if it knows it, and ignored otherwise. It is never an error.
 and an explicit null is presence — it wins with an empty value rather than
 falling through to the ancestor.
 
+`$VAR` and `${VAR}` are expanded in the two source fields that name somewhere
+to read from — a static path and an HTTP URL — so a profile can say where a
+service lives without hardcoding a host that differs between machines and
+without Cairn growing a second configuration file to hold one. A `cmd`'s command
+line is deliberately **not** expanded: letting the environment rewrite what runs
+is a larger promise than "say where to read from", and a command already runs
+through a shell that does its own. An unset name expands to nothing, as in every
+shell.
+
 `spec` is JSON, so slot entries use `agentcontext.SlotSpec`'s **JSON** tags.
 `SlotSource.Kind` is `json:"kind"` and `yaml:"type"` — a slot copied out of a
 Tether boot profile will say `type:` and fail with "unknown slot kind". Write
@@ -232,15 +266,21 @@ The rest of the prior scope validation — rejecting `/etc`, `/usr`, `/var`,
 
 ```
 <boot-dir>/
-  AGENTS.md              composed body + rendered sections
-  CLAUDE.md              @AGENTS.md
-  boot.md                ← agentcontext assembles spec.slots
+  <spec.templates>       ← text with markers, substituted; any path, any number
   .mcp.json              ← spec.mcp
   .claude/settings.json  ← spec.settings, verbatim
   .claude/skills/        ← spec.skills, directory trees
   .claude/agents/<id>.md ← spec.subagents, one per named profile
+  <spec.trees>           ← source directories, copied whole
   <spec.files>           ← arbitrary paths
 ```
+
+**No file in that list is one Cairn names.** `AGENTS.md`, `CLAUDE.md` and
+`boot.md` are template destinations a profile happens to declare, and a profile
+is free to declare none of them, all three, or fifty others. One template with a
+single inline slot holding a whole document is valid; so is a template per
+section. Whether one of them is a shared base is the operator's convention and
+invisible to Cairn.
 
 Location: `~/dev/agent-os/runtime/boot/<binding-or-profile>/<session>/`.
 Gitignored. Retention is the caller's. `cairn boot` prints the path and exits;
@@ -256,12 +296,83 @@ all** — no heading, no marker. `agentcontext`'s `DefaultRenderer` emits a bare
 heading for both; Cairn's renderer omits the section entirely, matching Tether's
 template behaviour.
 
+That rule is why **a slot's heading belongs to the slot, not to the template**.
+`SlotSpec.Section` already carries it, and a marker substitutes the heading and
+the content together or nothing at all. A template holding `## Memory` above the
+marker would keep that heading when the slot failed — a section with nothing
+under it, which is the artifact this rule exists to prevent. Tether hit exactly
+this and paid for it in `{{- if hasSlot "recap" }}` around every section of its
+default template; keeping the heading on the slot is what buys the same
+behaviour with no conditionals and therefore no template language.
+
 An earlier revision had a failed slot render `**Unavailable.**` plus the error,
 to distinguish it from an empty one. That was wrong twice over: it is Cairn
 authoring prose into the agent's context, which §1 forbids, and it is
-unnecessary now that agents pull current truth from tools rather than from
-`boot.md`. An absent section is correct — an agent that needs the data queries
+unnecessary now that agents pull current truth from tools rather than from a
+planted snapshot. An absent section is correct — an agent that needs the data queries
 the tool. **The failure still reports on stderr, to the operator.**
+
+### Templates
+
+A **template** is text with markers. A **slot** is a marker plus a declared
+source. Cairn finds markers, substitutes, and writes. It never reads what came
+back.
+
+Resolving a marker is not interpreting content: deciding what an instruction
+*means* is out of scope, and finding a marker and substituting a declared source
+is mechanical. Cairn already did the second when `boot.md` was the only place a
+slot could land.
+
+Two verbs, and nothing else:
+
+```markdown
+<!-- cairn:slot memory -->     one of spec.slots, by name
+<!-- cairn:value scope -->     one of: binding, model, profile, provider, scope, session
+```
+
+The syntax is an HTML comment for four reasons. It is invisible in rendered
+markdown and unmistakable in source. It is already this repository's comment
+idiom — `install`'s generated-file marker is one. A harness resolving `@name`
+imports strips HTML comments before it looks for them, so a marker can never be
+read as an import — which matters, because `@` is the one syntax a template must
+be able to pass through untouched: `CLAUDE.md` holding `@AGENTS.md` is how the
+harness is told where to look. And there is nowhere in it to put a conditional,
+which is the property that keeps a template a substitution target rather than a
+program.
+
+**Instance values are `inline` slots the composition root supplies**, under a
+verb of their own rather than a reserved prefix inside the slot namespace. The
+two categories genuinely differ — one has a source the operator declared, the
+other does not — and a separate verb keeps the slot namespace entirely the
+operator's and makes a seventh value later a non-event. The boot directory's own
+path and the operator's home are deliberately absent: both are absolute paths
+into one machine rather than facts about a profile, and the first is the
+directory the file is being written into.
+
+**No default template.** Cairn ships no profiles and no skills; a default
+template is content by the same rule. A destination with no template declared is
+not rendered.
+
+**This reverses a documented rule.** The instruction file used to be rendered
+always, empty if a profile declared nothing, on the reasoning that a boot
+directory missing one looks like a render that stopped halfway. That was safe
+only while Cairn composed the file itself. It no longer does, so a profile that
+declares no template gets no prose — and the pointer file goes with it, because
+a hardcoded `@AGENTS.md` aimed at a file that is not rendered resolves to
+nothing, silently, with no diagnostic from the harness at all. Both are
+templates now, and a pointer a profile declares is one a profile can keep true.
+
+**A marker that filled nothing is omitted, and reported on stderr.** That covers
+both a slot that resolved to nothing and a slot the manifest never declared. The
+report exists so an operator can diagnose a missing block, not so Cairn can
+judge the result. A marker in Cairn's own namespace that Cairn cannot act on —
+an unknown verb, a missing name, a value that is not one of the six — is a
+**refusal**, because leaving it would plant the marker's own text in a file an
+agent reads.
+
+Substitution does not look at where in a document a marker sits: one inside a
+fenced code block is substituted like any other, so a template documenting this
+syntax has to avoid writing a live marker.
 
 ### Subagent definitions are rendered, not computed
 
@@ -322,27 +433,42 @@ manifest spelled it with, and the operator's key order is kept.
 
 ```
 ~/.claude/
-  AGENTS.md              composed body + rendered sections, + a provenance comment
-  CLAUDE.md              @AGENTS.md, byte-exactly, no marker
+  AGENTS.md              ← the template declared for AGENTS.md, + a provenance comment
+  CLAUDE.md              ← the template declared for CLAUDE.md, no marker
   settings.json          ← spec.settings, verbatim, no marker (JSON has no comments)
   skills/                ← spec.skills, directory trees
 ```
 
-Four artifacts are deliberately absent:
+**Templates are rendered here, but only those two destinations.** A template
+free to name any path in the operator's home would cost `--check` its whole
+point: the claim set comes from the renderer registration rather than from a
+render, which is what lets it report a file left behind by a profile that
+stopped declaring one, and a claim set derived from the profile being checked
+cannot see that case at all. A template declared for any other destination is a
+boot-directory artifact and is not rendered here. `boot` has no such constraint:
+it creates the directory fresh and refuses to plant if it already exists.
 
-- **No `boot.md`.** Slots resolve at materialization; this layer is not
-  materialized per session.
+**A template shared between the layers renders differently in each**, because
+this layer resolves no slots. Its slot markers substitute nothing here, and
+their sections appear only in a boot directory. That is the same rule the boot
+file followed when it was the only place a slot could land; it is visible now
+because one template can serve both.
+
+Four things are deliberately absent:
+
+- **No slot sections**, per the paragraph above.
 - **No `.mcp.json`.** §6 drops the audit, and user-level MCP configuration is
   not a file in that directory.
-- **No `spec.subagents`.** Same reason as `spec.files`, plus one of its own:
-  `~/.claude/agents/` is a directory the operator fills by hand, and claiming
-  it would put every definition Cairn did not render into the orphan report.
-- **No `spec.files`.** `boot` writes into a directory Cairn creates fresh and
-  refuses if it already exists; `install` writes into a directory that already
-  exists and is full of the operator's live state. Arbitrary path→content
-  planting is safe in the first and not the second — and rendering it here
-  would make Cairn claim ownership of paths in the operator's home for the
-  orphan report below.
+- **No `spec.subagents`.** Same reason as the arbitrary paths below, plus one of
+  its own: `~/.claude/agents/` is a directory the operator fills by hand, and
+  claiming it would put every definition Cairn did not render into the orphan
+  report.
+- **No `spec.files` and no `spec.trees`.** `boot` writes into a directory Cairn
+  creates fresh and refuses if it already exists; `install` writes into a
+  directory that already exists and is full of the operator's live state.
+  Arbitrary path→content planting is safe in the first and not the second — and
+  rendering it here would make Cairn claim ownership of paths in the operator's
+  home for the orphan report below.
 
 Both layers run the **same renderers**. A second renderer per artifact is two
 renderings that drift; the prior tree carried them and they did.
@@ -442,12 +568,13 @@ reasoning instead of by looking.
    cycles, closest-wins merge over columns and `spec` keys, concatenate `body`.
    `Resolve` carries the `abstract` flag rather than acting on it — `install`
    legitimately resolves an abstract profile. `cairn boot` is what refuses one.
-4. **Render** — `[]bootdir.File` from a resolved profile: `AGENTS.md`,
-   `CLAUDE.md`, `.mcp.json`, `.claude/settings.json`, skills, subagent
-   definitions, `spec.files`. Path validation and duplicate-path detection. No
-   filesystem writes.
+4. **Render** — `[]bootdir.File` from a resolved profile: templates with their
+   markers substituted, `.mcp.json`, `.claude/settings.json`, skills, subagent
+   definitions, trees, `spec.files`. Path validation and duplicate-path
+   detection. No filesystem writes.
 5. **Slots** — `spec.slots` → `agentcontext.ContextRequest` →
-   `DefaultProvider.Assemble` → `boot.md`. Wire `resolvers.Default()`; add
+   `DefaultProvider.Assemble` → one rendered section per slot, addressed by
+   name from a template. Wire `resolvers.Default()`; add
    `resolvers.WithSkillIndex` only if a profile needs it.
 6. **Plant** — `writeTree` ported. Scope containment check. `cairn boot` end
    to end, printing a path. **This is the MVP gate.**

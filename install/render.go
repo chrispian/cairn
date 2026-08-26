@@ -121,19 +121,26 @@ func Render(lay *Layer) ([]File, error) {
 // run over: the layer's resolved profile, the operator's home, and a layout
 // naming the installed paths.
 //
-// Dir, Scope and Boot are deliberately zero, and each for its own reason. The
-// installed layer is not a materialized instance — it is written beneath a
-// root rather than into a directory of its own, so there is no Dir. Nothing
-// has declared a scope at install time, because a scope belongs to one session
-// and this layer is read by all of them. And Boot is empty because slots are
-// resolved when an instance is materialized: rendering them here would run the
-// operator's commands and requests at install time and freeze one moment's
-// answers into every later session.
+// Dir, Scope and Sections are deliberately zero, and each for its own reason.
+// The installed layer is not a materialized instance — it is written beneath a
+// root rather than into a directory of its own, so there is no Dir. Nothing has
+// declared a scope at install time, because a scope belongs to one session and
+// this layer is read by all of them.
+//
+// Sections is empty because slots are resolved when an instance is
+// materialized: resolving them here would run the operator's commands and
+// requests at install time and freeze one moment's answers into every later
+// session. **A template shared between the two layers therefore renders with
+// its slot sections in a boot directory and without them here**, which is the
+// same rule the boot file followed when it was the only place a slot could
+// land, now visible because one template can serve both.
 func layerInstance(lay *Layer, layout bootdir.Layout) *bootdir.Instance {
 	return &bootdir.Instance{
-		Layout:  layout,
-		Profile: lay.Profile,
-		Home:    lay.Home,
+		Layout:    layout,
+		Profile:   lay.Profile,
+		Home:      lay.Home,
+		Templates: lay.Templates,
+		Values:    lay.Values,
 	}
 }
 

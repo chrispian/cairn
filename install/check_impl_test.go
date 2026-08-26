@@ -46,7 +46,8 @@ func newCheckFixture(t *testing.T, skills ...string) checkFixture {
 		t.Fatalf("NewRoot(t.TempDir()): %v", err)
 	}
 	manifest := map[string]any{
-		"settings": map[string]any{"model": "opus"},
+		"settings":  map[string]any{"model": "opus"},
+		"templates": map[string]any{"AGENTS.md": "declared, and resolved onto the layer"},
 	}
 	if len(skills) > 0 {
 		manifest["skills"] = skills
@@ -63,6 +64,13 @@ func newCheckFixture(t *testing.T, skills ...string) checkFixture {
 			Spec:     checkSpec(t, manifest),
 		},
 		Home: t.TempDir(),
+		// Resolved template text and instance values, as the composition root
+		// supplies them.
+		Templates: map[string]string{
+			bootdir.AgentsFileName:  "# <!-- cairn:value profile -->\n\nRead the profile.\n",
+			bootdir.PointerFileName: "@" + bootdir.AgentsFileName + "\n",
+		},
+		Values: map[string]string{"profile": "base"},
 	}
 	files, err := install.Render(lay)
 	if err != nil {

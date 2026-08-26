@@ -2,9 +2,11 @@ package slots
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/chrispian/cairn/profile"
 	"github.com/hollis-labs/agentkit/agentcontext"
 )
 
@@ -61,6 +63,45 @@ func (d DropUnresolved) Render(slots []agentcontext.SlotResult, limits agentcont
 
 // Ensure DropUnresolved satisfies the renderer contract at compile time.
 var _ agentcontext.Renderer = DropUnresolved{}
+
+// ErrSlotName reports two slots declared under one name. A template addresses
+// a slot by name, so a repeated one names two sections and cairn cannot say
+// which the marker meant.
+var ErrSlotName = errors.New("duplicate slot name")
+
+// Sections returns each slot's rendered section, keyed by slot name: the
+// heading and the content together, or the empty string for a slot that failed
+// to resolve or resolved to nothing.
+//
+// It is [DropUnresolved] applied one slot at a time, and it is what moves plan
+// §5's rule into a world where the heading lives in a template rather than in a
+// renderer. A slot that produced nothing renders nothing at all — and because
+// its heading comes back from here rather than being written around the marker,
+// a template cannot be left holding a heading with nothing under it.
+//
+// A nil result returns an empty map, so a template's markers substitute away to
+// nothing rather than the caller having to check.
+func Sections(res *agentcontext.ContextResult) (map[string]string, error) {
+	out := make(map[string]string)
+	if res == nil {
+		return out, nil
+	}
+	renderer := DropUnresolved{}
+	for _, slot := range res.Slots {
+		if _, taken := out[slot.Name]; taken {
+			return nil, fmt.Errorf("%w: spec.%s declares %q twice",
+				ErrSlotName, profile.SpecKeySlots, slot.Name)
+		}
+		// One slot at a time, through the same renderer the assembled output
+		// went through, so a section is formatted identically whichever of the
+		// two produced it. Limits are the caller's and were applied to the
+		// assembly; a per-section budget would truncate to a byte count nobody
+		// declared.
+		section, _ := renderer.Render([]agentcontext.SlotResult{slot}, agentcontext.Limits{})
+		out[slot.Name] = strings.TrimRight(section, "\n")
+	}
+	return out, nil
+}
 
 // wiredKinds are the slot kinds a manifest may declare and expect to resolve,
 // in the order a diagnostic lists them.

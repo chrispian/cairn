@@ -81,6 +81,15 @@ const (
 	// SpecKeyFiles maps boot-directory-relative paths to their contents.
 	SpecKeyFiles = "files"
 
+	// SpecKeyTemplates maps boot-directory-relative paths to the template
+	// text rendered into them. A template's value takes the same two shapes a
+	// files value does — a literal, or a source resolved at materialization.
+	SpecKeyTemplates = "templates"
+
+	// SpecKeyTrees maps boot-directory-relative paths to the source directory
+	// copied there whole.
+	SpecKeyTrees = "trees"
+
 	// SpecKeySubagents holds the ids of the profiles rendered as subagent
 	// definitions in the boot directory. It is declared by the profile being
 	// booted, and names other profiles.
@@ -250,8 +259,16 @@ func (s Spec) Settings() (json.RawMessage, bool) {
 // Files returns the path-to-content map under [SpecKeyFiles]. A manifest
 // declaring none returns nil and no error.
 func (s Spec) Files() (map[string]FileEntry, error) {
+	return s.entries(SpecKeyFiles)
+}
+
+// entries decodes a manifest key holding a path-to-[FileEntry] map. Two keys
+// carry that shape — see [Spec.Files] and [Spec.Templates] — and decoding them
+// through one function is what keeps the two legal value forms the same in
+// both.
+func (s Spec) entries(key string) (map[string]FileEntry, error) {
 	var raw map[string]json.RawMessage
-	if err := s.decode(SpecKeyFiles, &raw); err != nil {
+	if err := s.decode(key, &raw); err != nil {
 		return nil, err
 	}
 	if len(raw) == 0 {
@@ -261,9 +278,38 @@ func (s Spec) Files() (map[string]FileEntry, error) {
 	for rel, v := range raw {
 		entry, err := parseFileEntry(v)
 		if err != nil {
-			return nil, fmt.Errorf("spec key %q: %q: %w", SpecKeyFiles, rel, err)
+			return nil, fmt.Errorf("spec key %q: %q: %w", key, rel, err)
 		}
 		out[rel] = entry
+	}
+	return out, nil
+}
+
+// Templates returns the path-to-template map under [SpecKeyTemplates]. A
+// manifest declaring none returns nil and no error.
+//
+// A value takes the same two shapes a files value does, and for the same
+// reason: a template is text, and text a profile already knows is a literal
+// while text that lives on disk is a source. What separates the two keys is
+// what happens to the text afterwards — a template's markers are substituted
+// and a file's bytes are not.
+func (s Spec) Templates() (map[string]FileEntry, error) {
+	return s.entries(SpecKeyTemplates)
+}
+
+// Trees returns the destination-to-source map under [SpecKeyTrees]. A manifest
+// declaring none returns nil and no error.
+//
+// Each value names a directory copied whole to the destination. It is not a
+// slot source: a static_dir source concatenates the files it finds into one
+// string, which is right for a slot and destroys a directory.
+func (s Spec) Trees() (map[string]string, error) {
+	var out map[string]string
+	if err := s.decode(SpecKeyTrees, &out); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
 }
