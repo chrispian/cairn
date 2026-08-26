@@ -1,82 +1,66 @@
 package slots
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/hollis-labs/agentkit/agentcontext"
 )
 
-// UnavailableMarker opens the line a failed slot renders in place of the
-// content it did not produce. It is a fixed string so that a reader — or a
-// grep — can find every section of a boot file that reports a failure.
-const UnavailableMarker = "**Unavailable.**"
-
-// MarkFailures is an [agentcontext.Renderer] that renders a one-line
-// provenance for a slot whose resolver failed, then delegates everything else
-// to the renderer it wraps.
+// DropUnresolved is an [agentcontext.Renderer] that removes every slot which
+// produced no content — whether because its resolver failed or because it
+// resolved to nothing — and delegates what remains to the renderer it wraps.
 //
-// It exists because the library's own renderer emits a bare section heading
-// for a slot that resolved empty and a bare section heading for a slot that
-// failed, and in the rendered file those are the same bytes. The two mean
-// opposite things: "the memory service returned nothing" and "the memory
-// service was unreachable" lead a reader to opposite conclusions, and the one
-// that is a failure is the one that reads as fact.
+// The library's own renderer emits a bare section heading for both cases, so a
+// boot file ends up carrying headings with nothing under them. Cairn omits the
+// section instead, which is also what Tether's boot template does.
 //
-// The failure is already reported to the operator on stderr. This is for the
-// agent, which reads the file and not the terminal.
+// An earlier revision rendered a failure marker in place of the missing
+// content, to keep "the service returned nothing" distinguishable from "the
+// service was unreachable". That was wrong on both counts. It is cairn
+// authoring prose into the agent's context, which this package has no standing
+// to do — a boot file carries what a profile declared, and a sentence cairn
+// invented is one nobody can correct. And the distinction it preserved is not
+// the agent's to act on: current truth comes from the tools, not from a
+// snapshot, so an agent that needs the data asks for it.
 //
-// Substituting content and delegating is deliberate. Ordering, budget
-// enforcement, truncation and drop accounting all stay the wrapped renderer's,
-// so the failure line is budgeted like any other content rather than escaping
-// a limit the operator set.
-type MarkFailures struct {
-	// Inner renders the marked results. Nil means
+// The failure is not swallowed. It stays on the [agentcontext.SlotResult] the
+// caller receives, and the caller reports it on stderr — to the operator, who
+// can fix it. It simply does not reach the file.
+//
+// Filtering and delegating is deliberate. Ordering, budget enforcement,
+// truncation and drop accounting all stay the wrapped renderer's.
+type DropUnresolved struct {
+	// Inner renders the surviving results. Nil means
 	// [agentcontext.DefaultRenderer].
 	Inner agentcontext.Renderer
 }
 
 // Render implements [agentcontext.Renderer].
-func (m MarkFailures) Render(slots []agentcontext.SlotResult, limits agentcontext.Limits) (string, agentcontext.LimitsApplied) {
-	marked := make([]agentcontext.SlotResult, len(slots))
-	copy(marked, slots)
-	for i := range marked {
-		if marked[i].Err == nil {
+//
+// A slot survives when its resolver did not fail and it produced content that
+// is not entirely whitespace. Partial content from a failed resolver is
+// dropped with the rest of it: what a resolver managed before failing is not
+// something to hand an agent as though it were the whole answer.
+func (d DropUnresolved) Render(slots []agentcontext.SlotResult, limits agentcontext.Limits) (string, agentcontext.LimitsApplied) {
+	kept := make([]agentcontext.SlotResult, 0, len(slots))
+	for _, s := range slots {
+		if s.Err != nil || strings.TrimSpace(s.Content) == "" {
 			continue
 		}
-		// A resolver that failed and still produced content keeps it: the
-		// content is what it managed, and the marker goes above it.
-		line := FailureLine(marked[i].Err)
-		if marked[i].Content == "" {
-			marked[i].Content = line
-			continue
-		}
-		marked[i].Content = line + "\n" + marked[i].Content
+		kept = append(kept, s)
 	}
 
-	inner := m.Inner
+	inner := d.Inner
 	if inner == nil {
 		inner = agentcontext.DefaultRenderer{}
 	}
-	return inner.Render(marked, limits)
+	return inner.Render(kept, limits)
 }
 
-// FailureLine returns the one line a failed slot renders: the marker, then the
-// resolver's own error.
-//
-// It states what happened and stops. It does not tell the reader what to
-// conclude or what to do about it — a boot file carries what a profile
-// declared, and an instruction cairn invented is one nobody can correct.
-// Newlines in the error are folded so that the line stays one line.
-func FailureLine(err error) string {
-	if err == nil {
-		return ""
-	}
-	return UnavailableMarker + " " + strings.Join(strings.Fields(err.Error()), " ")
-}
-
-// Ensure MarkFailures satisfies the renderer contract at compile time.
-var _ agentcontext.Renderer = MarkFailures{}
+// Ensure DropUnresolved satisfies the renderer contract at compile time.
+var _ agentcontext.Renderer = DropUnresolved{}
 
 // wiredKinds are the slot kinds a manifest may declare and expect to resolve,
 // in the order a diagnostic lists them.
@@ -95,6 +79,35 @@ var wiredKinds = []agentcontext.SlotSourceKind{
 	agentcontext.SlotSourceKindHTTPText,
 	agentcontext.SlotSourceKindHTTPJSON,
 	agentcontext.SlotSourceKindRoleSummary,
+}
+
+// kindDiagnostic reports a source whose declared kind is missing or is not one
+// the library recognizes, in a message that names where the source was
+// written. A valid kind returns nil.
+//
+// It is shared because the mistake is shared: a slot and a files entry both
+// carry an [agentcontext.SlotSource], and an operator copying either out of a
+// YAML boot profile makes the same substitution. named is what the caller
+// calls the offending source — a slot by its name, a files entry by its path.
+// source is the raw JSON object the manifest held for it, or nil when the
+// manifest could not be re-read; it is consulted only to spot the "type" key,
+// so a nil map costs the hint and nothing else.
+func kindDiagnostic(named string, kind agentcontext.SlotSourceKind, source map[string]json.RawMessage) error {
+	if kind.Valid() {
+		return nil
+	}
+	if kind != "" {
+		return fmt.Errorf("%w: %s declares kind %q; the kinds are %s",
+			ErrSlotKind, named, kind, kindList())
+	}
+	if wrong, ok := source["type"]; ok {
+		return fmt.Errorf(
+			"%w: %s declares no \"kind\", but declares a \"type\" of %s — "+
+				"a source is written in YAML as `type:` and in a cairn manifest, which is JSON, as \"kind\"",
+			ErrSlotKind, named, wrong)
+	}
+	return fmt.Errorf("%w: %s declares no \"kind\"; the kinds are %s",
+		ErrSlotKind, named, kindList())
 }
 
 // kindList renders wiredKinds for a diagnostic.

@@ -1,11 +1,11 @@
 package slots_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,15 +15,18 @@ import (
 	"github.com/hollis-labs/agentkit/agentcontext/resolvers"
 )
 
-// TestAFailedSlotDoesNotReadAsAnEmptyOne is the defect this package's renderer
-// exists for, asserted the way it was found: two slots side by side, one that
-// resolved empty and one that failed, rendered into one file.
+// TestASlotThatProducedNothingRendersNothingAtAll is docs/plan.md §5 asserted
+// on the bytes of the whole rendering rather than on the absence of a marker.
 //
-// The library's own renderer emits a bare section heading for both, and in the
-// file those are the same bytes. "The task service returned nothing" and "the
-// task service was unreachable" lead a reader to opposite conclusions, and the
-// one that is a failure is the one that reads as fact.
-func TestAFailedSlotDoesNotReadAsAnEmptyOne(t *testing.T) {
+// Three slots go in: one that resolves empty, one that resolves, one that
+// fails. One section comes out. The assertion is deliberately on the entire
+// string, because a test that only looked for the absence of the old
+// "**Unavailable.**" line would pass on a rendering that still emitted a bare
+// "## Memory" heading — and a heading with nothing under it is the shape this
+// renderer exists to remove.
+func TestASlotThatProducedNothingRendersNothingAtAll(t *testing.T) {
+	t.Parallel()
+
 	missing := filepath.Join(t.TempDir(), "never-written.md")
 	spec := manifest(t, slotted(`[
 	  {"name":"tasks",  "section":"## Tasks",  "source":{"kind":"cmd","cmd":{"run":"true"}}},
@@ -31,65 +34,82 @@ func TestAFailedSlotDoesNotReadAsAnEmptyOne(t *testing.T) {
 	  {"name":"memory", "section":"## Memory", "source":{"kind":"static_file","static_file":{"path":"`+missing+`"}}}
 	]`))
 
-	res, err := slots.Assemble(context.Background(), spec, slots.Options{})
+	res, err := slots.Assemble(t.Context(), spec, slots.Options{})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 
-	tasks := section(t, res.Rendered, "## Tasks")
-	memory := section(t, res.Rendered, "## Memory")
-	if tasks == memory {
-		t.Fatalf("the slot that resolved empty and the slot that failed rendered the same bytes %q", tasks)
+	if want := "## Repo\nbranch=main"; res.Rendered != want {
+		t.Errorf("the assembly rendered\n%q\nwant only the slot that resolved\n%q", res.Rendered, want)
 	}
-	if tasks != "" {
-		t.Errorf("the slot that resolved empty rendered %q, want nothing under its heading", tasks)
-	}
-	if !strings.HasPrefix(memory, slots.UnavailableMarker) {
-		t.Errorf("the slot that failed rendered %q, want it to open with %q", memory, slots.UnavailableMarker)
-	}
-	if !strings.Contains(memory, "never-written.md") {
-		t.Errorf("the failure line does not say what failed:\n%s", memory)
-	}
-	if strings.Count(memory, "\n") != 0 {
-		t.Errorf("the failure line is not one line:\n%s", memory)
+	// Named individually so a failure says which of the two cases regressed,
+	// and so the old marker cannot creep back in under a new spelling.
+	for _, absent := range []string{"## Tasks", "## Memory", "never-written.md", "Unavailable"} {
+		if strings.Contains(res.Rendered, absent) {
+			t.Errorf("the rendering carries %q:\n%s", absent, res.Rendered)
+		}
 	}
 
-	// The slot that succeeded is untouched, and the failure did not stop the
-	// assembly.
-	if got := section(t, res.Rendered, "## Repo"); got != "branch=main" {
-		t.Errorf("the slot that resolved rendered %q", got)
+	// The failure is not swallowed, it is redirected: it stays on the result
+	// the caller was handed, and `cairn boot` reports it on stderr. It is the
+	// operator's to see, and the operator does not read boot.md.
+	var failed []string
+	for _, s := range res.Slots {
+		if s.Err != nil {
+			failed = append(failed, s.Name)
+		}
+	}
+	if !slices.Equal(failed, []string{"memory"}) {
+		t.Errorf("the result records %v as failed, want just the memory slot", failed)
 	}
 }
 
-// TestMarkFailuresKeepsWhatAResolverManaged covers a resolver that failed
-// after producing something. The content is what it managed and is kept; the
-// marker goes above it rather than replacing it.
-func TestMarkFailuresKeepsWhatAResolverManaged(t *testing.T) {
-	rendered, _ := slots.MarkFailures{}.Render([]agentcontext.SlotResult{
+// TestDropUnresolvedDropsWhatAFailedResolverManaged covers a resolver that
+// errored after producing something. An earlier revision kept the partial
+// content under a marker that said not to trust it. Without the marker there
+// is nothing to say so, and half an answer presented as the whole one is worse
+// than no section: the agent has no way to tell it is reading a fragment.
+func TestDropUnresolvedDropsWhatAFailedResolverManaged(t *testing.T) {
+	t.Parallel()
+
+	rendered, _ := slots.DropUnresolved{}.Render([]agentcontext.SlotResult{
 		{Name: "partial", Section: "## Partial", Content: "half of it", Err: errors.New("connection reset")},
+		{Name: "whole", Section: "## Whole", Content: "all of it"},
 	}, agentcontext.Limits{})
 
-	if !strings.Contains(rendered, "half of it") {
-		t.Errorf("what the resolver managed was dropped:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "connection reset") {
-		t.Errorf("the failure was not reported:\n%s", rendered)
-	}
-	if strings.Index(rendered, slots.UnavailableMarker) > strings.Index(rendered, "half of it") {
-		t.Errorf("the marker is below the content it qualifies:\n%s", rendered)
+	if want := "## Whole\nall of it"; rendered != want {
+		t.Errorf("rendered %q, want %q", rendered, want)
 	}
 }
 
-// TestMarkFailuresDelegatesTheBudget covers the reason this renderer wraps the
-// library's rather than replacing it: ordering, truncation and drop accounting
-// stay the library's, so a failure line is budgeted like any other content
-// instead of escaping a limit the operator set.
-func TestMarkFailuresDelegatesTheBudget(t *testing.T) {
+// TestDropUnresolvedTreatsWhitespaceAsEmpty covers the resolver that succeeded
+// and returned a newline. A section holding one blank line is a heading with
+// nothing under it wearing a disguise.
+func TestDropUnresolvedTreatsWhitespaceAsEmpty(t *testing.T) {
+	t.Parallel()
+
+	for _, content := range []string{"", "\n", "   ", " \n\t\n "} {
+		rendered, _ := slots.DropUnresolved{}.Render([]agentcontext.SlotResult{
+			{Name: "blank", Section: "## Blank", Content: content},
+		}, agentcontext.Limits{})
+		if rendered != "" {
+			t.Errorf("a slot holding %q rendered %q, want nothing", content, rendered)
+		}
+	}
+}
+
+// TestDropUnresolvedDelegatesTheBudget covers the reason this renderer wraps
+// the library's rather than replacing it: ordering, truncation and drop
+// accounting stay the library's, so what survives the filter is budgeted like
+// any other content instead of escaping a limit the operator set.
+func TestDropUnresolvedDelegatesTheBudget(t *testing.T) {
+	t.Parallel()
+
 	in := []agentcontext.SlotResult{
 		{Name: "first", Section: "## First", Content: strings.Repeat("x", 40)},
-		{Name: "second", Section: "## Second", Err: errors.New("unreachable")},
+		{Name: "second", Section: "## Second", Content: strings.Repeat("y", 40)},
 	}
-	rendered, applied := slots.MarkFailures{}.Render(in, agentcontext.Limits{MaxBytes: 30})
+	rendered, applied := slots.DropUnresolved{}.Render(in, agentcontext.Limits{MaxBytes: 30})
 
 	if int64(len(rendered)) > 30 {
 		t.Errorf("rendered %d bytes past a 30-byte budget:\n%s", len(rendered), rendered)
@@ -99,15 +119,17 @@ func TestMarkFailuresDelegatesTheBudget(t *testing.T) {
 	}
 }
 
-// TestMarkFailuresIsAPassThroughWhenNothingFailed pins that this renderer
-// changes nothing it does not have to.
-func TestMarkFailuresIsAPassThroughWhenNothingFailed(t *testing.T) {
+// TestDropUnresolvedIsAPassThroughWhenEverySlotResolved pins that this
+// renderer changes nothing it does not have to.
+func TestDropUnresolvedIsAPassThroughWhenEverySlotResolved(t *testing.T) {
+	t.Parallel()
+
 	in := []agentcontext.SlotResult{
 		{Name: "a", Section: "## A", Content: "one"},
-		{Name: "b", Section: "## B"},
+		{Name: "b", Section: "## B", Content: "two"},
 	}
 	want, wantApplied := agentcontext.DefaultRenderer{}.Render(in, agentcontext.Limits{})
-	got, gotApplied := slots.MarkFailures{}.Render(in, agentcontext.Limits{})
+	got, gotApplied := slots.DropUnresolved{}.Render(in, agentcontext.Limits{})
 	if got != want {
 		t.Errorf("rendered %q, want the library's own %q", got, want)
 	}
@@ -116,15 +138,25 @@ func TestMarkFailuresIsAPassThroughWhenNothingFailed(t *testing.T) {
 	}
 }
 
-// TestMarkFailuresDoesNotMutateTheCaller'sSlots would be a mouthful, so:
-// TestMarkFailuresCopiesBeforeMarking covers the results the dispatcher hands
-// in, which it goes on to return on ContextResult.Slots. Rewriting Content
-// there would make the per-slot record disagree with what the resolver did.
-func TestMarkFailuresCopiesBeforeMarking(t *testing.T) {
-	in := []agentcontext.SlotResult{{Name: "memory", Section: "## Memory", Err: errors.New("unreachable")}}
-	slots.MarkFailures{}.Render(in, agentcontext.Limits{})
-	if in[0].Content != "" {
-		t.Errorf("the caller's slot was rewritten to %q", in[0].Content)
+// TestDropUnresolvedLeavesTheCallersResultsAlone covers the slice the
+// dispatcher hands in, which it goes on to return on ContextResult.Slots.
+// Filtering in place there would take the failure away from the caller that
+// has to report it.
+func TestDropUnresolvedLeavesTheCallersResultsAlone(t *testing.T) {
+	t.Parallel()
+
+	unreachable := errors.New("unreachable")
+	in := []agentcontext.SlotResult{
+		{Name: "memory", Section: "## Memory", Content: "half", Err: unreachable},
+		{Name: "repo", Section: "## Repo", Content: "branch=main"},
+	}
+	slots.DropUnresolved{}.Render(in, agentcontext.Limits{})
+
+	if len(in) != 2 {
+		t.Fatalf("the caller's slice is now %d long, want 2", len(in))
+	}
+	if !errors.Is(in[0].Err, unreachable) || in[0].Content != "half" {
+		t.Errorf("the caller's failed slot was rewritten to %+v", in[0])
 	}
 }
 
@@ -134,6 +166,8 @@ func TestMarkFailuresCopiesBeforeMarking(t *testing.T) {
 // JSON. The library never sees the manifest, so it can only say the kind is
 // unknown — which points at nothing.
 func TestTheKindDiagnosticNamesTheKey(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]struct{ manifest, wants string }{
 		"a slot copied out of a YAML profile": {
 			manifest: `[{"name":"note","source":{"type":"inline","inline":{"content":"x"}}}]`,
@@ -150,7 +184,9 @@ func TestTheKindDiagnosticNamesTheKey(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := slots.Assemble(context.Background(), manifest(t, slotted(tc.manifest)), slots.Options{})
+			t.Parallel()
+
+			_, err := slots.Assemble(t.Context(), manifest(t, slotted(tc.manifest)), slots.Options{})
 			if !errors.Is(err, slots.ErrSlotKind) {
 				t.Fatalf("assemble = %v, want ErrSlotKind", err)
 			}
@@ -172,7 +208,9 @@ func TestTheKindDiagnosticNamesTheKey(t *testing.T) {
 // library starts shipping a default resolver for a kind, this fails here
 // instead of leaving the message quietly stale.
 func TestTheKindDiagnosticListsWhatIsActuallyWired(t *testing.T) {
-	_, err := slots.Assemble(context.Background(),
+	t.Parallel()
+
+	_, err := slots.Assemble(t.Context(),
 		manifest(t, slotted(`[{"name":"note","source":{"kind":"sqlite"}}]`)), slots.Options{})
 	if err == nil {
 		t.Fatal("an unknown kind was accepted")
@@ -190,23 +228,4 @@ func TestTheKindDiagnosticListsWhatIsActuallyWired(t *testing.T) {
 // slotted wraps a slots array in the manifest object an operator stores.
 func slotted(raw string) string {
 	return `{"` + profile.SpecKeySlots + `": ` + raw + `}`
-}
-
-// section returns the body rendered under heading, or fails if the heading is
-// absent — so a test cannot pass by asserting against a section that was never
-// emitted.
-//
-// The library separates sections with one blank line and emits a heading with
-// no body for a slot that resolved empty, which is exactly the shape under
-// test, so the split is on the separator and the match is on the first line.
-func section(t *testing.T, rendered, heading string) string {
-	t.Helper()
-	for _, block := range strings.Split(rendered, "\n\n") {
-		head, body, _ := strings.Cut(block, "\n")
-		if head == heading {
-			return strings.TrimRight(body, "\n")
-		}
-	}
-	t.Fatalf("no %q section in:\n%s", heading, rendered)
-	return ""
 }

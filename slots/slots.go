@@ -22,10 +22,11 @@ import (
 	"github.com/hollis-labs/agentkit/agentcontext/resolvers"
 )
 
-// ErrSlotKind reports a slot whose declared kind is missing or is not one the
-// library recognizes. It exists so the failure names the slot and the key,
-// which the library's own sentinel cannot: it is reached from a request that
-// no longer knows how the manifest was spelled.
+// ErrSlotKind reports a source whose declared kind is missing or is not one
+// the library recognizes — a slot's, or a files entry's, since both carry the
+// same [agentcontext.SlotSource]. It exists so the failure names the source
+// and the manifest key, which the library's own sentinel cannot: it is reached
+// from a request that no longer knows how the manifest was spelled.
 var ErrSlotKind = errors.New("invalid slot kind")
 
 // Options carries what varies between two materializations.
@@ -41,7 +42,7 @@ type Options struct {
 	Provenance agentcontext.ProvenanceInput
 
 	// Provider overrides the assembled ContextProvider. Nil means the default
-	// wiring: agentcontext.NewProvider(resolvers.Default(), MarkFailures{}).
+	// wiring: agentcontext.NewProvider(resolvers.Default(), DropUnresolved{}).
 	Provider agentcontext.ContextProvider
 }
 
@@ -109,35 +110,25 @@ func checkKinds(raw json.RawMessage, declared []agentcontext.SlotSpec) error {
 	_ = json.Unmarshal(raw, &sources)
 
 	for i, slot := range declared {
-		if slot.Source.Kind.Valid() {
-			continue
-		}
 		named := fmt.Sprintf("slot %d", i)
 		if slot.Name != "" {
 			named = fmt.Sprintf("slot %q", slot.Name)
 		}
-		if slot.Source.Kind != "" {
-			return fmt.Errorf("%w: %s declares kind %q; the kinds are %s",
-				ErrSlotKind, named, slot.Source.Kind, kindList())
-		}
+		var source map[string]json.RawMessage
 		if i < len(sources) {
-			if wrong, ok := sources[i].Source["type"]; ok {
-				return fmt.Errorf(
-					"%w: %s declares no \"kind\", but its source has a \"type\" of %s — "+
-						"a slot is written in YAML as `type:` and in a cairn manifest, which is JSON, as \"kind\"",
-					ErrSlotKind, named, wrong)
-			}
+			source = sources[i].Source
 		}
-		return fmt.Errorf("%w: %s declares no \"kind\"; the kinds are %s",
-			ErrSlotKind, named, kindList())
+		if err := kindDiagnostic(named, slot.Source.Kind, source); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 // defaultProvider builds the provider [Assemble] uses when [Options] names
-// none: the seven app-neutral resolvers, and [MarkFailures] over the library's
-// own renderer so that a slot which failed does not read as a slot which was
-// empty.
+// none: the seven app-neutral resolvers, and [DropUnresolved] over the
+// library's own renderer so that a slot which produced nothing leaves no
+// heading behind.
 //
 // resolvers.WithSkillIndex is deliberately not wired. Per the MVP plan the
 // eighth kind gets added when a profile needs one, and none does yet; until
@@ -145,7 +136,7 @@ func checkKinds(raw json.RawMessage, declared []agentcontext.SlotSpec) error {
 // [agentcontext.ErrUnknownSlotKind], which is the honest answer. This is a
 // decision, not an oversight.
 func defaultProvider() (agentcontext.ContextProvider, error) {
-	return agentcontext.NewProvider(resolvers.Default(), MarkFailures{})
+	return agentcontext.NewProvider(resolvers.Default(), DropUnresolved{})
 }
 
 // wrap names the manifest an error came out of without hiding it: the
