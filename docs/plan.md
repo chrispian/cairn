@@ -163,6 +163,15 @@ concatenates ancestor-first, because the persona is additive by nature.
 An unknown key in `spec` is carried through the cascade and rendered by the
 provider renderer if it knows it, and ignored otherwise. It is never an error.
 
+`"key": null` is how a descendant **clears** an ancestor's key. Presence wins,
+and an explicit null is presence — it wins with an empty value rather than
+falling through to the ancestor.
+
+`spec` is JSON, so slot entries use `agentcontext.SlotSpec`'s **JSON** tags.
+`SlotSource.Kind` is `json:"kind"` and `yaml:"type"` — a slot copied out of a
+Tether boot profile will say `type:` and fail with "unknown slot kind". Write
+`"kind"`.
+
 ---
 
 ## 4. Scope
@@ -199,6 +208,14 @@ Rendering is deterministic: same inputs, byte-identical output. Slots resolve
 at materialization and may therefore vary between two runs — that is a property
 of the resolver, and `agentcontext` hashes the request rather than the result
 for exactly this reason.
+
+**A failed slot must be distinguishable from an empty one.** `agentcontext`'s
+`DefaultRenderer` emits a bare heading with no body for both, so an agent
+reading `boot.md` cannot tell "the memory service returned nothing" from "the
+memory service was unreachable" — and those mean opposite things. Supply a
+`agentcontext.Renderer` that emits a one-line provenance for a slot whose
+`SlotResult.Err` is non-nil. That is the library's own documented extension
+point, not a reimplementation: resolvers, budgets and provenance stay adopted.
 
 ### Skills are directories, deliberately
 
@@ -259,7 +276,8 @@ reasoning instead of by looking.
    lookup. `sqlitekit.OpenWriter` / `OpenReader`, `txutil.WithImmediate`.
 3. **Profile + cascade** — load by id, walk `extends` ancestor-first, detect
    cycles, closest-wins merge over columns and `spec` keys, concatenate `body`.
-   Reject a direct boot of an `abstract` profile.
+   `Resolve` carries the `abstract` flag rather than acting on it — `install`
+   legitimately resolves an abstract profile. `cairn boot` is what refuses one.
 4. **Render** — `[]bootdir.File` from a resolved profile: `AGENTS.md`,
    `CLAUDE.md`, `.mcp.json`, `.claude/settings.json`, skills, `spec.files`.
    Path validation and duplicate-path detection. No filesystem writes.
