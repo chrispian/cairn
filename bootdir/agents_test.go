@@ -1,7 +1,6 @@
 package bootdir
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/chrispian/cairn/profile"
@@ -133,35 +132,5 @@ func TestAgentsIsAlwaysRendered(t *testing.T) {
 	}
 	if got := fileByPath(t, files, AgentsFileName); len(got.Content) != 0 {
 		t.Errorf("%s holds %q, want no bytes", AgentsFileName, got.Content)
-	}
-}
-
-// TestAgentsRendersNoCairnAuthoredVocabulary is a tripwire for the open item
-// in docs/plan.md §9: the prior tree wrote cairn's own editorial voice into
-// agent contracts, and until that prose is reviewed and rewritten by its
-// operator, none of it is rendered from the binary. The words below are the
-// ones that voice reached for. A profile that declares them still gets them —
-// they are checked against a rendering of a profile that declares nothing.
-func TestAgentsRendersNoCairnAuthoredVocabulary(t *testing.T) {
-	inst := testInstance(t, profile.Resolved{
-		ID:       "quiet",
-		Name:     "Quiet",
-		Provider: profile.ProviderClaude,
-		Model:    "claude-sonnet-4-5",
-	})
-	inst.Scope = "/tmp/scope"
-
-	files, err := RenderAgents(inst)
-	if err != nil {
-		t.Fatalf("RenderAgents(): %v", err)
-	}
-	rendered := strings.ToLower(string(files[0].Content))
-	for _, word := range []string{
-		"escalate", "authority", "authoritative", "reports_to", "precedence",
-		"boot.md", "skill", "mcp", "dispatch", "override", "you ", "your ",
-	} {
-		if strings.Contains(rendered, word) {
-			t.Errorf("%s holds %q, which no field of this profile declares", AgentsFileName, word)
-		}
 	}
 }

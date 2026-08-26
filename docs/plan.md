@@ -84,7 +84,6 @@ Ported from `~/dev/projects/cairn-prior-20260825/`, not rewritten:
 | `bootdir.writeTree` + `cleanArtifactPath` | Renders every file first, stages into a sibling temp dir, then one `rename`. The whole boot directory is all-or-nothing. Stronger than the per-file atomic writers in the libs, and worth keeping. |
 | `bootdir/skills.go` (directory-tree copier) | See §5 — deliberately does not use `NativeFileSkill`. |
 | `scope`'s containment check | The boot dir must never land inside the scope directory. ~40 lines guarding a write into a repo under work. |
-| `testdata_guard_test.go` | Rejects dot-prefixed directories and instruction files under `testdata/`. Earned: fixture `.claude/skills` once registered as live skills in a running session. |
 | `.github/workflows/check.yml`, `Makefile`, `.golangci.yml` | Already in place in this tree. |
 
 ### Built here
@@ -487,6 +486,23 @@ useful part, and an unnamed loose end gets rediscovered as a bug.
   Nanite speaks. Cairn's own path uses `PlantFiles`, because `plant.Spec`
   carries no file modes and a skill's executable bit is load-bearing. If
   nothing external ever calls it, it is ceremony — decide when something tries.
+- **A golden fixture would have to avoid the literal `.claude` name.** Cairn's
+  output *is* a `.claude/` tree, so recording one byte-for-byte checks live
+  configuration into the repo. `testdata` is inert to the go command and means
+  nothing to a harness: reading any file under the project root makes Claude
+  Code probe `<dir>/.claude/skills` in every directory between that file and
+  the root and register what it finds as project skills, and load a `CLAUDE.md`
+  from those same directories as instructions — which then follows its
+  `@AGENTS.md` pointer, the exact pair cairn renders. The prior tree solved this
+  by storing the segment as `_claude` and mapping it back where the fixture is
+  read; it had three such directories and no literal one. This tree keeps no
+  copy of its output at all — it asserts structure in code, and
+  `bootdir/skills_test.go` builds skill trees under the test's own temporary
+  directory for this reason. The module-wide walk that used to enforce the
+  naming rule is gone with the goldens: it guarded a shape the design no longer
+  produces, and a build that fails on a `.claude/skills` directory is failing on
+  a supported feature it has no way to know was a mistake. If goldens return, so
+  does `_claude`.
 - **`cairn install` prints every path it wrote, unchanged ones included.**
   `--check` before an install already answers "what would change", and
   inventing a diff format nobody has asked for is how a small tool grows.

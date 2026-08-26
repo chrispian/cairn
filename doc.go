@@ -10,6 +10,5 @@
 // are a black box: Cairn provides the shape and validates the shape, and
 // whoever owns the profiles owns the meaning.
 //
-// The command is [github.com/chrispian/cairn/cmd/cairn]. The guard beside this
-// file is module-wide and belongs to no package below it.
+// The command is [github.com/chrispian/cairn/cmd/cairn].
 package cairn
