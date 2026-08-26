@@ -66,7 +66,13 @@ to end exactly that; Cairn was becoming the fourth.
 
 Verified: all four modules resolve and build together (`agentkit v0.5.1`,
 `go-agent-wrapper v0.8.1`, `go-providers v0.24.0`, `go-sqlite v0.1.0`),
-indirect graph is `creack/pty`, `go-llm-contracts`, `go-llm-types`, `yaml.v3`.
+indirect graph is `creack/pty`, `go-llm-contracts`, `go-llm-types`.
+
+`yaml.v3` is the one direct dependency outside those four. It was already in
+the graph, and it arrives directly because a subagent definition's frontmatter
+is YAML while the manifest it comes from is JSON — see §5. Hand-rolling a YAML
+encoder for an opaque map is how quoting bugs plant an unparseable frontmatter,
+which a harness reads as no frontmatter at all.
 
 ### Kept from the prior tree
 
@@ -89,8 +95,14 @@ Ported from `~/dev/projects/cairn-prior-20260825/`, not rewritten:
 
 ### Dropped outright
 
-Dispatch and team semantics (`bootdir/subagents.go`, 1,626 lines) — how agents
-relate to each other is not Cairn's concern. Instance identity and liveness
+The dispatch **authority model** (`bootdir/subagents.go`, 1,626 lines) — a
+subagent's tools computed as its own allow-list intersected with the
+dispatcher's ceiling, a depth budget enforced by withholding the `Agent` tool
+under every spelling, and a conflict error for one profile reached through two
+dispatchers. How agents relate to each other is not Cairn's concern, and Cairn
+has no `tools` concept to intersect with. What survives is the artifact and
+nothing else: a profile names other profiles and each is rendered from its own
+declaration — see §5. Instance identity and liveness
 (`internal/identity`, 885 lines) — that is a registry function. Override
 discipline (`overrides/`, 2,235 lines) — judging whether a correction is
 well-formed is content review; if scoped content needs planting it rides the
@@ -144,10 +156,12 @@ the keys it renders. Anything else is carried and ignored.
 
 ```jsonc
 {
-  "slots":    [ /* agentcontext.SlotSpec */ ],
-  "mcp":      [ /* agentlaunch.MCPServerSpec */ ],
-  "skills":   [ "code-review", "capture-decision" ],
-  "settings": { /* verbatim into .claude/settings.json */ },
+  "slots":     [ /* agentcontext.SlotSpec */ ],
+  "mcp":       [ /* agentlaunch.MCPServerSpec */ ],
+  "skills":    [ "code-review", "capture-decision" ],
+  "settings":  { /* verbatim into .claude/settings.json */ },
+  "subagents": [ "reviewer", "worker" ],   // profile ids; each renders a definition
+  "subagent":  { /* this profile's own definition, when another names it */ },
   "files":    {
     "rel/path.md":             "literal content",
     "tasks/current/task.md":   { "kind": "cmd", "cmd": { "run": "torque task get $TASK --format md" } },
@@ -225,6 +239,7 @@ The rest of the prior scope validation — rejecting `/etc`, `/usr`, `/var`,
   .mcp.json              ← spec.mcp
   .claude/settings.json  ← spec.settings, verbatim
   .claude/skills/        ← spec.skills, directory trees
+  .claude/agents/<id>.md ← spec.subagents, one per named profile
   <spec.files>           ← arbitrary paths
 ```
 
@@ -249,6 +264,58 @@ unnecessary now that agents pull current truth from tools rather than from
 `boot.md`. An absent section is correct — an agent that needs the data queries
 the tool. **The failure still reports on stderr, to the operator.**
 
+### Subagent definitions are rendered, not computed
+
+`spec.subagents` is a list of profile ids. Each is looked up, resolved through
+its own cascade, and written to `.claude/agents/<id>.md`. The content is that
+profile's own `spec.subagent`: an opaque map, transcribed into the
+definition's frontmatter the way `spec.settings` is transcribed into the
+settings document.
+
+**A parent may not narrow or expand a child.** There is no intersection of tool
+lists, because Cairn has no `tools` concept and is not getting one. If a child
+lacks a tool it needs, that is a change to the child. Depth is 1 structurally:
+Cairn renders the ids a profile named and stops — it does not read a named
+profile's own `spec.subagents`, and a subagent gets no boot directory of its
+own. Nothing is withheld to enforce that, because there is nothing to withhold.
+
+Three things Cairn does decide, each because the alternative fails silently:
+
+- **`name` is forced to the profile id.** The harness resolves a definition by
+  its `name` field rather than by its filename, and a definition carrying no
+  name is dropped with no diagnostic at all — verified against Claude Code
+  2.1.246, whose loader returns before it logs. A declaration whose `name`
+  disagrees with its own id is **refused** rather than overwritten: overwriting
+  discards a line the operator wrote. Every other key, known or not, is carried.
+- **An id with no profile, an abstract profile, or a profile declaring no
+  `spec.subagent`** each refuse the boot, naming the id and the profile that
+  named it. Abstract matches `boot`: an abstract profile exists to be extended,
+  and a definition is something a harness runs.
+- **A duplicate path is still a duplicate path.** A `spec.files` entry at
+  `.claude/agents/<id>.md` collides with the definition and refuses, because
+  the definitions arrive as their own renderer rather than merged into the
+  files map, where one would have silently won.
+
+**The body comes from the declaration's own `body` key**, lifted out of the
+frontmatter, and deliberately not from the named profile's cascaded body. The
+reason is measured rather than assumed: a subagent's query carries the project
+instruction block unless its definition sets `omitClaudeMd`, which only Claude
+Code's built-in definitions do — so a subagent dispatched inside a boot
+directory already receives that directory's `CLAUDE.md`, and through it
+`AGENTS.md`. Rendering the named profile's cascade into the definition would
+repeat every ancestor body the parent already supplies, and would put an
+ancestor's persona — "you implement one task end to end" — into a definition
+for a profile that reviews. Taking the named profile's own row body instead
+would mean reading a field that had skipped the cascade, which §3 says no field
+does. The declaration is where the definition is declared, so the body is
+declared there too, and a descendant restating `spec.subagent` restates it
+whole.
+
+Transcription rather than a byte copy is forced by the destination: the
+manifest is JSON and frontmatter is YAML. Values are carried by value — a
+string that reads as a number stays a string, a number keeps the text the
+manifest spelled it with, and the operator's key order is kept.
+
 ### The installed layer
 
 `cairn install <binding|profile>` renders a different, shorter set into
@@ -262,12 +329,15 @@ the tool. **The failure still reports on stderr, to the operator.**
   skills/                ← spec.skills, directory trees
 ```
 
-Three artifacts are deliberately absent:
+Four artifacts are deliberately absent:
 
 - **No `boot.md`.** Slots resolve at materialization; this layer is not
   materialized per session.
 - **No `.mcp.json`.** §6 drops the audit, and user-level MCP configuration is
   not a file in that directory.
+- **No `spec.subagents`.** Same reason as `spec.files`, plus one of its own:
+  `~/.claude/agents/` is a directory the operator fills by hand, and claiming
+  it would put every definition Cairn did not render into the orphan report.
 - **No `spec.files`.** `boot` writes into a directory Cairn creates fresh and
   refuses if it already exists; `install` writes into a directory that already
   exists and is full of the operator's live state. Arbitrary path→content
@@ -374,8 +444,9 @@ reasoning instead of by looking.
    `Resolve` carries the `abstract` flag rather than acting on it — `install`
    legitimately resolves an abstract profile. `cairn boot` is what refuses one.
 4. **Render** — `[]bootdir.File` from a resolved profile: `AGENTS.md`,
-   `CLAUDE.md`, `.mcp.json`, `.claude/settings.json`, skills, `spec.files`.
-   Path validation and duplicate-path detection. No filesystem writes.
+   `CLAUDE.md`, `.mcp.json`, `.claude/settings.json`, skills, subagent
+   definitions, `spec.files`. Path validation and duplicate-path detection. No
+   filesystem writes.
 5. **Slots** — `spec.slots` → `agentcontext.ContextRequest` →
    `DefaultProvider.Assemble` → `boot.md`. Wire `resolvers.Default()`; add
    `resolvers.WithSkillIndex` only if a profile needs it.

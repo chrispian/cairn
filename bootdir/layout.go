@@ -79,8 +79,8 @@ func (a Artifact) Declared() bool { return a.RelPath != "" }
 // because some of them have side effects on the operator's real home
 // directory.
 //
-// Agents and Skills are Cairn's, not the provider's. No BootDirSpec declares
-// either.
+// Agents, Skills and Subagents are Cairn's, not the provider's. No BootDirSpec
+// declares any of them.
 type Layout struct {
 	// Provider is the harness this layout describes.
 	Provider profile.Provider
@@ -106,6 +106,11 @@ type Layout struct {
 	// SkillsDir is the directory declared skills are planted under, one
 	// directory per skill.
 	SkillsDir string
+
+	// SubagentsDir is the directory subagent definitions are planted under,
+	// one file per named profile. Like SkillsDir it is cairn's, not the
+	// provider's: no BootDirSpec declares it.
+	SubagentsDir string
 
 	// CwdPreference is where the harness expects to be invoked, and
 	// ProjectDirArg is its flag pattern for granting access to the scope
@@ -148,6 +153,7 @@ func claudeLayout() (Layout, error) {
 		MCP:           declared[".mcp.json"],
 		Settings:      declared[".claude/settings.json"],
 		SkillsDir:     SkillsDirName,
+		SubagentsDir:  SubagentsDirName,
 		CwdPreference: spec.CwdPreference,
 		ProjectDirArg: spec.ProjectDirArg,
 	}, nil

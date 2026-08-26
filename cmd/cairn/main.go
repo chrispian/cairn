@@ -317,14 +317,24 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
 
+	// Subagent declarations resolve here for the same reason slots and files
+	// do, and it is the third form the reason takes: naming a subagent means
+	// reading another profile out of the store and walking its extends chain,
+	// and a renderer does no I/O.
+	subagents, err := resolveSubagents(ctx, st, resolved)
+	if err != nil {
+		return err
+	}
+
 	inst := &bootdir.Instance{
-		Dir:     dir,
-		Layout:  layout,
-		Home:    home,
-		Profile: resolved,
-		Scope:   scopeDir,
-		Boot:    boot,
-		Files:   planted,
+		Dir:       dir,
+		Layout:    layout,
+		Home:      home,
+		Profile:   resolved,
+		Scope:     scopeDir,
+		Boot:      boot,
+		Files:     planted,
+		Subagents: subagents,
 	}
 	files, err := bootdir.Render(inst)
 	if err != nil {

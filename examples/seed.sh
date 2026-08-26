@@ -64,6 +64,9 @@ SQL
 # source, resolved by the same resolvers — which is how a task bundle gets
 # planted from live state instead of frozen into the profile.
 #
+# "subagents" names other profiles. Each renders .claude/agents/<id>.md from
+# THAT profile's own spec.subagent — see reviewer below.
+#
 # Note the `|| true`. A slot that fails is survivable and Cairn carries on; a
 # FILE source that fails REFUSES THE BOOT, because a missing file is a hole at
 # a path the profile promised and nothing downstream notices. Guard anything
@@ -77,6 +80,7 @@ VALUES (
   'You implement one task end to end.',
   json('{
     "skills": ["capture-decision"],
+    "subagents": ["reviewer"],
     "slots": [
       { "name": "git",
         "section": "## Repository",
@@ -92,6 +96,38 @@ VALUES (
     "files": {
       "notes/scratch.md": "Scratch space for this session. Nothing reads it.\n",
       "context/branch.md": { "kind": "cmd", "cmd": { "run": "git branch --show-current || true" } }
+    }
+  }'),
+  '$NOW', '$NOW');
+SQL
+
+# ---------------------------------------------------------------------------
+# reviewer — a profile that exists to be dispatched, not booted.
+#
+# `spec.subagent` is the WHOLE of what its definition holds. The profile that
+# names it neither narrows nor widens it: there is no tool intersection and no
+# depth cap, so a tool the reviewer needs is a change made HERE. `name` is the
+# one key cairn writes — it is forced to the profile id, because the harness
+# resolves a definition by that field and a mismatch is silent.
+#
+# The `body` key is the definition's prompt. It is not this row's `body`
+# column: a dispatched subagent already receives the boot directory's
+# CLAUDE.md, and through it AGENTS.md, so the cascade is already in its
+# context and repeating it here would only add an ancestor's persona to a
+# profile that does something else.
+# ---------------------------------------------------------------------------
+sqlite3 "$DB" <<SQL
+INSERT OR REPLACE INTO profiles
+  (id, extends, abstract, name, description, provider, model, body, spec, created_at, updated_at)
+VALUES (
+  'reviewer', 'base', 0, 'Reviewer', 'Reviews a diff with no shared context.', 'claude', '',
+  '',
+  json('{
+    "subagent": {
+      "description": "Reviews a diff with no shared context. Use after a change is written and before it lands.",
+      "tools": ["Read", "Grep", "Glob"],
+      "model": "sonnet",
+      "body": "Read the diff. Report what you found and nothing else.\n"
     }
   }'),
   '$NOW', '$NOW');

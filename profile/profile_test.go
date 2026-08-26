@@ -267,16 +267,71 @@ func TestSpecFilesLeavesAnUnknownKindToWhateverResolvesIt(t *testing.T) {
 	}
 }
 
+// TestSpecSubagents covers the parent's half of the feature: a list of the
+// profile ids whose definitions the boot directory carries.
+func TestSpecSubagents(t *testing.T) {
+	t.Parallel()
+
+	s := spec(t, map[string]string{SpecKeySubagents: `["reviewer", "worker"]`})
+	got, err := s.Subagents()
+	if err != nil {
+		t.Fatalf("Subagents() = error %v", err)
+	}
+	if len(got) != 2 || got[0] != "reviewer" || got[1] != "worker" {
+		t.Errorf("Subagents() = %v, want the declared ids in order", got)
+	}
+}
+
+// TestSpecSubagentIsCarriedVerbatim covers the child's half. The declaration
+// is opaque here for the same reason the settings document is: what it holds
+// belongs to the harness that reads it, and this package hands over the bytes.
+func TestSpecSubagentIsCarriedVerbatim(t *testing.T) {
+	t.Parallel()
+
+	const raw = `{"description":"Fresh review.","tools":["Read"],"aKeyNothingKnows":1}`
+	got, ok := spec(t, map[string]string{SpecKeySubagent: raw}).Subagent()
+	if !ok {
+		t.Fatal("Subagent() reported the key as undeclared")
+	}
+	if string(got) != raw {
+		t.Errorf("Subagent() = %s, want the stored bytes %s", got, raw)
+	}
+}
+
+// TestSpecSubagentUndeclared covers every way the key can be absent, including
+// the explicit null a descendant clears an ancestor's declaration with.
+func TestSpecSubagentUndeclared(t *testing.T) {
+	t.Parallel()
+
+	for name, s := range map[string]Spec{
+		"a nil spec":               nil,
+		"an empty spec":            {},
+		"another key only":         spec(t, map[string]string{SpecKeySkills: `["a"]`}),
+		"the key holding no bytes": {SpecKeySubagent: json.RawMessage("")},
+		"the key set to null":      spec(t, map[string]string{SpecKeySubagent: `null`}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := s.Subagent()
+			if ok || got != nil {
+				t.Errorf("Subagent() = %s, %v; want nil, false", got, ok)
+			}
+		})
+	}
+}
+
 func TestSpecAccessorsOnAnEmptyManifest(t *testing.T) {
 	t.Parallel()
 
 	// A manifest is not obliged to declare anything, and a profile that never
 	// had one at all is the same case.
 	for _, s := range []Spec{nil, {}, spec(t, map[string]string{
-		SpecKeySlots:  `null`,
-		SpecKeyMCP:    `null`,
-		SpecKeySkills: `null`,
-		SpecKeyFiles:  `null`,
+		SpecKeySlots:     `null`,
+		SpecKeyMCP:       `null`,
+		SpecKeySkills:    `null`,
+		SpecKeyFiles:     `null`,
+		SpecKeySubagents: `null`,
 	})} {
 		slots, err := s.Slots()
 		if err != nil || slots != nil {
@@ -297,6 +352,10 @@ func TestSpecAccessorsOnAnEmptyManifest(t *testing.T) {
 		files, err := s.Files()
 		if err != nil || files != nil {
 			t.Errorf("Files() = %v, %v; want nil, nil", files, err)
+		}
+		named, err := s.Subagents()
+		if err != nil || named != nil {
+			t.Errorf("Subagents() = %v, %v; want nil, nil", named, err)
 		}
 	}
 }
@@ -339,6 +398,12 @@ func TestSpecMalformedValueNamesItsKey(t *testing.T) {
 			key:   SpecKeyFiles,
 			value: `["notes.md"]`,
 			call:  func(s Spec) error { _, err := s.Files(); return err },
+		},
+		{
+			name:  "subagents is not a list",
+			key:   SpecKeySubagents,
+			value: `{"reviewer":true}`,
+			call:  func(s Spec) error { _, err := s.Subagents(); return err },
 		},
 	}
 

@@ -64,6 +64,7 @@ func TestBootEndToEnd(t *testing.T) {
 		".claude/skills/code-review/run.sh",
 		"notes/scratch.md",
 		"tasks/T-1/task.md",
+		".claude/agents/reviewer.md",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
 			t.Errorf("the boot directory is missing %s: %v", rel, err)
@@ -112,6 +113,26 @@ func TestBootEndToEnd(t *testing.T) {
 	// of them.
 	if got := read(t, dir, ".claude/settings.json"); !strings.Contains(got, `"whateverTheOperatorWrote"`) {
 		t.Errorf("settings.json was not written verbatim:\n%s", got)
+	}
+
+	// A subagent definition is the named profile's own declaration, and only
+	// that. The parent neither narrowed nor widened it, and the named
+	// profile's persona is not in it — that is what the declaration's own body
+	// key is for.
+	definition := read(t, dir, ".claude/agents/reviewer.md")
+	for _, want := range []string{
+		"---\nname: reviewer\n",
+		"description: Fresh review with no shared context.",
+		"model: sonnet",
+		"- Read",
+		"You review a diff and report what you found.",
+	} {
+		if !strings.Contains(definition, want) {
+			t.Errorf("the definition does not carry %q:\n%s", want, definition)
+		}
+	}
+	if strings.Contains(definition, "reviewer persona") || strings.Contains(definition, "base persona") {
+		t.Errorf("the definition carries a cascaded body:\n%s", definition)
 	}
 
 	// A skill's executable bit is load-bearing: a script that arrives without
@@ -315,6 +336,33 @@ func TestBootRefusals(t *testing.T) {
 		}
 	})
 
+	for name, target := range map[string]string{
+		"a subagent with no profile":                "names-nosuchprofile",
+		"a subagent that is abstract":               "names-template",
+		"a subagent that declares no spec.subagent": "names-plain",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			err := run(ctx, []string{
+				"boot", target, "--db", dbPath,
+				"--boot-root", filepath.Join(home, target), "--session", "s1",
+			}, &out, &errOut)
+			if err == nil {
+				t.Fatalf("booting %s succeeded, want a refusal", target)
+			}
+			// Both ends of the reference: an operator reading it has to know
+			// which profile named which id.
+			for _, want := range []string{target, strings.TrimPrefix(target, "names-")} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal %q does not name %q", err, want)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(home, target, target, "s1")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("a refused boot left a directory behind: %v", err)
+			}
+		})
+	}
+
 	t.Run("a boot directory inside the scope", func(t *testing.T) {
 		var out, errOut bytes.Buffer
 		err := run(ctx, []string{
@@ -459,12 +507,44 @@ func seed(t *testing.T, ctx context.Context, dbPath, skillsDir, scopeDir string)
 			"somethingCairnHasNeverHeardOf": json.RawMessage(`{"nested":[1,2,3]}`),
 		},
 	}
+	// A profile that exists to be dispatched. Its spec.subagent is the whole
+	// of what a definition is rendered from — the parent neither narrows nor
+	// widens it, so a tool this profile needs is a change made here.
+	reviewer := profile.Profile{
+		ID:      "reviewer",
+		Extends: "base",
+		Name:    "Reviewer",
+		Body:    "reviewer persona, which the definition does not carry",
+		Spec: profile.Spec{
+			"subagent": json.RawMessage(`{
+				"description": "Fresh review with no shared context.",
+				"tools": ["Read", "Grep", "Glob"],
+				"model": "sonnet",
+				"body": "You review a diff and report what you found.\n"
+			}`),
+		},
+	}
+	// Three profiles a boot has to refuse to name as a subagent: one that is
+	// abstract, one that declares no definition, and — by its absence — one
+	// that does not exist.
+	abstractSub := profile.Profile{ID: "template", Extends: "base", Abstract: true, Name: "Template",
+		Spec: profile.Spec{"subagent": json.RawMessage(`{"description":"d"}`)}}
+	undeclaredSub := profile.Profile{ID: "plain", Extends: "base", Name: "Plain"}
+
+	namesSubagent := func(id string) profile.Profile {
+		return profile.Profile{
+			ID: "names-" + id, Extends: "base", Name: "Names " + id,
+			Spec: profile.Spec{"subagents": json.RawMessage(`["` + id + `"]`)},
+		}
+	}
+
 	engineer := profile.Profile{
 		ID:      "engineer",
 		Extends: "base",
 		Name:    "Engineer",
 		Body:    "engineer persona",
 		Spec: profile.Spec{
+			"subagents": json.RawMessage(`["reviewer"]`),
 			// Three slots on purpose: one that resolves, one that resolves
 			// empty, and one that fails. The last two are the pair docs/plan.md
 			// §5 says must leave nothing behind.
@@ -497,7 +577,11 @@ func seed(t *testing.T, ctx context.Context, dbPath, skillsDir, scopeDir string)
 			}`),
 		},
 	}
-	for _, p := range []profile.Profile{base, engineer, broken} {
+	profiles := []profile.Profile{
+		base, engineer, broken, reviewer, abstractSub, undeclaredSub,
+		namesSubagent("template"), namesSubagent("plain"), namesSubagent("nosuchprofile"),
+	}
+	for _, p := range profiles {
 		if err := st.PutProfile(ctx, p); err != nil {
 			t.Fatalf("put profile %q: %v", p.ID, err)
 		}

@@ -10,8 +10,8 @@ package bootdir
 // Each Artifact is the name of one line of the output contract, which is what
 // a diagnostic quotes. It is a label and never a path: the path an artifact is
 // written to comes from the instance's [Layout], four of whose artifacts
-// belong to the provider rather than to cairn, and the skills and files
-// renderers each emit a tree.
+// belong to the provider rather than to cairn, while the skills renderer emits
+// a tree and the subagents and files renderers each emit many files.
 func Renderers() []Renderer {
 	return []Renderer{
 		{Artifact: AgentsFileName, Render: RenderAgents},
@@ -20,6 +20,7 @@ func Renderers() []Renderer {
 		{Artifact: ".mcp.json", Render: renderMCP},
 		{Artifact: ".claude/settings.json", Render: RenderSettings},
 		{Artifact: SkillsDirName, Render: RenderSkills},
+		{Artifact: SubagentsDirName, Render: renderSubagents},
 		{Artifact: "files", Render: renderFiles},
 	}
 }

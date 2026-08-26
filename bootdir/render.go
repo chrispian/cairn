@@ -89,6 +89,14 @@ type Instance struct {
 	// resolving one runs commands and makes requests. Nil renders no extra
 	// files.
 	Files map[string]string
+
+	// Subagents are the definitions this instance plants, in the order the
+	// manifest named them, each carrying the named profile's own declaration.
+	// They arrive resolved for the same reason Boot and Files do: naming a
+	// subagent means reading another profile out of the store and walking its
+	// extends chain, and a renderer reads nothing it was not handed. Empty
+	// renders no definitions.
+	Subagents []Subagent
 }
 
 // Renderer produces one boot-directory artifact. It is a value rather than an

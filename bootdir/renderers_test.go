@@ -35,7 +35,8 @@ func contractInstance(t *testing.T) *Instance {
 			// below the way the composition root resolves it.
 			"tasks/T-1/task.md": map[string]any{"kind": "cmd", "cmd": map[string]any{"run": "torque task get T-1"}},
 		},
-		"a key nothing renders": "carried and ignored",
+		profile.SpecKeySubagents: []string{"scribe"},
+		"a key nothing renders":  "carried and ignored",
 	})
 	if err != nil {
 		t.Fatalf("encode the manifest: %v", err)
@@ -59,6 +60,12 @@ func contractInstance(t *testing.T) *Instance {
 		"notes/decisions.md": "a planted note\n",
 		"tasks/T-1/task.md":  "# T-1\n\nin progress\n",
 	}
+	// Subagent declarations reach a renderer already resolved, for the same
+	// reason: reading the profile a manifest names is a trip to the store.
+	inst.Subagents = []Subagent{{
+		ID:          "scribe",
+		Declaration: json.RawMessage(`{"description": "Writes the decision down.", "body": "You write it down.\n"}`),
+	}}
 	return inst
 }
 
@@ -80,6 +87,7 @@ func TestRenderProducesTheOutputContract(t *testing.T) {
 		".claude/settings.json",
 		".claude/skills/code-review/SKILL.md",
 		".claude/skills/code-review/references/checklist.md",
+		".claude/agents/scribe.md",
 		"notes/decisions.md",
 		"tasks/T-1/task.md",
 	}
@@ -143,7 +151,12 @@ func TestRenderIsByteStable(t *testing.T) {
 // already claims. Which one won would depend on renderer order, so neither
 // does.
 func TestRenderRefusesTwoFilesAtOnePath(t *testing.T) {
-	for _, taken := range []string{"AGENTS.md", "CLAUDE.md", "boot.md", ".mcp.json"} {
+	taken := []string{
+		"AGENTS.md", "CLAUDE.md", "boot.md", ".mcp.json",
+		".claude/skills/code-review/SKILL.md",
+		".claude/agents/scribe.md",
+	}
+	for _, taken := range taken {
 		inst := contractInstance(t)
 		inst.Files[taken] = "a second file at a path an artifact already claims"
 
@@ -176,8 +189,8 @@ func TestRenderersAreRegisteredOnce(t *testing.T) {
 		}
 		seen[renderer.Artifact] = struct{}{}
 	}
-	if len(seen) != 7 {
-		t.Errorf("%d artifacts are registered, want the 7 of the output contract: %v",
+	if len(seen) != 8 {
+		t.Errorf("%d artifacts are registered, want the 8 of the output contract: %v",
 			len(seen), seen)
 	}
 }

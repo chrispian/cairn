@@ -80,6 +80,17 @@ const (
 
 	// SpecKeyFiles maps boot-directory-relative paths to their contents.
 	SpecKeyFiles = "files"
+
+	// SpecKeySubagents holds the ids of the profiles rendered as subagent
+	// definitions in the boot directory. It is declared by the profile being
+	// booted, and names other profiles.
+	SpecKeySubagents = "subagents"
+
+	// SpecKeySubagent holds one profile's own declaration of the definition it
+	// is rendered as when another profile names it under [SpecKeySubagents].
+	// It is an opaque map, carried into the definition's frontmatter the way
+	// [SpecKeySettings] is carried into the settings document.
+	SpecKeySubagent = "subagent"
 )
 
 // Profile is one stored profile: a row of the profiles table, with its
@@ -194,6 +205,32 @@ func (s Spec) SkillsDir() (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// Subagents returns the profile ids under [SpecKeySubagents]. A manifest
+// declaring none returns nil and no error.
+func (s Spec) Subagents() ([]string, error) {
+	var out []string
+	if err := s.decode(SpecKeySubagents, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Subagent returns this profile's own subagent declaration under
+// [SpecKeySubagent] exactly as it was stored, and whether the key was declared
+// at all. The bytes are not read here: what they hold is the renderer's
+// question, and whether they are wanted at all is the question of whether some
+// other profile named this one.
+//
+// A key set to JSON null reads as undeclared, matching [Spec.Settings] and the
+// cascade, where null is how a profile clears a key an ancestor declared.
+func (s Spec) Subagent() (json.RawMessage, bool) {
+	raw, ok := s[SpecKeySubagent]
+	if !ok || isUndeclared(raw) {
+		return nil, false
+	}
+	return raw, true
 }
 
 // Settings returns the provider settings document under [SpecKeySettings]

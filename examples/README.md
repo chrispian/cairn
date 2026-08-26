@@ -29,8 +29,9 @@ in a sqlite database at `$XDG_CONFIG_HOME/agents/cairn.db` (override with
 ./examples/seed.sh
 ```
 
-It writes an abstract `base`, a concrete `engineer` that extends it, two scope
-aliases, and two bindings. Read it — it is the profile-authoring documentation.
+It writes an abstract `base`, a concrete `engineer` that extends it, a
+`reviewer` that exists only to be dispatched, two scope aliases, and two
+bindings. Read it — it is the profile-authoring documentation.
 
 Three things it demonstrates that are easy to get wrong:
 
@@ -71,6 +72,7 @@ What lands:
   .mcp.json              spec.mcp
   .claude/settings.json  spec.settings, verbatim
   .claude/skills/        spec.skills, whole directory trees
+  .claude/agents/<id>.md spec.subagents, one per named profile
   <spec.files>           arbitrary paths, literal or resolved
 ```
 
@@ -127,6 +129,68 @@ directory behind.
 A source that resolves *empty* is not a failure and plants an empty file — the
 resolver answered, and what it answered is content, which Cairn does not read.
 
+### `subagents`: naming other profiles
+
+`spec.subagents` is a list of profile ids. Each is looked up, resolved through
+its own cascade, and written to `.claude/agents/<id>.md`. What lands in the
+file is **that profile's own `spec.subagent`** — an opaque map, carried into
+the frontmatter the way `spec.settings` is carried into the settings document:
+
+```jsonc
+// in the profile that boots
+"subagents": ["reviewer"]
+
+// in reviewer's own spec
+"subagent": {
+  "description": "Reviews a diff with no shared context.",
+  "tools": ["Read", "Grep", "Glob"],
+  "model": "sonnet",
+  "body": "Read the diff. Report what you found and nothing else.\n"
+}
+```
+
+which renders:
+
+```markdown
+---
+name: reviewer
+description: Reviews a diff with no shared context.
+tools:
+  - Read
+  - Grep
+  - Glob
+model: sonnet
+---
+
+Read the diff. Report what you found and nothing else.
+```
+
+**A parent may not narrow or expand a child.** There is no tool intersection,
+no ceiling, no depth cap — Cairn has no `tools` concept and reads none of these
+keys. If the reviewer needs a tool it does not have, edit the reviewer. Depth is
+1 because Cairn renders the ids you named and stops: it never reads a named
+profile's own `subagents`, and a subagent gets no boot directory of its own.
+
+Two things are Cairn's, and both exist because the alternative fails quietly:
+
+- **`name` is forced to the profile id**, because the harness resolves a
+  definition by that field rather than by the filename, and a definition with
+  no `name` at all is dropped with no message. Write a *different* `name` and
+  Cairn refuses rather than overwriting what you wrote.
+- **A named id with no profile, an `abstract` profile, or a profile with no
+  `subagent` key refuses the boot**, naming the id and the profile that named
+  it. Nothing is written.
+
+`body` is the definition's prompt, and it is the declaration's own key rather
+than the profile's `body` column. A dispatched subagent already receives the
+boot directory's `CLAUDE.md`, and through it `AGENTS.md` — so the cascade is in
+its context already, and rendering it again would only add an ancestor's
+persona to a profile that does something else. Leave `body` out and the
+definition is frontmatter and nothing else.
+
+A `files` entry at `.claude/agents/<id>.md` is a duplicate path, and refuses.
+Neither wins.
+
 ### The settings tier, and why `boot.sh` passes `--settings`
 
 A `settings.json` that merely sits in the boot directory is read as
@@ -164,7 +228,9 @@ this machine runs under `~/.claude`, so an agent that runs it rewrites its own
 live configuration mid-session.
 
 Cairn claims four things in that directory — `AGENTS.md`, `CLAUDE.md`,
-`settings.json`, and the `skills/` subtree. Everything else (`settings.local.json`,
+`settings.json`, and the `skills/` subtree. Not `agents/`: subagent definitions
+are a boot-directory artifact, and claiming that directory would report every
+definition you wrote by hand as an orphan. Everything else (`settings.local.json`,
 `.credentials.json`, `projects/`, `todos/`, `history.jsonl`) is invisible to
 `--check`, which is why it does not cry wolf on a real installation.
 
