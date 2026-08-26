@@ -85,7 +85,7 @@ an HTTP endpoint or any command, which is how memory and task state get in:
 "slots": [
   { "name": "memory", "section": "## Memory",
     "source": { "kind": "http_json",
-                "http_json": { "url": "${TESSERACT_URL}/v1/recall?limit=20" } } },
+                "http_json": { "url": "http://127.0.0.1:8089/v1/recall?limit=20" } } },
   { "name": "tasks", "section": "## Open tasks",
     "source": { "kind": "cmd",
                 "cmd": { "run": "torque tasks list --status in_progress --format brief" } } }
@@ -93,7 +93,12 @@ an HTTP endpoint or any command, which is how memory and task state get in:
 ```
 
 Kinds: `static_file`, `static_dir`, `inline`, `cmd`, `http_text`, `http_json`,
-`role_summary`. Write `"kind"`, not `"type"` — Cairn will say so if you forget.
+`role_summary`.
+
+**Nothing expands `$VAR` or `${VAR}`** in a slot's URL or path — no resolver in
+`agentcontext` reads the environment, so the string is used verbatim. Tether's
+own boot profiles do expand them, which makes this an easy mistake to carry
+across. A `cmd` slot can shell out if you need the environment. Write `"kind"`, not `"type"` — Cairn will say so if you forget.
 
 **A slot that fails renders nothing at all** — no heading, no marker — and so
 does one that resolves empty. Cairn writes no sentence of its own into an
