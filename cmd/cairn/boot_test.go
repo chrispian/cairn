@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/chrispian/cairn/profile"
 	"github.com/chrispian/cairn/scope"
+	"github.com/chrispian/cairn/slots"
 	"github.com/chrispian/cairn/store"
 )
 
@@ -60,6 +63,7 @@ func TestBootEndToEnd(t *testing.T) {
 		".claude/skills/code-review/references/checklist.md",
 		".claude/skills/code-review/run.sh",
 		"notes/scratch.md",
+		"tasks/T-1/task.md",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
 			t.Errorf("the boot directory is missing %s: %v", rel, err)
@@ -79,6 +83,16 @@ func TestBootEndToEnd(t *testing.T) {
 
 	if got := read(t, dir, "boot.md"); !strings.Contains(got, "the standing note") {
 		t.Errorf("boot.md does not carry the assembled slot:\n%s", got)
+	}
+
+	// A literal files entry is planted as written; a source entry is planted
+	// with what it resolved to, at the same kind of path. The second is the
+	// torque case — a task bundle rendered from state that is only true now.
+	if got := read(t, dir, "notes/scratch.md"); got != "scratch\n" {
+		t.Errorf("the literal files entry holds %q, want %q", got, "scratch\n")
+	}
+	if got, want := read(t, dir, "tasks/T-1/task.md"), "# T-1\nin progress\n"; got != want {
+		t.Errorf("the sourced files entry holds %q, want the resolved %q", got, want)
 	}
 
 	var mcp struct {
@@ -108,6 +122,167 @@ func TestBootEndToEnd(t *testing.T) {
 	}
 	if info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("the planted run.sh lost its executable bit: mode %v", info.Mode().Perm())
+	}
+}
+
+// TestASlotThatProducedNothingLeavesNoTraceInTheBootFile is docs/plan.md §5
+// read off disk rather than off a renderer.
+//
+// The seeded profile declares three slots: one that resolves, one that
+// resolves empty, and one whose file is not there. Only the first reaches
+// boot.md — no heading, no marker, and no blank section for the other two. An
+// earlier revision wrote "**Unavailable.**" plus the error, which is cairn
+// authoring prose into the agent's context; the operator still hears about it,
+// on stderr, which is where an operator reads.
+func TestASlotThatProducedNothingLeavesNoTraceInTheBootFile(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	var stdout, stderr bytes.Buffer
+	err := run(ctx, []string{
+		"boot", "engineer",
+		"--db", dbPath,
+		"--boot-root", filepath.Join(home, "runtime", "boot"),
+		"--session", "s1",
+	}, &stdout, &stderr)
+	// A slot that failed does not fail the boot. One unreachable endpoint
+	// should not stop an operator working.
+	if err != nil {
+		t.Fatalf("boot: %v\nstderr: %s", err, stderr.String())
+	}
+
+	boot := read(t, strings.TrimSpace(stdout.String()), "boot.md")
+	if want := "## Note\nthe standing note\n"; boot != want {
+		t.Errorf("boot.md is\n%q\nwant only the slot that resolved\n%q", boot, want)
+	}
+	for _, absent := range []string{"## Quiet", "## Memory", "never-written.md", "Unavailable"} {
+		if strings.Contains(boot, absent) {
+			t.Errorf("boot.md carries %q:\n%s", absent, boot)
+		}
+	}
+	// One trailing newline, whichever slot happened to come last. The two that
+	// produced nothing are gone before the file is written, so the last byte is
+	// not theirs to decide.
+	if !strings.HasSuffix(boot, "\n") || strings.HasSuffix(boot, "\n\n") {
+		t.Errorf("boot.md does not end in exactly one newline: %q", boot)
+	}
+
+	// The failure is the operator's, and this is where the operator reads it.
+	if !strings.Contains(stderr.String(), `slot "memory"`) {
+		t.Errorf("stderr does not report the slot that failed:\n%s", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "memory") {
+		t.Errorf("the failure reached stdout, which carries only the path:\n%s", stdout.String())
+	}
+}
+
+// TestTwoBootsOfOneProfileAreByteIdentical is the determinism contract over
+// the whole directory rather than over one renderer.
+//
+// Slots resolve at materialization and may legitimately differ between two
+// runs — that is a property of the resolver, and why agentcontext hashes the
+// request rather than the result. These resolvers are fixed, so anything that
+// differs here is cairn's own nondeterminism: a map iterated without sorting,
+// a clock, an environment read from inside a renderer.
+func TestTwoBootsOfOneProfileAreByteIdentical(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	bootRoot := filepath.Join(home, "runtime", "boot")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	boot := func(session string) map[string]string {
+		var stdout, stderr bytes.Buffer
+		if err := run(ctx, []string{
+			"boot", "engineer",
+			"--db", dbPath,
+			"--boot-root", bootRoot,
+			"--session", session,
+		}, &stdout, &stderr); err != nil {
+			t.Fatalf("boot %s: %v\nstderr: %s", session, err, stderr.String())
+		}
+		return treeOf(t, strings.TrimSpace(stdout.String()))
+	}
+
+	first := boot("s1")
+	if len(first) == 0 {
+		t.Fatal("the first boot wrote nothing")
+	}
+	for i := range 3 {
+		again := boot(fmt.Sprintf("s%d", i+2))
+		if !maps.Equal(again, first) {
+			for rel, want := range first {
+				if got, ok := again[rel]; !ok {
+					t.Errorf("boot %d did not write %s", i+2, rel)
+				} else if got != want {
+					t.Errorf("boot %d wrote a different %s:\n%q\nwant\n%q", i+2, rel, got, want)
+				}
+			}
+			for rel := range again {
+				if _, ok := first[rel]; !ok {
+					t.Errorf("boot %d wrote %s, which the first did not", i+2, rel)
+				}
+			}
+		}
+	}
+}
+
+// TestBootRefusesAFileSourceThatDoesNotResolve is the deliberate opposite of
+// the slot rule above, and the reason the two are not one mechanism.
+//
+// A slot that does not resolve leaves a section out of boot.md and the agent
+// asks its tools instead. A file that does not resolve leaves a hole at a path
+// the profile promised, and whatever reads that path cannot tell "never
+// declared" from "the command that fills it fell over". So the boot is refused
+// — and refused before anything is written, because half a boot directory is
+// not something a caller can recover from.
+func TestBootRefusesAFileSourceThatDoesNotResolve(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	bootRoot := filepath.Join(home, "runtime", "boot")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	var stdout, stderr bytes.Buffer
+	err := run(ctx, []string{
+		"boot", "brokenfiles",
+		"--db", dbPath,
+		"--boot-root", bootRoot,
+		"--session", "s1",
+	}, &stdout, &stderr)
+	if !errors.Is(err, slots.ErrFileSource) {
+		t.Fatalf("boot = %v, want ErrFileSource", err)
+	}
+	// The path is what makes the diagnostic actionable: the resolver's own
+	// error knows the file it could not read and not the file it was filling.
+	if !strings.Contains(err.Error(), "tasks/T-2/task.md") {
+		t.Errorf("the refusal does not name the path it was going to write: %v", err)
+	}
+	if !strings.Contains(err.Error(), "brokenfiles") {
+		t.Errorf("the refusal does not name the profile: %v", err)
+	}
+
+	if got := strings.TrimSpace(stdout.String()); got != "" {
+		t.Errorf("a refused boot printed %q, want nothing on stdout", got)
+	}
+	// Nothing was written. Sources resolve before rendering begins, so the
+	// literal entry that would have resolved never reaches disk either.
+	if _, err := os.Stat(filepath.Join(bootRoot, "brokenfiles", "s1")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a refused boot left a directory behind: %v", err)
 	}
 }
 
@@ -260,6 +435,10 @@ func TestInstall(t *testing.T) {
 // seed writes the two profiles and the binding the tests above boot.
 func seed(t *testing.T, ctx context.Context, dbPath, skillsDir, scopeDir string) {
 	t.Helper()
+	// A path nothing ever writes, for the slot and the file source that have
+	// to fail. It sits under the test's own temp tree so it cannot collide
+	// with anything real.
+	missing := filepath.Join(filepath.Dir(dbPath), "never-written.md")
 	st, err := store.Open(ctx, dbPath)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
@@ -286,14 +465,39 @@ func seed(t *testing.T, ctx context.Context, dbPath, skillsDir, scopeDir string)
 		Name:    "Engineer",
 		Body:    "engineer persona",
 		Spec: profile.Spec{
-			"slots":      json.RawMessage(`[{"name":"note","source":{"kind":"inline","inline":{"content":"the standing note"}}}]`),
+			// Three slots on purpose: one that resolves, one that resolves
+			// empty, and one that fails. The last two are the pair docs/plan.md
+			// §5 says must leave nothing behind.
+			"slots": json.RawMessage(`[
+				{"name":"note",  "section":"## Note",  "source":{"kind":"inline","inline":{"content":"the standing note"}}},
+				{"name":"quiet", "section":"## Quiet", "source":{"kind":"cmd","cmd":{"run":"true"}}},
+				{"name":"memory","section":"## Memory","source":{"kind":"static_file","static_file":{"path":"` + missing + `"}}}
+			]`),
 			"mcp":        json.RawMessage(`[{"name":"vanta","command":"vanta-mcp","args":["serve"]}]`),
 			"skills":     json.RawMessage(`["code-review"]`),
 			"skills_dir": json.RawMessage(`"` + skillsDir + `"`),
-			"files":      json.RawMessage(`{"notes/scratch.md":"scratch\n"}`),
+			// A literal and a source side by side: the source is the torque
+			// case, a task bundle rendered from state that is only true now.
+			"files": json.RawMessage(`{
+				"notes/scratch.md":  "scratch\n",
+				"tasks/T-1/task.md": {"kind":"cmd","cmd":{"run":"printf '# T-1\\nin progress\\n'"}}
+			}`),
 		},
 	}
-	for _, p := range []profile.Profile{base, engineer} {
+	// A profile whose file source cannot resolve. Nothing boots it except the
+	// test that asserts a boot is refused rather than half-written.
+	broken := profile.Profile{
+		ID:      "brokenfiles",
+		Extends: "base",
+		Name:    "Broken",
+		Spec: profile.Spec{
+			"files": json.RawMessage(`{
+				"notes/fine.md":     "a literal, which resolves",
+				"tasks/T-2/task.md": {"kind":"static_file","static_file":{"path":"` + missing + `"}}
+			}`),
+		},
+	}
+	for _, p := range []profile.Profile{base, engineer, broken} {
 		if err := st.PutProfile(ctx, p); err != nil {
 			t.Fatalf("put profile %q: %v", p.ID, err)
 		}
@@ -330,6 +534,33 @@ func writeFile(t *testing.T, path, content string, mode fs.FileMode) {
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatalf("chmod %s: %v", path, err)
 	}
+}
+
+// treeOf reads every file under dir into a map of slash-separated relative
+// path to content, so two boot directories can be compared as a whole rather
+// than one artifact at a time.
+func treeOf(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		out[filepath.ToSlash(rel)] = string(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return out
 }
 
 func read(t *testing.T, dir, rel string) string {

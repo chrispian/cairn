@@ -82,6 +82,13 @@ type Instance struct {
 	// makes requests and a renderer may do neither. Empty renders no boot
 	// file.
 	Boot string
+
+	// Files is the manifest's arbitrary files, keyed by boot-directory-relative
+	// path, with every value already resolved. It arrives resolved for the
+	// same reason Boot does: a files entry may name a slot source, and
+	// resolving one runs commands and makes requests. Nil renders no extra
+	// files.
+	Files map[string]string
 }
 
 // Renderer produces one boot-directory artifact. It is a value rather than an

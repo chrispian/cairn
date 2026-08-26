@@ -309,6 +309,14 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		reportSlotFailures(stderr, assembled)
 	}
 
+	// Files resolve here for the same reason slots do, and unlike a slot a
+	// source that fails fails the boot: a missing section is degraded context,
+	// a missing file is a hole at a path the profile promised.
+	planted, err := slots.ResolveFiles(ctx, resolved.Spec, slots.Options{Workdir: scopeDir})
+	if err != nil {
+		return fmt.Errorf("profile %q: %w", resolved.ID, err)
+	}
+
 	inst := &bootdir.Instance{
 		Dir:     dir,
 		Layout:  layout,
@@ -316,6 +324,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		Profile: resolved,
 		Scope:   scopeDir,
 		Boot:    boot,
+		Files:   planted,
 	}
 	files, err := bootdir.Render(inst)
 	if err != nil {

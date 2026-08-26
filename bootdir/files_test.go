@@ -14,14 +14,14 @@ import (
 // a rendering has to be the same twice. The content is untouched because cairn
 // does not know what any of it is for.
 func TestFilesRenderSortedAndVerbatim(t *testing.T) {
-	manifest := `{"files": {
+	inst := testInstance(t, profile.Resolved{ID: "reviewer"})
+	inst.Files = map[string]string{
 		"notes/zulu.md":   "zulu\n",
 		"alpha.md":        "alpha, with no trailing newline",
 		"notes/alpha.md":  "nested alpha\n",
 		"deeply/nested/x": "not markdown at all\r\n\tand not reformatted\n",
-		"b.md":            ""
-	}}`
-	inst := testInstance(t, profile.Resolved{ID: "reviewer", Spec: testSpec(t, manifest)})
+		"b.md":            "",
+	}
 
 	files, err := renderFiles(inst)
 	if err != nil {
@@ -31,30 +31,55 @@ func TestFilesRenderSortedAndVerbatim(t *testing.T) {
 	if got := filePaths(files); !slices.Equal(got, want) {
 		t.Fatalf("rendered %v, want %v", got, want)
 	}
-	for _, tt := range []struct{ path, content string }{
-		{"alpha.md", "alpha, with no trailing newline"},
-		{"b.md", ""},
-		{"deeply/nested/x", "not markdown at all\r\n\tand not reformatted\n"},
-		{"notes/zulu.md", "zulu\n"},
-	} {
-		if got := string(fileByPath(t, files, tt.path).Content); got != tt.content {
-			t.Errorf("%s holds %q, want %q", tt.path, got, tt.content)
+	for path, content := range inst.Files {
+		if got := string(fileByPath(t, files, path).Content); got != content {
+			t.Errorf("%s holds %q, want %q", path, got, content)
 		}
 	}
 }
 
-// TestFilesAreAbsentWhenNoneAreDeclared covers the profile that declares no
-// files key at all.
+// TestFilesArriveResolvedRatherThanFromTheManifest states where the content
+// comes from, which is the
+// which is the half of this renderer that is easy to get wrong.
+//
+// A files value may be a slot source rather than a literal, and resolving one
+// runs a command or makes a request — which a renderer may not do. So the
+// manifest is read in the composition root and the instance carries the
+// answer. A renderer that read spec.files itself would plant the JSON of a
+// source object as though it were the file's content.
+func TestFilesArriveResolvedRatherThanFromTheManifest(t *testing.T) {
+	inst := testInstance(t, profile.Resolved{
+		ID:   "reviewer",
+		Spec: testSpec(t, `{"files": {"tasks/task.md": {"kind":"cmd","cmd":{"run":"torque task get T-1"}}}}`),
+	})
+	inst.Files = map[string]string{"tasks/task.md": "# T-1\n\nin progress\n"}
+
+	files, err := renderFiles(inst)
+	if err != nil {
+		t.Fatalf("renderFiles(): %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("rendered %v, want the one resolved file", filePaths(files))
+	}
+	if got := string(files[0].Content); got != inst.Files["tasks/task.md"] {
+		t.Errorf("the file holds %q, want the resolved content %q", got, inst.Files["tasks/task.md"])
+	}
+}
+
+// TestFilesAreAbsentWhenNoneAreDeclared covers the instance carrying none,
+// whatever the manifest said — a manifest declaring only sources that all
+// resolved to nothing is the same case here as one declaring no files at all.
 func TestFilesAreAbsentWhenNoneAreDeclared(t *testing.T) {
-	for _, manifest := range []string{"", `{}`, `{"files": {}}`, `{"files": null}`} {
-		inst := testInstance(t, profile.Resolved{ID: "quiet", Spec: testSpec(t, manifest)})
+	for _, resolved := range []map[string]string{nil, {}} {
+		inst := testInstance(t, profile.Resolved{ID: "quiet", Spec: testSpec(t, `{"files": {"a.md": "x"}}`)})
+		inst.Files = resolved
 
 		files, err := renderFiles(inst)
 		if err != nil {
-			t.Fatalf("renderFiles() with manifest %q: %v", manifest, err)
+			t.Fatalf("renderFiles() with %v resolved: %v", resolved, err)
 		}
 		if len(files) != 0 {
-			t.Errorf("renderFiles() with manifest %q rendered %v, want nothing", manifest, filePaths(files))
+			t.Errorf("renderFiles() with %v resolved rendered %v, want nothing", resolved, filePaths(files))
 		}
 	}
 }
@@ -63,7 +88,8 @@ func TestFilesAreAbsentWhenNoneAreDeclared(t *testing.T) {
 // cannot report usefully: its diagnostic quotes the offending path, and an
 // empty one leaves nothing to quote.
 func TestFilesRefuseAPathThatCannotNameItself(t *testing.T) {
-	inst := testInstance(t, profile.Resolved{ID: "reviewer", Spec: testSpec(t, `{"files": {"": "x"}}`)})
+	inst := testInstance(t, profile.Resolved{ID: "reviewer"})
+	inst.Files = map[string]string{"": "x"}
 
 	_, err := renderFiles(inst)
 	if !errors.Is(err, ErrArtifactPath) {
@@ -80,8 +106,8 @@ func TestFilesRefuseAPathThatCannotNameItself(t *testing.T) {
 // every renderer.
 func TestFilesLeavePathSafetyToRender(t *testing.T) {
 	for _, bad := range []string{"../escape.md", "/absolute.md", "notes/../../escape.md"} {
-		manifest := `{"files": {"` + bad + `": "x"}}`
-		inst := testInstance(t, profile.Resolved{ID: "reviewer", Spec: testSpec(t, manifest)})
+		inst := testInstance(t, profile.Resolved{ID: "reviewer"})
+		inst.Files = map[string]string{bad: "x"}
 
 		if _, err := renderFiles(inst); err != nil {
 			t.Errorf("renderFiles() with %q returned %v; path safety is Render's question", bad, err)
@@ -93,15 +119,5 @@ func TestFilesLeavePathSafetyToRender(t *testing.T) {
 		if err != nil && !strings.Contains(err.Error(), bad) {
 			t.Errorf("the error %q does not name %q", err, bad)
 		}
-	}
-}
-
-// TestFilesCarryAMalformedManifestOut leaves the operator's own JSON to the
-// package that decodes it.
-func TestFilesCarryAMalformedManifestOut(t *testing.T) {
-	inst := testInstance(t, profile.Resolved{ID: "reviewer", Spec: testSpec(t, `{"files": ["not", "a map"]}`)})
-
-	if _, err := renderFiles(inst); err == nil {
-		t.Fatal("renderFiles() with a malformed files key returned no error")
 	}
 }

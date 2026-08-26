@@ -28,8 +28,14 @@ func contractInstance(t *testing.T) *Instance {
 		profile.SpecKeySkills:    []string{"code-review"},
 		profile.SpecKeySkillsDir: source,
 		profile.SpecKeySettings:  json.RawMessage(`{"model": "opus"}`),
-		profile.SpecKeyFiles:     map[string]string{"notes/decisions.md": "a planted note\n"},
-		"a key nothing renders":  "carried and ignored",
+		profile.SpecKeyFiles: map[string]any{
+			"notes/decisions.md": "a planted note\n",
+			// A source, not a literal — declared here so the fixture carries
+			// the shape a real manifest does, and resolved onto the instance
+			// below the way the composition root resolves it.
+			"tasks/T-1/task.md": map[string]any{"kind": "cmd", "cmd": map[string]any{"run": "torque task get T-1"}},
+		},
+		"a key nothing renders": "carried and ignored",
 	})
 	if err != nil {
 		t.Fatalf("encode the manifest: %v", err)
@@ -46,6 +52,13 @@ func contractInstance(t *testing.T) *Instance {
 	})
 	inst.Scope = "/Users/chrispian/dev/projects/cairn"
 	inst.Boot = "## repo\n\nthe assembled slot content\n"
+	// Files reach a renderer already resolved: a manifest entry may name a
+	// slot source, and resolving one runs commands and makes requests, which a
+	// renderer may not do.
+	inst.Files = map[string]string{
+		"notes/decisions.md": "a planted note\n",
+		"tasks/T-1/task.md":  "# T-1\n\nin progress\n",
+	}
 	return inst
 }
 
@@ -68,6 +81,7 @@ func TestRenderProducesTheOutputContract(t *testing.T) {
 		".claude/skills/code-review/SKILL.md",
 		".claude/skills/code-review/references/checklist.md",
 		"notes/decisions.md",
+		"tasks/T-1/task.md",
 	}
 	if got := filePaths(files); !slices.Equal(got, want) {
 		t.Fatalf("Render() produced\n%v\nwant\n%v", got, want)
@@ -131,18 +145,9 @@ func TestRenderIsByteStable(t *testing.T) {
 func TestRenderRefusesTwoFilesAtOnePath(t *testing.T) {
 	for _, taken := range []string{"AGENTS.md", "CLAUDE.md", "boot.md", ".mcp.json"} {
 		inst := contractInstance(t)
-		declared, err := inst.Profile.Spec.Files()
-		if err != nil {
-			t.Fatalf("read the files key: %v", err)
-		}
-		declared[taken] = "a second file at a path an artifact already claims"
-		encoded, err := json.Marshal(declared)
-		if err != nil {
-			t.Fatalf("encode the files key: %v", err)
-		}
-		inst.Profile.Spec[profile.SpecKeyFiles] = encoded
+		inst.Files[taken] = "a second file at a path an artifact already claims"
 
-		_, err = Render(inst)
+		_, err := Render(inst)
 		if !errors.Is(err, ErrDuplicatePath) {
 			t.Errorf("Render() with a second file at %s returned error %v, want ErrDuplicatePath",
 				taken, err)

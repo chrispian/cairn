@@ -161,7 +161,24 @@ resolved by the same resolvers `slots` uses. This is what gives parity with
 Torque, which plants a task bundle — `tasks/<id>/task.md`, `task.json`, and a
 per-task `process.md` — all rendered from live state, not from static profile
 content. Slots render into `boot.md`; `files` renders the same sources to
-arbitrary paths.
+arbitrary paths. A value that is neither of those two shapes is refused, by
+path — a silent coercion would plant bytes nobody wrote at a path a profile
+promised.
+
+**A file source that fails fails the boot**, which is deliberately the opposite
+of a slot. A slot that does not resolve leaves a section out of `boot.md` and
+the agent asks its tools instead; a file that does not resolve leaves a hole at
+a path the profile promised, and whatever reads that path cannot tell "never
+declared" from "the command that fills it fell over". Sources resolve before
+any file is rendered, so a refusal writes nothing at all rather than half a
+directory.
+
+A source that **resolves empty** is not a failure, and plants an empty file.
+The resolver was reached and it answered; that the answer was empty is content,
+and content is a black box (§1). Concretely, this is why the request declares
+its slots non-required: `agentcontext`'s `Required` flag fails an assembly on
+an empty result as well as on a failed one, and a task list that is
+legitimately empty is not a boot that should refuse to start.
 
 ### Cascade
 

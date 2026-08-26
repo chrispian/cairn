@@ -59,6 +59,15 @@ SQL
 # ---------------------------------------------------------------------------
 # engineer — a working profile. Slots are the interesting part: they resolve
 # at boot, so boot.md carries a live snapshot rather than a stale paragraph.
+#
+# "files" plants arbitrary paths. A value is either a literal string or a slot
+# source, resolved by the same resolvers — which is how a task bundle gets
+# planted from live state instead of frozen into the profile.
+#
+# Note the `|| true`. A slot that fails is survivable and Cairn carries on; a
+# FILE source that fails REFUSES THE BOOT, because a missing file is a hole at
+# a path the profile promised and nothing downstream notices. Guard anything
+# that can legitimately have nothing to say.
 # ---------------------------------------------------------------------------
 sqlite3 "$DB" <<SQL
 INSERT OR REPLACE INTO profiles
@@ -79,7 +88,11 @@ VALUES (
     "mcp": [
       { "name": "mux", "command": "mux",
         "args": ["mcp", "--proxy", "--servers", "tesseract,torque"] }
-    ]
+    ],
+    "files": {
+      "notes/scratch.md": "Scratch space for this session. Nothing reads it.\n",
+      "context/branch.md": { "kind": "cmd", "cmd": { "run": "git branch --show-current || true" } }
+    }
   }'),
   '$NOW', '$NOW');
 SQL

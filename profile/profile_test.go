@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/hollis-labs/agentkit/agentcontext"
 )
 
 func TestProviderValid(t *testing.T) {
@@ -172,17 +174,96 @@ func TestSpecSettingsUndeclared(t *testing.T) {
 	}
 }
 
+// TestSpecFiles covers both forms a files value may take. A string is content
+// the profile already knows and is planted verbatim; an object is a slot
+// source, resolved at materialization by whatever resolves slots. This
+// accessor decodes them and does not resolve anything.
 func TestSpecFiles(t *testing.T) {
 	t.Parallel()
 
-	s := spec(t, map[string]string{SpecKeyFiles: `{"docs/notes.md":"hello","x.txt":""}`})
+	s := spec(t, map[string]string{SpecKeyFiles: `{
+		"docs/notes.md":     "hello",
+		"x.txt":             "",
+		"tasks/T-1/task.md": {"kind":"cmd","cmd":{"run":"torque task get T-1 --format md"}}
+	}`})
 
 	files, err := s.Files()
 	if err != nil {
 		t.Fatalf("Files() = error %v", err)
 	}
-	if len(files) != 2 || files["docs/notes.md"] != "hello" || files["x.txt"] != "" {
-		t.Errorf("Files() = %v", files)
+	if len(files) != 3 {
+		t.Fatalf("Files() returned %d entries, want 3: %+v", len(files), files)
+	}
+
+	// An empty literal is a literal. A profile that declares a path with no
+	// content means a file with no content, not an entry that went missing.
+	for path, want := range map[string]string{"docs/notes.md": "hello", "x.txt": ""} {
+		entry := files[path]
+		if entry.IsSource() {
+			t.Errorf("%s decoded as a source, want a literal", path)
+			continue
+		}
+		if entry.Literal != want {
+			t.Errorf("%s holds %q, want %q", path, entry.Literal, want)
+		}
+	}
+
+	task := files["tasks/T-1/task.md"]
+	if !task.IsSource() {
+		t.Fatalf("tasks/T-1/task.md decoded as the literal %q, want a source", task.Literal)
+	}
+	if task.Literal != "" {
+		t.Errorf("a source entry also carries the literal %q; exactly one field is set", task.Literal)
+	}
+	if got := task.Source.Kind; got != agentcontext.SlotSourceKindCmd {
+		t.Errorf("the source kind is %q, want %q", got, agentcontext.SlotSourceKindCmd)
+	}
+	if want := "torque task get T-1 --format md"; task.Source.Cmd.Run != want {
+		t.Errorf("the source command is %q, want %q", task.Source.Cmd.Run, want)
+	}
+}
+
+// TestSpecFilesRefusesAValueThatIsNeitherFormByName covers a files value that
+// is a number, a list, a boolean or a null.
+//
+// Refusing rather than coercing is the point. The two legal shapes are easy to
+// describe, and a silent coercion would plant bytes nobody wrote at a path a
+// profile promised — which is the one place in the boot directory where cairn
+// has committed to a path without knowing what goes in it.
+func TestSpecFilesRefusesAValueThatIsNeitherFormByName(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{`42`, `["a","b"]`, `true`, `null`} {
+		s := spec(t, map[string]string{SpecKeyFiles: `{"notes/wrong.md": ` + value + `}`})
+
+		_, err := s.Files()
+		if err == nil {
+			t.Fatalf("Files() accepted the value %s", value)
+		}
+		if !strings.Contains(err.Error(), "notes/wrong.md") {
+			t.Errorf("the error for %s does not name the path: %v", value, err)
+		}
+		if !strings.Contains(err.Error(), SpecKeyFiles) {
+			t.Errorf("the error for %s does not name the key: %v", value, err)
+		}
+	}
+}
+
+// TestSpecFilesLeavesAnUnknownKindToWhateverResolvesIt states where the line
+// is. A source object whose kind is missing or wrong is still an object, so it
+// decodes here; it fails where it is resolved, which is the package that knows
+// which kinds are wired.
+func TestSpecFilesLeavesAnUnknownKindToWhateverResolvesIt(t *testing.T) {
+	t.Parallel()
+
+	s := spec(t, map[string]string{SpecKeyFiles: `{"a.md":{"type":"inline","inline":{"content":"x"}}}`})
+
+	files, err := s.Files()
+	if err != nil {
+		t.Fatalf("Files() = error %v, want the source carried through", err)
+	}
+	if entry := files["a.md"]; !entry.IsSource() || entry.Source.Kind != "" {
+		t.Errorf("a.md decoded to %+v, want a source with no kind", entry)
 	}
 }
 
@@ -254,9 +335,9 @@ func TestSpecMalformedValueNamesItsKey(t *testing.T) {
 			call:  func(s Spec) error { _, err := s.SkillsDir(); return err },
 		},
 		{
-			name:  "files maps a path to something other than content",
+			name:  "files is not a map at all",
 			key:   SpecKeyFiles,
-			value: `{"notes.md":{"content":"hello"}}`,
+			value: `["notes.md"]`,
 			call:  func(s Spec) error { _, err := s.Files(); return err },
 		},
 	}

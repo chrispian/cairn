@@ -15,6 +15,10 @@ import (
 // directory and is not one of the artifacts cairn knows by name rides here,
 // and cairn neither reads it nor asks what it is for.
 //
+// The content arrives on the instance already resolved — see [Instance].Files.
+// A manifest entry may name a slot source rather than a literal, and resolving
+// one runs commands and makes requests, which a renderer may not do.
+//
 // The paths are emitted in sorted order, because a map has none and a
 // rendering has to be the same twice. Whether a path can name something inside
 // the boot directory is [Render]'s question — it asks it of every renderer, so
@@ -23,10 +27,7 @@ func renderFiles(inst *Instance) ([]File, error) {
 	if inst == nil || inst.Profile == nil {
 		return nil, ErrNoProfile
 	}
-	declared, err := inst.Profile.Spec.Files()
-	if err != nil {
-		return nil, err
-	}
+	declared := inst.Files
 	if len(declared) == 0 {
 		return nil, nil
 	}

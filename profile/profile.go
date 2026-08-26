@@ -10,6 +10,7 @@ package profile
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -211,12 +212,76 @@ func (s Spec) Settings() (json.RawMessage, bool) {
 
 // Files returns the path-to-content map under [SpecKeyFiles]. A manifest
 // declaring none returns nil and no error.
-func (s Spec) Files() (map[string]string, error) {
-	var out map[string]string
-	if err := s.decode(SpecKeyFiles, &out); err != nil {
+func (s Spec) Files() (map[string]FileEntry, error) {
+	var raw map[string]json.RawMessage
+	if err := s.decode(SpecKeyFiles, &raw); err != nil {
 		return nil, err
 	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]FileEntry, len(raw))
+	for rel, v := range raw {
+		entry, err := parseFileEntry(v)
+		if err != nil {
+			return nil, fmt.Errorf("spec key %q: %q: %w", SpecKeyFiles, rel, err)
+		}
+		out[rel] = entry
+	}
 	return out, nil
+}
+
+// FileEntry is one value of the files manifest key. A value is either a
+// literal string, planted verbatim, or a slot source resolved at
+// materialization the same way a slot is.
+//
+// Both forms exist because both are needed. A literal covers content the
+// profile already knows. A source covers content that is only true at boot —
+// the case the portfolio's other planters all have: torque plants
+// tasks/<id>/task.md, task.json and a per-task process.md rendered from live
+// task state, and static path-to-content cannot express that.
+//
+// Exactly one field is set.
+type FileEntry struct {
+	// Literal is the content, when the manifest gave a string.
+	Literal string
+
+	// Source resolves to the content, when the manifest gave an object. Nil
+	// means the entry is a literal.
+	Source *agentcontext.SlotSource
+}
+
+// IsSource reports whether the entry must be resolved before it can be
+// planted.
+func (e FileEntry) IsSource() bool { return e.Source != nil }
+
+// parseFileEntry reads one files value in either form. A JSON string is a
+// literal; a JSON object is a slot source. Anything else is refused by name,
+// because the two legal shapes are easy to describe and a silent coercion here
+// would plant the wrong bytes at a path the profile promised.
+func parseFileEntry(raw json.RawMessage) (FileEntry, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return FileEntry{}, errors.New("the value is empty")
+	}
+	switch trimmed[0] {
+	case '"':
+		var lit string
+		if err := json.Unmarshal(trimmed, &lit); err != nil {
+			return FileEntry{}, err
+		}
+		return FileEntry{Literal: lit}, nil
+	case '{':
+		var src agentcontext.SlotSource
+		if err := json.Unmarshal(trimmed, &src); err != nil {
+			return FileEntry{}, err
+		}
+		return FileEntry{Source: &src}, nil
+	default:
+		return FileEntry{}, fmt.Errorf(
+			"the value is neither a string nor a source object — a files entry is either the content itself or %s",
+			`{"kind": "...", ...}`)
+	}
 }
 
 // isUndeclared reports whether a manifest value carries nothing: absent bytes,
