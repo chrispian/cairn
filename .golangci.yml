@@ -1,0 +1,32 @@
+version: "2"
+
+# This file only ever ENABLES checks. Nothing here suppresses a finding.
+#
+# The portfolio rule is that lint findings get fixed in code, not configured
+# away — a gate configured not to fail is not a gate. That bans exclusions. It
+# does not ban turning more checks on, which is the opposite move.
+linters:
+  enable:
+    - revive
+
+  settings:
+    revive:
+      rules:
+        # Requires a doc comment to EXIST on every exported identifier, and to
+        # start with the identifier's name. staticcheck's ST1020/ST1021 only
+        # check the wording of a comment that is already there — an exported
+        # function with no comment at all passes them silently. Verified by
+        # probe, not assumed.
+        - name: exported
+
+    staticcheck:
+      # golangci-lint's default staticcheck set excludes the doc-comment
+      # checks, so AGENTS.md's package-comment rule was unenforceable prose.
+      #   ST1000 — a package comment exists
+      #   ST1020 — an exported func's comment starts with its name
+      #   ST1021 — an exported type's comment starts with its name
+      checks:
+        - all
+        - ST1000
+        - ST1020
+        - ST1021

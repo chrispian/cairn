@@ -1,0 +1,105 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    # Two platforms, one set of steps. Every assertion proving the path-identity
+    # fail-opens — the case axis and the NFC/NFD axis — probes the filesystem it
+    # is running on and skips where that filesystem cannot exhibit the bug. An
+    # ordinary Linux volume exhibits neither, so on ubuntu-latest alone those 18
+    # tests skipped and the run was still green. macOS/APFS folds case and
+    # normalizes Unicode natively, which reaches both axes with no fixture
+    # machinery. The repo is public, so macOS minutes cost nothing.
+    #
+    # A matrix rather than a second job on purpose: a duplicated job drifts, and
+    # the whole value here is that the two platforms run the identical gate.
+    # Nothing below may carry an `if:` on the OS for the same reason.
+    strategy:
+      # Both platforms always report. Cancelling one on the other's failure
+      # would throw away exactly the half of the evidence this matrix exists to
+      # collect.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: go fmt (verify)
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "Files need gofmt:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.13.1
+          # Report every finding, not a sample. golangci-lint defaults to
+          # max-same-issues=3 and max-issues-per-linter=50, so a run can fail
+          # while showing only a subset — you fix what you see, push, and it
+          # fails again on the remainder. Caught during the agentkit gate
+          # repair, where the capped run showed 19 findings and the uncapped
+          # run showed 23.
+          args: --max-same-issues=0 --max-issues-per-linter=0
+
+      # -v so the skip census below has something to read. The exit status is
+      # taken from go test, not from tee.
+      - name: go test -race
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v ./... 2>&1 | tee test.log
+
+      # A skipped assertion and a passing one are indistinguishable in a summary
+      # line, which is how the proof of two security fixes came to run on
+      # nobody's CI. This prints, on every run of every platform, exactly which
+      # assertions did not execute here and why — so the platform-specific half
+      # of the suite stays visible instead of growing quietly.
+      #
+      # Read the two platforms' summaries side by side: an assertion listed
+      # under both is one whose fixture cannot produce its condition anywhere.
+      - name: skip census
+        if: always()
+        shell: bash
+        run: |
+          exec >>"$GITHUB_STEP_SUMMARY"
+          echo "### skip census — ${{ matrix.os }}"
+          echo
+          if [ ! -f test.log ]; then
+            echo 'go test produced no log; the run failed before the suite started.'
+            exit 0
+          fi
+          count=$(grep -c -- '--- SKIP' test.log || true)
+          echo "**${count}** assertions skipped on this platform."
+          echo
+          echo '```'
+          grep -E -- '--- SKIP' test.log || echo '(none — every assertion executed here)'
+          echo '```'
+          echo
+          echo '#### spelling axes reachable on this host'
+          echo
+          echo '```'
+          grep -F -- 'axis "' test.log | sort -u || echo '(the anti-vacuity report did not run)'
+          echo '```'
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

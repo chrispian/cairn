@@ -1,0 +1,33 @@
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+coverage.html
+/dist/
+/bin/
+
+# Editor scratch
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Local env
+*.local
+.env
+.env.*
+
+# Agent worktrees, materialized inside the repo by the harness
+/.claude/worktrees/
+
+# Bare `go build ./...` output for cmd/cairn
+/cairn
