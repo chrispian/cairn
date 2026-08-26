@@ -1,0 +1,277 @@
+package profile
+
+import (
+	"encoding/json"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func TestProviderValid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		provider Provider
+		want     bool
+	}{
+		{ProviderClaude, true},
+		{ProviderCodex, true},
+		{ProviderOpenCode, true},
+		{Provider(""), false},
+		{Provider("Claude"), false},
+		{Provider("gemini"), false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.provider.String(), func(t *testing.T) {
+			t.Parallel()
+
+			if got := tc.provider.Valid(); got != tc.want {
+				t.Errorf("Provider(%q).Valid() = %v, want %v", tc.provider, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProviderString(t *testing.T) {
+	t.Parallel()
+
+	if got := ProviderClaude.String(); got != "claude" {
+		t.Errorf("ProviderClaude.String() = %q, want claude", got)
+	}
+	if got := Provider("").String(); got != "" {
+		t.Errorf("Provider(\"\").String() = %q, want the empty string", got)
+	}
+}
+
+func TestSpecSlots(t *testing.T) {
+	t.Parallel()
+
+	s := spec(t, map[string]string{SpecKeySlots: `[
+		{"name":"role","section":"## Role","required":true,
+		 "source":{"kind":"inline","inline":{"content":"you are"}}},
+		{"name":"notes","source":{"kind":"static_file","static_file":{"path":"notes.md"}}}
+	]`})
+
+	slots, err := s.Slots()
+	if err != nil {
+		t.Fatalf("Slots() = error %v", err)
+	}
+	if len(slots) != 2 {
+		t.Fatalf("Slots() returned %d slots, want 2", len(slots))
+	}
+	if slots[0].Name != "role" || slots[0].Section != "## Role" || !slots[0].Required {
+		t.Errorf("slot 0 = %+v", slots[0])
+	}
+	if got := string(slots[0].Source.Kind); got != "inline" {
+		t.Errorf("slot 0 kind = %q, want inline", got)
+	}
+	if got := slots[0].Source.Inline.Content; got != "you are" {
+		t.Errorf("slot 0 inline content = %q, want %q", got, "you are")
+	}
+	if slots[1].Name != "notes" {
+		t.Errorf("slot 1 name = %q, want notes", slots[1].Name)
+	}
+}
+
+func TestSpecMCP(t *testing.T) {
+	t.Parallel()
+
+	s := spec(t, map[string]string{SpecKeyMCP: `[
+		{"name":"fs","command":"mcp-fs","args":["--root","/tmp"],"env":{"TOKEN":"x"}}
+	]`})
+
+	servers, err := s.MCP()
+	if err != nil {
+		t.Fatalf("MCP() = error %v", err)
+	}
+	if len(servers) != 1 {
+		t.Fatalf("MCP() returned %d servers, want 1", len(servers))
+	}
+	got := servers[0]
+	if got.Name != "fs" || got.Command != "mcp-fs" {
+		t.Errorf("server = %+v", got)
+	}
+	if !slices.Equal(got.Args, []string{"--root", "/tmp"}) {
+		t.Errorf("server args = %v", got.Args)
+	}
+	if got.Env["TOKEN"] != "x" {
+		t.Errorf("server env = %v", got.Env)
+	}
+}
+
+func TestSpecSkillsAndSkillsDir(t *testing.T) {
+	t.Parallel()
+
+	s := spec(t, map[string]string{
+		SpecKeySkills:    `["code-review","capture-decision"]`,
+		SpecKeySkillsDir: `"/srv/skills"`,
+	})
+
+	skills, err := s.Skills()
+	if err != nil {
+		t.Fatalf("Skills() = error %v", err)
+	}
+	if !slices.Equal(skills, []string{"code-review", "capture-decision"}) {
+		t.Errorf("Skills() = %v", skills)
+	}
+
+	dir, err := s.SkillsDir()
+	if err != nil {
+		t.Fatalf("SkillsDir() = error %v", err)
+	}
+	if dir != "/srv/skills" {
+		t.Errorf("SkillsDir() = %q, want /srv/skills", dir)
+	}
+}
+
+func TestSpecSettingsAreCarriedVerbatim(t *testing.T) {
+	t.Parallel()
+
+	// Odd spacing and key order on purpose: the manifest is what the operator
+	// wrote, and nothing reformats it on the way through.
+	const raw = `{ "b":  1,
+  "a": [2,   3] }`
+
+	s := spec(t, map[string]string{SpecKeySettings: raw})
+
+	got, ok := s.Settings()
+	if !ok {
+		t.Fatal("Settings() reported the key as undeclared")
+	}
+	if string(got) != raw {
+		t.Errorf("Settings() = %s, want the stored bytes %s", got, raw)
+	}
+}
+
+func TestSpecSettingsUndeclared(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		s    Spec
+	}{
+		{name: "a nil spec", s: nil},
+		{name: "an empty spec", s: Spec{}},
+		{name: "another key only", s: spec(t, map[string]string{SpecKeySkills: `["a"]`})},
+		{name: "the key holding no bytes", s: Spec{SpecKeySettings: json.RawMessage("")}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := tc.s.Settings()
+			if ok {
+				t.Errorf("Settings() reported the key declared, returning %s", got)
+			}
+			if got != nil {
+				t.Errorf("Settings() = %s, want nil", got)
+			}
+		})
+	}
+}
+
+func TestSpecFiles(t *testing.T) {
+	t.Parallel()
+
+	s := spec(t, map[string]string{SpecKeyFiles: `{"docs/notes.md":"hello","x.txt":""}`})
+
+	files, err := s.Files()
+	if err != nil {
+		t.Fatalf("Files() = error %v", err)
+	}
+	if len(files) != 2 || files["docs/notes.md"] != "hello" || files["x.txt"] != "" {
+		t.Errorf("Files() = %v", files)
+	}
+}
+
+func TestSpecAccessorsOnAnEmptyManifest(t *testing.T) {
+	t.Parallel()
+
+	// A manifest is not obliged to declare anything, and a profile that never
+	// had one at all is the same case.
+	for _, s := range []Spec{nil, {}, spec(t, map[string]string{
+		SpecKeySlots:  `null`,
+		SpecKeyMCP:    `null`,
+		SpecKeySkills: `null`,
+		SpecKeyFiles:  `null`,
+	})} {
+		slots, err := s.Slots()
+		if err != nil || slots != nil {
+			t.Errorf("Slots() = %v, %v; want nil, nil", slots, err)
+		}
+		servers, err := s.MCP()
+		if err != nil || servers != nil {
+			t.Errorf("MCP() = %v, %v; want nil, nil", servers, err)
+		}
+		skills, err := s.Skills()
+		if err != nil || skills != nil {
+			t.Errorf("Skills() = %v, %v; want nil, nil", skills, err)
+		}
+		dir, err := s.SkillsDir()
+		if err != nil || dir != "" {
+			t.Errorf("SkillsDir() = %q, %v; want \"\", nil", dir, err)
+		}
+		files, err := s.Files()
+		if err != nil || files != nil {
+			t.Errorf("Files() = %v, %v; want nil, nil", files, err)
+		}
+	}
+}
+
+func TestSpecMalformedValueNamesItsKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		call  func(Spec) error
+	}{
+		{
+			name:  "slots is not a list",
+			key:   SpecKeySlots,
+			value: `{"name":"role"}`,
+			call:  func(s Spec) error { _, err := s.Slots(); return err },
+		},
+		{
+			name:  "mcp is not a list",
+			key:   SpecKeyMCP,
+			value: `{"name":"fs"}`,
+			call:  func(s Spec) error { _, err := s.MCP(); return err },
+		},
+		{
+			name:  "skills holds numbers",
+			key:   SpecKeySkills,
+			value: `[1,2]`,
+			call:  func(s Spec) error { _, err := s.Skills(); return err },
+		},
+		{
+			name:  "skills_dir is not a string",
+			key:   SpecKeySkillsDir,
+			value: `["/srv/skills"]`,
+			call:  func(s Spec) error { _, err := s.SkillsDir(); return err },
+		},
+		{
+			name:  "files maps a path to something other than content",
+			key:   SpecKeyFiles,
+			value: `{"notes.md":{"content":"hello"}}`,
+			call:  func(s Spec) error { _, err := s.Files(); return err },
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tc.call(spec(t, map[string]string{tc.key: tc.value}))
+			if err == nil {
+				t.Fatalf("decoding %s from %s = no error", tc.key, tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("error = %q, want it to name the key %q", err, tc.key)
+			}
+		})
+	}
+}

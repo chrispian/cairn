@@ -8,6 +8,7 @@
 package profile
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -197,9 +198,12 @@ func (s Spec) SkillsDir() (string, error) {
 // Settings returns the provider settings document under [SpecKeySettings]
 // exactly as it was stored, and whether the key was declared at all. The bytes
 // are not reformatted: the manifest is what the operator wrote.
+//
+// A key set to JSON null reads as undeclared, matching the other accessors and
+// the cascade, where null is how a profile clears a key an ancestor declared.
 func (s Spec) Settings() (json.RawMessage, bool) {
 	raw, ok := s[SpecKeySettings]
-	if !ok || len(raw) == 0 {
+	if !ok || isUndeclared(raw) {
 		return nil, false
 	}
 	return raw, true
@@ -215,12 +219,19 @@ func (s Spec) Files() (map[string]string, error) {
 	return out, nil
 }
 
+// isUndeclared reports whether a manifest value carries nothing: absent bytes,
+// or the JSON null a profile clears an ancestor's key with.
+func isUndeclared(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
+}
+
 // decode unmarshals the value at key into dest. A key that is absent, or
 // present as JSON null, leaves dest untouched and reports no error — a
 // manifest is not obliged to declare anything.
 func (s Spec) decode(key string, dest any) error {
 	raw, ok := s[key]
-	if !ok || len(raw) == 0 || string(raw) == "null" {
+	if !ok || isUndeclared(raw) {
 		return nil
 	}
 	if err := json.Unmarshal(raw, dest); err != nil {
