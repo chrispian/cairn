@@ -165,12 +165,52 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
+	// Slots resolve here too, restricted to the kinds whose answer changes only
+	// when the operator changes something. Without them an installed template
+	// renders a skeleton; with the rest of them a check would run the profile's
+	// commands and report drift on every invocation.
+	assembled, err := slots.Assemble(ctx, resolved.Spec, slots.Options{
+		Deterministic: true,
+		Env:           os.Getenv,
+		Provenance: agentcontext.ProvenanceInput{
+			LineageAlias: target,
+			ProfileID:    resolved.ID,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("profile %q: %w", resolved.ID, err)
+	}
+	if assembled != nil {
+		expansions, err := slots.Expansions(resolved.Spec, profile.SpecKeySlots, os.Getenv)
+		if err != nil {
+			return fmt.Errorf("profile %q: %w", resolved.ID, err)
+		}
+		reportSlotFailures(stderr, assembled, expansions)
+	}
+	sections, err := slots.Sections(assembled)
+	if err != nil {
+		return fmt.Errorf("profile %q: %w", resolved.ID, err)
+	}
+	// The slots this layer does not resolve at all, named once rather than as
+	// one puzzling empty section per marker.
+	skipped, err := slots.Nondeterministic(resolved.Spec)
+	if err != nil {
+		return fmt.Errorf("profile %q: %w", resolved.ID, err)
+	}
+	if len(skipped) > 0 {
+		_, _ = fmt.Fprintf(stderr,
+			"cairn: the installed layer renders no section for %s: it resolves only %s, "+
+				"because a check re-renders and anything else would report drift on every run\n",
+			strings.Join(skipped, ", "), kindList(slots.DeterministicKinds()))
+	}
+
 	lay := &install.Layer{
 		Root:      root,
 		Profile:   resolved,
 		Home:      home,
 		Env:       os.Getenv,
 		Templates: templates,
+		Sections:  sections,
 		Values: instanceValues(map[string]string{
 			"binding":  target,
 			"profile":  resolved.ID,
@@ -203,6 +243,15 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		}
 	}
 	return nil
+}
+
+// kindList renders slot kinds for a diagnostic.
+func kindList(kinds []agentcontext.SlotSourceKind) string {
+	quoted := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		quoted = append(quoted, string(k))
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // openStore resolves the database path and opens it. Both commands need it and

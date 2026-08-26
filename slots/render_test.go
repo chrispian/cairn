@@ -1,6 +1,7 @@
 package slots_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -301,5 +302,126 @@ func TestSectionsOfNothing(t *testing.T) {
 	}
 	if got == nil || len(got) != 0 {
 		t.Errorf("slots.Sections(nil) = %v, want an empty map", got)
+	}
+}
+
+// TestSectionsRenderBareContentWhenNoSectionIsDeclared is what makes a slot
+// usable as a substitution value rather than only as a list entry.
+//
+// The library falls back to the slot's name as the heading, which was right
+// when the assembled output was a list of sections and every slot wanted one.
+// In a template the template supplies the structure: a slot carrying prose with
+// its own headings inside it would otherwise get a bare "role" line above it,
+// which is a heading nobody declared.
+func TestSectionsRenderBareContentWhenNoSectionIsDeclared(t *testing.T) {
+	res := &agentcontext.ContextResult{Slots: []agentcontext.SlotResult{
+		{Name: "role", Content: "# Engineer\n\nYou implement one task.\n"},
+		{Name: "repo", Section: "## Repository", Content: "on branch main"},
+	}}
+
+	got, err := slots.Sections(res)
+	if err != nil {
+		t.Fatalf("Sections(): %v", err)
+	}
+	if want := "# Engineer\n\nYou implement one task."; got["role"] != want {
+		t.Errorf("Sections()[\"role\"] = %q, want the content and no heading", got["role"])
+	}
+	if strings.Contains(got["role"], "\nrole\n") || strings.HasPrefix(got["role"], "role") {
+		t.Errorf("Sections()[\"role\"] carries the slot name as a heading: %q", got["role"])
+	}
+	// A declared section still renders exactly as it did, heading included, so
+	// it still vanishes with the content it heads.
+	if want := "## Repository\non branch main"; got["repo"] != want {
+		t.Errorf("Sections()[\"repo\"] = %q, want %q", got["repo"], want)
+	}
+}
+
+// TestASectionlessSlotThatProducedNothingStillRendersNothing keeps the (A)
+// property intact for the new shape: dropping the heading must not drop the
+// rule that came with it.
+func TestASectionlessSlotThatProducedNothingStillRendersNothing(t *testing.T) {
+	res := &agentcontext.ContextResult{Slots: []agentcontext.SlotResult{
+		{Name: "failed", Content: "partial", Err: errors.New("unreachable")},
+		{Name: "empty", Content: "  \n"},
+	}}
+
+	got, err := slots.Sections(res)
+	if err != nil {
+		t.Fatalf("Sections(): %v", err)
+	}
+	for name, section := range got {
+		if section != "" {
+			t.Errorf("Sections()[%q] = %q, want nothing at all", name, section)
+		}
+	}
+}
+
+// TestDeterministicAssemblyResolvesOnlyWhatACheckCanSurvive covers the rule the
+// installed layer runs under. A check re-renders and diffs against disk, so a
+// source whose value can differ between two renders of one profile would report
+// drift on every run.
+func TestDeterministicAssemblyResolvesOnlyWhatACheckCanSurvive(t *testing.T) {
+	spec := profile.Spec{profile.SpecKeySlots: []byte(`[
+		{"name":"prose","source":{"kind":"inline","inline":{"content":"shared prose"}}},
+		{"name":"repo", "source":{"kind":"cmd","cmd":{"run":"git status"}}},
+		{"name":"memory","source":{"kind":"http_json","http_json":{"url":"http://x/recall"}}}
+	]`)}
+
+	res, err := slots.Assemble(context.Background(), spec, slots.Options{Deterministic: true})
+	if err != nil {
+		t.Fatalf("Assemble(): %v", err)
+	}
+	sections, err := slots.Sections(res)
+	if err != nil {
+		t.Fatalf("Sections(): %v", err)
+	}
+	if sections["prose"] != "shared prose" {
+		t.Errorf("the inline slot resolved to %q, want its content", sections["prose"])
+	}
+	for _, name := range []string{"repo", "memory"} {
+		if sections[name] != "" {
+			t.Errorf("the %s slot resolved to %q in a deterministic assembly", name, sections[name])
+		}
+	}
+
+	// And the caller can say which ones it left alone, rather than the operator
+	// meeting one puzzling empty section per marker.
+	skipped, err := slots.Nondeterministic(spec)
+	if err != nil {
+		t.Fatalf("Nondeterministic(): %v", err)
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("Nondeterministic() = %v, want the two non-static slots", skipped)
+	}
+	for _, want := range []string{`"repo" (cmd)`, `"memory" (http_json)`} {
+		if !slices.Contains(skipped, want) {
+			t.Errorf("Nondeterministic() = %v, does not name %s", skipped, want)
+		}
+	}
+}
+
+// TestDeterministicKindsAreTheOnesWhoseAnswerTheOperatorControls pins the list
+// itself. A kind added to it that reads live state would make every check
+// report drift; one removed that reads a file would make an installed template
+// useless again.
+func TestDeterministicKindsAreTheOnesWhoseAnswerTheOperatorControls(t *testing.T) {
+	got := slots.DeterministicKinds()
+	want := []agentcontext.SlotSourceKind{
+		agentcontext.SlotSourceKindStaticFile,
+		agentcontext.SlotSourceKindStaticDir,
+		agentcontext.SlotSourceKindInline,
+		agentcontext.SlotSourceKindRoleSummary,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("DeterministicKinds() = %v, want %v", got, want)
+	}
+	for _, absent := range []agentcontext.SlotSourceKind{
+		agentcontext.SlotSourceKindCmd,
+		agentcontext.SlotSourceKindHTTPText,
+		agentcontext.SlotSourceKindHTTPJSON,
+	} {
+		if slices.Contains(got, absent) {
+			t.Errorf("DeterministicKinds() carries %q, which reads live state", absent)
+		}
 	}
 }

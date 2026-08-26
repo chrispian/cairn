@@ -1,6 +1,7 @@
 package install_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -16,6 +17,7 @@ import (
 	"github.com/chrispian/cairn/bootdir"
 	"github.com/chrispian/cairn/install"
 	"github.com/chrispian/cairn/profile"
+	"github.com/chrispian/cairn/slots"
 )
 
 // Every fixture below is built under t.TempDir(). Nothing here names a real
@@ -749,4 +751,78 @@ func treeOf(t *testing.T, dir string) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// TestCheckIsStableForAProfileWhoseSlotsReadLiveState is the property that
+// decided which slots the installed layer resolves.
+//
+// A check re-renders and diffs the result against disk. A cmd slot reading
+// `git status` answers differently between two renders of one profile, so
+// resolving it here would report drift on every invocation forever — a gate
+// configured not to gate, which is the disease plan §5 names for the orphan
+// sweep. The static half still composes, which is what makes an installed
+// template worth writing at all.
+func TestCheckIsStableForAProfileWhoseSlotsReadLiveState(t *testing.T) {
+	t.Parallel()
+	fixture := newCheckFixture(t)
+
+	// A slot whose answer changes every time it is asked, beside one that does
+	// not, both referenced from the installed instruction file.
+	counter := filepath.Join(t.TempDir(), "counter.sh")
+	if err := os.WriteFile(counter, []byte("#!/bin/sh\ndate +%s%N\n"), 0o755); err != nil {
+		t.Fatalf("write the script: %v", err)
+	}
+	fixture.lay.Profile.Spec["slots"] = json.RawMessage(`[
+		{"name":"prose","source":{"kind":"inline","inline":{"content":"shared prose"}}},
+		{"name":"now","source":{"kind":"cmd","cmd":{"run":"` + counter + `"}}}
+	]`)
+	fixture.lay.Templates[bootdir.AgentsFileName] =
+		"<!-- cairn:slot prose -->\n\n<!-- cairn:slot now -->\n"
+
+	assembled, err := slots.Assemble(context.Background(), fixture.lay.Profile.Spec,
+		slots.Options{Deterministic: true})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sections, err := slots.Sections(assembled)
+	if err != nil {
+		t.Fatalf("Sections: %v", err)
+	}
+	fixture.lay.Sections = sections
+
+	files, err := install.Render(fixture.lay)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	fixture.files = files
+	fixture.plant(t)
+
+	// The static half composed.
+	agents := string(renderedContent(t, files, ".claude/AGENTS.md"))
+	if !strings.Contains(agents, "shared prose") {
+		t.Errorf("the installed instruction file did not compose its static slot:\n%s", agents)
+	}
+
+	// And the check is stable, however many times it is run.
+	for i := range 3 {
+		report, err := install.Check(fixture.lay)
+		if err != nil {
+			t.Fatalf("Check %d: %v", i, err)
+		}
+		if code := report.ExitCode(); code != 0 {
+			t.Fatalf("check %d reported drift on a profile nobody changed:\n%s", i, report.String())
+		}
+	}
+}
+
+// renderedContent returns the bytes rendered at rel.
+func renderedContent(t *testing.T, files []install.File, rel string) []byte {
+	t.Helper()
+	for _, f := range files {
+		if f.Path == rel {
+			return f.Content
+		}
+	}
+	t.Fatalf("no file was rendered at %q", rel)
+	return nil
 }

@@ -131,6 +131,10 @@ comes back with the content or not at all. Write `## Memory` in the template
 above the marker and you keep that heading on the day the slot fails, which is
 the one thing this rule exists to prevent.
 
+**Leave `section` out and the slot substitutes bare content** — no heading at
+all. That is what you want for a block of prose that carries its own headings,
+which is most of what composes an instruction file.
+
 `$VAR` and `${VAR}` are expanded in every manifest value that names somewhere to
 read from: a source's **path** and **URL**, a `trees` source, and `skills_dir`.
 A leading `~/` expands too, after the variables — so a variable holding
@@ -294,6 +298,12 @@ cairn install base             # write it
 **Run `install` yourself, never from inside an agent session** — every agent on
 this machine runs under `~/.claude`, so an agent that runs it rewrites its own
 live configuration mid-session.
+
+Slots resolve here too, but only the kinds whose answer changes when *you*
+change something — `static_file`, `static_dir`, `inline`, `role_summary`. A
+`cmd` or `http_*` slot renders nothing in this layer and says so on stderr,
+because `--check` re-renders and diffs against disk: a `git status` slot would
+report drift on every run and the check would stop meaning anything.
 
 Cairn claims four things in that directory — `AGENTS.md`, `CLAUDE.md`,
 `settings.json`, and the `skills/` subtree. Not `agents/`: subagent definitions

@@ -318,7 +318,16 @@ That rule is why **a slot's heading belongs to the slot, not to the template**.
 `SlotSpec.Section` already carries it, and a marker substitutes the heading and
 the content together or nothing at all. A template holding `## Memory` above the
 marker would keep that heading when the slot failed — a section with nothing
-under it, which is the artifact this rule exists to prevent. Tether hit exactly
+under it, which is the artifact this rule exists to prevent.
+
+**A slot that declares no `section` renders bare content.** The library falls
+back to the slot's name as the heading, which was right when the assembled
+output was a list of sections and every slot wanted one; in a template the
+template supplies the structure, and most slots carry prose whose own headings
+are already inside them. A bare `role` line above such a block is Cairn writing
+a heading nobody declared. An absent `section` and an empty one are the same
+thing and have to be — `SlotSpec.Section` is a plain string, so the two are
+indistinguishable once the manifest is decoded. Tether hit exactly
 this and paid for it in `{{- if hasSlot "recap" }}` around every section of its
 default template; keeping the heading on the slot is what buys the same
 behaviour with no conditionals and therefore no template language.
@@ -466,11 +475,24 @@ cannot see that case at all. A template declared for any other destination is a
 boot-directory artifact and is not rendered here. `boot` has no such constraint:
 it creates the directory fresh and refuses to plant if it already exists.
 
-**A template shared between the layers renders differently in each**, because
-this layer resolves no slots. Its slot markers substitute nothing here, and
-their sections appear only in a boot directory. That is the same rule the boot
-file followed when it was the only place a slot could land; it is visible now
-because one template can serve both.
+**This layer resolves the slot kinds whose answer changes only when the operator
+changes something** — `static_file`, `static_dir`, `inline`, `role_summary` —
+and no others. That is what makes an installed template worth writing at all:
+shared prose composes from static sources. A `cmd` or `http_*` slot renders
+nothing here and is named once on stderr.
+
+The line is drawn by what `--check` needs, not by what is safe to run. A check
+re-renders and diffs against disk, so a source whose value can differ between
+two renders of one profile reports drift on **every** run — a gate configured
+not to gate, the same disease the orphan sweep is scoped to avoid. A static file
+can change too, and reporting *that* as drift is the point: the operator edited
+the source and has not installed it. It is the answer `--check` already gives
+for an edited skill. The other half is that a check is documented to write
+nothing and go nowhere near a live configuration; running a profile's commands
+on every invocation is a larger promise than that.
+
+**A template shared between the layers therefore renders its `cmd` and `http_*`
+sections in a boot directory and not here.**
 
 Four things are deliberately absent:
 

@@ -41,14 +41,13 @@ type DropUnresolved struct {
 
 // Render implements [agentcontext.Renderer].
 //
-// A slot survives when its resolver did not fail and it produced content that
-// is not entirely whitespace. Partial content from a failed resolver is
-// dropped with the rest of it: what a resolver managed before failing is not
-// something to hand an agent as though it were the whole answer.
+// A slot survives when it [produced] content. Partial content from a failed
+// resolver is dropped with the rest of it: what a resolver managed before
+// failing is not something to hand an agent as though it were the whole answer.
 func (d DropUnresolved) Render(slots []agentcontext.SlotResult, limits agentcontext.Limits) (string, agentcontext.LimitsApplied) {
 	kept := make([]agentcontext.SlotResult, 0, len(slots))
 	for _, s := range slots {
-		if s.Err != nil || strings.TrimSpace(s.Content) == "" {
+		if !produced(s) {
 			continue
 		}
 		kept = append(kept, s)
@@ -63,6 +62,17 @@ func (d DropUnresolved) Render(slots []agentcontext.SlotResult, limits agentcont
 
 // Ensure DropUnresolved satisfies the renderer contract at compile time.
 var _ agentcontext.Renderer = DropUnresolved{}
+
+// produced reports whether a slot came back with content to render: its
+// resolver did not fail, and what it returned is not entirely whitespace.
+//
+// It is one function because two places ask. A slot that produced nothing
+// renders nothing at all, and a heading is part of "nothing" — so the answer
+// has to be the same whether the slot is being dropped from an assembled
+// rendering or rendered on its own for a template.
+func produced(s agentcontext.SlotResult) bool {
+	return s.Err == nil && strings.TrimSpace(s.Content) != ""
+}
 
 // ErrSlotName reports two slots declared under one name. A template addresses
 // a slot by name, so a repeated one names two sections and cairn cannot say
@@ -79,6 +89,10 @@ var ErrSlotName = errors.New("duplicate slot name")
 // its heading comes back from here rather than being written around the marker,
 // a template cannot be left holding a heading with nothing under it.
 //
+// A slot that declares no section renders bare content — see the body of this
+// function for why the library's name-as-heading fallback is not what a
+// template wants.
+//
 // A nil result returns an empty map, so a template's markers substitute away to
 // nothing rather than the caller having to check.
 func Sections(res *agentcontext.ContextResult) (map[string]string, error) {
@@ -92,11 +106,31 @@ func Sections(res *agentcontext.ContextResult) (map[string]string, error) {
 			return nil, fmt.Errorf("%w: spec.%s declares %q twice",
 				ErrSlotName, profile.SpecKeySlots, slot.Name)
 		}
+		if !produced(slot) {
+			out[slot.Name] = ""
+			continue
+		}
+		// A slot declaring no section renders its content and nothing else.
+		//
+		// The library's renderer falls back to the slot's name as the heading,
+		// which was right when the assembled output was a list of sections and
+		// every slot wanted one. In a template the template supplies the
+		// structure, and a slot is a value substituted into it: most carry
+		// prose whose own headings are already inside them, and a bare "role"
+		// line above them is cairn writing a heading nobody declared.
+		//
+		// An absent section and an empty one are the same thing here, and have
+		// to be — SlotSpec.Section is a plain string, so the two are
+		// indistinguishable once the manifest has been decoded.
+		if strings.TrimSpace(slot.Section) == "" {
+			out[slot.Name] = strings.TrimRight(slot.Content, "\n")
+			continue
+		}
 		// One slot at a time, through the same renderer the assembled output
-		// went through, so a section is formatted identically whichever of the
-		// two produced it. Limits are the caller's and were applied to the
-		// assembly; a per-section budget would truncate to a byte count nobody
-		// declared.
+		// went through, so a section that declares a heading is formatted
+		// identically whichever of the two produced it. Limits are the
+		// caller's and were applied to the assembly; a per-section budget would
+		// truncate to a byte count nobody declared.
 		section, _ := renderer.Render([]agentcontext.SlotResult{slot}, agentcontext.Limits{})
 		out[slot.Name] = strings.TrimRight(section, "\n")
 	}

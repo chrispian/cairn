@@ -98,6 +98,12 @@ type Layer struct {
 	// rest are boot-directory artifacts.
 	Templates map[string]string
 
+	// Sections is each declared slot's rendered section, keyed by slot name,
+	// resolved by the caller from the kinds in [slots.DeterministicKinds] and
+	// no others. A template's markers for anything else substitute nothing
+	// here — see [layerInstance].
+	Sections map[string]string
+
 	// Env answers an environment variable named in a manifest path — here, the
 	// skills directory. Carried for the reason [bootdir.Instance].Env is.
 	Env profile.Expander
