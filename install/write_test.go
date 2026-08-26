@@ -536,3 +536,45 @@ func TestInstallRefusesAnOccupiedDestinationBeforeMovingAnything(t *testing.T) {
 		})
 	}
 }
+
+// TestInstallNamesTheComponentInTheWay covers the diagnostic for a path that
+// cannot be walked because something above it is a file.
+//
+// The raw Lstat error names the leaf — a path that does not exist — and says
+// it is not a directory, which reads like nonsense to whoever has to act on
+// it. The component actually in the way is the one worth naming.
+func TestInstallNamesTheComponentInTheWay(t *testing.T) {
+	t.Parallel()
+	lay := fullyDeclaredLayer(t)
+	rootDir := lay.Root.Dir()
+
+	blocker := filepath.Join(rootDir, ClaudeDirName, SkillsDirName)
+	if err := os.MkdirAll(filepath.Dir(blocker), 0o755); err != nil {
+		t.Fatalf("create %s: %v", filepath.Dir(blocker), err)
+	}
+	if err := os.WriteFile(blocker, []byte("a file where a directory belongs\n"), 0o644); err != nil {
+		t.Fatalf("write %s: %v", blocker, err)
+	}
+
+	_, err := Install(lay)
+	if !errors.Is(err, ErrDestinationOccupied) {
+		t.Fatalf("Install = %v, want ErrDestinationOccupied", err)
+	}
+	if !strings.Contains(err.Error(), blocker) {
+		t.Errorf("the error does not name the component in the way (%s): %v", blocker, err)
+	}
+	if !strings.Contains(err.Error(), "is a file") {
+		t.Errorf("the error does not say what is wrong with it: %v", err)
+	}
+
+	// Nothing moved: the refusal came before the first rename.
+	for _, rel := range []string{
+		path.Join(ClaudeDirName, bootdir.AgentsFileName),
+		path.Join(ClaudeDirName, "CLAUDE.md"),
+		path.Join(ClaudeDirName, SettingsFileName),
+	} {
+		if _, err := os.Lstat(filepath.Join(rootDir, filepath.FromSlash(rel))); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s was written before the install refused: %v", rel, err)
+		}
+	}
+}

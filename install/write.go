@@ -141,6 +141,14 @@ func checkDestination(rel, dest string) error {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil
 	case err != nil:
+		// A path cannot be inspected when something above it is a file rather
+		// than a directory, and the raw error then names the leaf — a path
+		// that does not exist — and says it is not a directory, which reads
+		// like nonsense. Name the component that is actually in the way.
+		if blocker, ok := nonDirectoryAncestor(dest); ok {
+			return fmt.Errorf("%w: %s is a file, and cairn renders %s below it",
+				ErrDestinationOccupied, blocker, rel)
+		}
 		return fmt.Errorf("install: inspect %s: %w", rel, err)
 	case info.Mode().IsRegular():
 		return nil
@@ -153,6 +161,38 @@ func checkDestination(rel, dest string) error {
 		what = "a directory"
 	}
 	return fmt.Errorf("%w: %s is %s, and cairn renders a file there", ErrDestinationOccupied, rel, what)
+}
+
+// nonDirectoryAncestor returns the first existing ancestor of dest that is not
+// a directory, which is what stops the path from being walked at all.
+//
+// It climbs rather than descends because the caller already has the leaf and
+// wants the component above it that is in the way; the walk ends at the volume
+// root, where filepath.Dir is its own fixpoint.
+func nonDirectoryAncestor(dest string) (string, bool) {
+	for dir := filepath.Dir(dest); ; {
+		info, err := os.Lstat(dir)
+		if err == nil {
+			if !info.IsDir() {
+				return dir, true
+			}
+			return "", false
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			// Something above this one is in the way; keep climbing to it.
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return "", false
+			}
+			dir = parent
+			continue
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
 }
 
 // stage writes every file into dir and returns the staged paths, in the order
