@@ -26,9 +26,23 @@ echo "boot dir: $BOOT_DIR" >&2
 # Cairn renders it into AGENTS.md; the launcher grants it.
 SCOPE="$(sed -n 's/^- scope: //p' "$BOOT_DIR/AGENTS.md" | head -1)"
 
+# --settings promotes the planted file from `projectSettings` to `flagSettings`.
+# That matters: a settings file simply sitting in the boot dir is read as
+# `projectSettings`, the untrusted tier, and Claude Code 2.1.246 refuses to
+# honour `permissions.defaultMode: auto` from it —
+#
+#   settings defaultMode "auto" ignored — only policy/user/flag settings may
+#   grant auto mode (projectSettings and localSettings are repo-controllable)
+#
+# — warns, and falls back. The same rule applies to `autoMode` classifier
+# rules. Passing the path here is the launcher's job, not cairn's: cairn writes
+# the file and prints a path, and whoever owns the invocation decides what tier
+# it lands in.
+SETTINGS="$BOOT_DIR/.claude/settings.json"
+
+set --
+[ -n "$SCOPE" ] && set -- "$@" --add-dir "$SCOPE"
+[ -f "$SETTINGS" ] && set -- "$@" --settings "$SETTINGS"
+
 cd "$BOOT_DIR"
-if [ -n "$SCOPE" ]; then
-  exec claude --add-dir "$SCOPE"
-else
-  exec claude
-fi
+exec claude "$@"

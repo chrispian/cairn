@@ -71,6 +71,7 @@ What lands:
   .mcp.json              spec.mcp
   .claude/settings.json  spec.settings, verbatim
   .claude/skills/        spec.skills, whole directory trees
+  <spec.files>           arbitrary paths, literal or resolved
 ```
 
 **`boot.md` is where the leverage is.** It is resolved at materialization, so
@@ -90,9 +91,63 @@ an HTTP endpoint or any command, which is how memory and task state get in:
 ```
 
 Kinds: `static_file`, `static_dir`, `inline`, `cmd`, `http_text`, `http_json`,
-`role_summary`. A slot that fails renders `**Unavailable.**` plus the error, so
-an agent can tell "nothing to report" from "the service was down" — those mean
-opposite things and an empty section would conflate them.
+`role_summary`. Write `"kind"`, not `"type"` — Cairn will say so if you forget.
+
+**A slot that fails renders nothing at all** — no heading, no marker — and so
+does one that resolves empty. Cairn writes no sentence of its own into an
+agent's context, and a section that says "unavailable" is one nobody declared
+and nobody can correct. An agent that needs the data asks the tool, which is
+current where `boot.md` is a snapshot. The failure is not lost: it goes to
+**stderr**, where the operator reads.
+
+### `files`: the same sources, at arbitrary paths
+
+`spec.files` maps a boot-relative path to **either a literal string or a slot
+source**. Literals cover content the profile already knows; sources cover
+content that is only true at boot — a task bundle, say, planted where a process
+expects to find it:
+
+```jsonc
+"files": {
+  "README-for-this-session.md": "read task.md first\n",
+  "tasks/T-42/task.md":  { "kind": "cmd", "cmd": { "run": "torque task get T-42 --format md" } },
+  "tasks/T-42/task.json": { "kind": "cmd", "cmd": { "run": "torque task get T-42 --format json" } },
+  "tasks/T-42/process.md": { "kind": "static_file",
+                             "static_file": { "path": "~/.config/agents/process/implement.md" } }
+}
+```
+
+**A file source that fails fails the boot** — the opposite of a slot, on
+purpose. A missing section is degraded context and the agent routes around it;
+a missing file is a hole at a path the profile promised, and whatever opens
+that path cannot tell "never declared" from "the command that fills it fell
+over". Sources resolve before anything is written, so a refusal leaves no
+directory behind.
+
+A source that resolves *empty* is not a failure and plants an empty file — the
+resolver answered, and what it answered is content, which Cairn does not read.
+
+### The settings tier, and why `boot.sh` passes `--settings`
+
+A `settings.json` that merely sits in the boot directory is read as
+**`projectSettings`** — the untrusted tier, because a repo can control it.
+Verbatim from Claude Code 2.1.246:
+
+```
+settings defaultMode "auto" ignored — only policy/user/flag settings may grant
+auto mode (projectSettings and localSettings are repo-controllable)
+```
+
+So a profile declaring `defaultMode: auto` validates, renders, plants — and is
+then **silently downgraded** at launch with a warning. The same rule governs
+`autoMode` classifier rules.
+
+Passing `--settings <boot-dir>/.claude/settings.json` promotes the file to
+`flagSettings`, which is trusted. `boot.sh` does this.
+
+This is deliberately the launcher's job. Cairn writes the file and prints a
+path; whoever owns the invocation decides what tier it lands in. Cairn taking
+it over would mean Cairn owning the launch, which is a different product.
 
 ## 4. The installed layer
 
