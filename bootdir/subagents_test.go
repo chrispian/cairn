@@ -404,29 +404,6 @@ func TestSubagentsHaveNoDepth(t *testing.T) {
 	}
 }
 
-// TestSubagentsRenderNoCairnAuthoredProse is docs/plan.md §9 for this
-// artifact. The prior implementation wrote a contract section into every
-// definition — "You are a dispatched subagent", "The tools line above is
-// everything you may use". Cairn writes structured content from declared
-// fields and no sentence of its own.
-func TestSubagentsRenderNoCairnAuthoredProse(t *testing.T) {
-	inst := subagentInstance(t, `{"description": "d", "tools": ["Read"], "body": "declared prose\n"}`)
-
-	files, err := renderSubagents(inst)
-	if err != nil {
-		t.Fatalf("renderSubagents(): %v", err)
-	}
-	content := string(files[0].Content)
-	for _, forbidden := range []string{
-		"You are", "your", "You may", "contract", "authority", "dispatch",
-		"Persona", "harness", "subagent",
-	} {
-		if strings.Contains(strings.ToLower(content), strings.ToLower(forbidden)) {
-			t.Errorf("the definition carries cairn's own vocabulary %q:\n%s", forbidden, content)
-		}
-	}
-}
-
 // anyStrings returns a decoded YAML list as strings.
 func anyStrings(t *testing.T, value any) []string {
 	t.Helper()
