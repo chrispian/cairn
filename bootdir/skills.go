@@ -76,7 +76,7 @@ func renderSkills(inst *Instance) ([]File, error) {
 			"%w: spec.%s declares %s, but this layout declares no skills directory",
 			ErrProviderLayout, profile.SpecKeySkills, quotedNames(declared))
 	}
-	source, err := skillsSource(inst.Profile.Spec, declared)
+	source, err := skillsSource(inst.Profile.Spec, declared, inst.Home)
 	if err != nil {
 		return nil, err
 	}
@@ -105,12 +105,14 @@ func renderSkills(inst *Instance) ([]File, error) {
 
 // skillsSource resolves the directory declared skills are copied from.
 //
-// A leading "~/" is expanded against the operator's home directory, because a
-// skills directory is a location on the operator's machine and writing it out
-// in full in every profile is how it goes stale. The result must be absolute:
-// a relative path would resolve against whatever directory cairn happened to
-// be invoked from, which is not a property of the profile.
-func skillsSource(spec profile.Spec, names []string) (string, error) {
+// A leading "~/" is expanded against home, because a skills directory is a
+// location on the operator's machine and writing it out in full in every
+// profile is how it goes stale. home is the instance's, not the process's, so
+// that this renderer reads nothing outside the instance it was handed. The
+// result must be absolute: a relative path would resolve against whatever
+// directory cairn happened to be invoked from, which is not a property of the
+// profile.
+func skillsSource(spec profile.Spec, names []string, home string) (string, error) {
 	declared, err := spec.SkillsDir()
 	if err != nil {
 		return "", err
@@ -121,7 +123,7 @@ func skillsSource(spec profile.Spec, names []string) (string, error) {
 			"%w: spec.%s declares %s, but spec.%s is not set and cairn ships no skills of its own",
 			ErrSkillsSource, profile.SpecKeySkills, quotedNames(names), profile.SpecKeySkillsDir)
 	}
-	dir, err = expandHomePrefix(dir)
+	dir, err = expandHomePrefix(dir, home)
 	if err != nil {
 		return "", err
 	}
@@ -141,18 +143,13 @@ func skillsSource(spec profile.Spec, names []string) (string, error) {
 	return dir, nil
 }
 
-// expandHomePrefix returns dir with a leading "~" replaced by the operator's
-// home directory. Anything else — "~user/x" included — is returned untouched
-// and left to the caller's absolute-path check, so that an unexpanded form
-// fails by naming itself rather than by resolving somewhere unexpected.
-func expandHomePrefix(dir string) (string, error) {
+// expandHomePrefix returns dir with a leading "~" replaced by home. Anything
+// else — "~user/x" included — is returned untouched and left to the caller's
+// absolute-path check, so that an unexpanded form fails by naming itself
+// rather than by resolving somewhere unexpected.
+func expandHomePrefix(dir, home string) (string, error) {
 	if dir != "~" && !strings.HasPrefix(dir, "~/") {
 		return dir, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("%w: spec.%s is %q and the home directory is unknown: %w",
-			ErrSkillsSource, profile.SpecKeySkillsDir, dir, err)
 	}
 	if strings.TrimSpace(home) == "" {
 		return "", fmt.Errorf("%w: spec.%s is %q and the home directory is empty",

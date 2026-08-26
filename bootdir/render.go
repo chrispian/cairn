@@ -64,6 +64,14 @@ type Instance struct {
 	// Profile is the fully resolved profile. Rendering never cascades again.
 	Profile *profile.Resolved
 
+	// Home is the operator's home directory, used to expand a manifest path
+	// written with a leading "~/". It is carried on the instance rather than
+	// read by the renderer that needs it, so that the rule below — a renderer
+	// consults nothing outside the instance — holds without an exception.
+	// Empty means no home is known, and a manifest path that needs one then
+	// fails by saying so.
+	Home string
+
 	// Scope is the directory the materialized instance works in, or empty for
 	// no declared scope. It is a rendered field, not a validated one — the
 	// containment check that guards the write lives in package scope.

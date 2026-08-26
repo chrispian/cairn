@@ -1,6 +1,6 @@
 module github.com/chrispian/cairn
 
-go 1.26.1
+go 1.26.7
 
 require (
 	github.com/hollis-labs/agentkit v0.5.1

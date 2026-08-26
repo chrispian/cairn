@@ -285,18 +285,31 @@ func TestSkillsRefuseSomethingThatIsNotAFile(t *testing.T) {
 // write a home-relative skills directory in. Cairn ships no skills, so the
 // directory is always somewhere on the operator's machine, and writing it out
 // in full in every profile is how it goes stale.
+//
+// The home it expands against is the instance's, not the process's: a renderer
+// consults nothing outside the instance it was handed, which is also why this
+// test does not have to touch the environment to exercise the expansion.
 func TestSkillsExpandALeadingTilde(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
 	source := filepath.Join(home, "skills")
 	writeSkillTree(t, source, "code-review", map[string]string{SkillFileName: "# code review\n"})
 
-	files, err := renderSkills(skillsInstance(t, "~/skills", "code-review"))
+	inst := skillsInstance(t, "~/skills", "code-review")
+	inst.Home = home
+	files, err := renderSkills(inst)
 	if err != nil {
 		t.Fatalf("renderSkills() with a home-relative skills_dir: %v", err)
 	}
 	if got := filePaths(files); !slices.Equal(got, []string{".claude/skills/code-review/SKILL.md"}) {
 		t.Errorf("rendered %v, want the one skill under %s", got, SkillsDirName)
+	}
+
+	// With no home on the instance there is nothing to expand against, and the
+	// failure says which key could not be resolved rather than resolving
+	// somewhere unexpected.
+	inst.Home = ""
+	if _, err := renderSkills(inst); !errors.Is(err, ErrSkillsSource) {
+		t.Errorf("renderSkills() with no home = %v, want ErrSkillsSource", err)
 	}
 }
 
