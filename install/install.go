@@ -98,6 +98,10 @@ type Layer struct {
 	// rest are boot-directory artifacts.
 	Templates map[string]string
 
+	// Env answers an environment variable named in a manifest path — here, the
+	// skills directory. Carried for the reason [bootdir.Instance].Env is.
+	Env profile.Expander
+
 	// Values are the instance values a template may substitute. This layer is
 	// not one session, so the ones that describe a session — scope, and the
 	// session segment — are empty here and substitute nothing.

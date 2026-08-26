@@ -131,9 +131,19 @@ comes back with the content or not at all. Write `## Memory` in the template
 above the marker and you keep that heading on the day the slot fails, which is
 the one thing this rule exists to prevent.
 
-`$VAR` and `${VAR}` are expanded in a source's **path** and **URL**, so a
-profile can name a service without hardcoding a host. A `cmd`'s command line is
-not expanded — it already runs through a shell that does its own.
+`$VAR` and `${VAR}` are expanded in every manifest value that names somewhere to
+read from: a source's **path** and **URL**, a `trees` source, and `skills_dir`.
+A leading `~/` expands too, after the variables — so a variable holding
+`~/agents` works. A `cmd`'s command line is not expanded; it already runs
+through a shell that does its own.
+
+An unset name expands to nothing, so `$ROOT/docs` becomes `/docs`. Cairn's
+diagnostics name both forms for exactly that reason:
+
+```
+spec.trees copies "docs" from "$ROOT/docs", which expanded to "/docs",
+which does not exist
+```
 
 ### `files`: the same sources, at arbitrary paths
 
@@ -169,7 +179,8 @@ resolver answered, and what it answered is content, which Cairn does not read.
 ```
 
 Destination on the left, source directory on the right, copied recursively with
-executable bits preserved. A single file rides `files` with a `static_file`
+executable bits preserved. The source takes `$VAR` and `~/` — it is nothing but
+"point at a path", so it is the value most likely to want one. A single file rides `files` with a `static_file`
 source instead. **Do not reach for a `static_dir` slot** — that concatenates
 every file it finds into one string, which is right for a slot and destroys a
 directory.

@@ -54,7 +54,7 @@ func renderTrees(inst *Instance) ([]File, error) {
 			return nil, fmt.Errorf("%w: spec.%s holds an entry whose destination is empty",
 				ErrArtifactPath, profile.SpecKeyTrees)
 		}
-		source, err := treeSource(dest, declared[dest], inst.Home)
+		source, err := treeSource(dest, declared[dest], inst.Home, inst.Env)
 		if err != nil {
 			return nil, err
 		}
@@ -67,47 +67,38 @@ func renderTrees(inst *Instance) ([]File, error) {
 	return files, nil
 }
 
-// treeSource resolves the directory a declared tree is copied from, expanding a
-// leading "~/" against the instance's home for the reason [skillsSource] does:
-// a source directory is a location on the operator's machine, and writing it
-// out in full in every profile is how it goes stale.
-func treeSource(dest, declared, home string) (string, error) {
-	dir := strings.TrimSpace(declared)
-	if dir == "" {
+// treeSource resolves the directory a declared tree is copied from.
+//
+// A tree source is the manifest key most likely to want a variable: it is
+// nothing but "point at a path". It expands the same way a slot's static path
+// does, and a leading "~/" the same way again — a source directory is a
+// location on the operator's machine, and writing it out in full in every
+// profile is how it goes stale.
+func treeSource(dest, declared, home string, look profile.Expander) (string, error) {
+	raw := strings.TrimSpace(declared)
+	if raw == "" {
 		return "", fmt.Errorf("%w: spec.%s declares %q with no source directory",
 			ErrTreeSource, profile.SpecKeyTrees, dest)
 	}
-	dir, err := expandTreeHome(dir, home)
+	dir, err := profile.ExpandPath(raw, home, look)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: spec.%s copies %q: %w", ErrTreeSource, profile.SpecKeyTrees, dest, err)
 	}
+	named := quotedExpansion(raw, dir)
 	if !filepath.IsAbs(dir) {
-		return "", fmt.Errorf("%w: spec.%s copies %q from %q, which is not an absolute path",
-			ErrTreeSource, profile.SpecKeyTrees, dest, dir)
+		return "", fmt.Errorf("%w: spec.%s copies %q from %s, which is not an absolute path",
+			ErrTreeSource, profile.SpecKeyTrees, dest, named)
 	}
 	info, err := os.Stat(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return "", fmt.Errorf("%w: spec.%s copies %q from %s, which does not exist",
-			ErrTreeSource, profile.SpecKeyTrees, dest, dir)
+			ErrTreeSource, profile.SpecKeyTrees, dest, named)
 	case err != nil:
 		return "", fmt.Errorf("stat the tree source %s: %w", dir, err)
 	case !info.IsDir():
 		return "", fmt.Errorf("%w: spec.%s copies %q from %s, which is not a directory",
-			ErrTreeSource, profile.SpecKeyTrees, dest, dir)
+			ErrTreeSource, profile.SpecKeyTrees, dest, named)
 	}
 	return dir, nil
-}
-
-// expandTreeHome returns dir with a leading "~" replaced by home, reporting a
-// tilde it cannot expand rather than leaving one to fail as a relative path.
-func expandTreeHome(dir, home string) (string, error) {
-	if dir != "~" && !strings.HasPrefix(dir, "~/") {
-		return dir, nil
-	}
-	if strings.TrimSpace(home) == "" {
-		return "", fmt.Errorf("%w: spec.%s names %q and the home directory is empty",
-			ErrTreeSource, profile.SpecKeyTrees, dir)
-	}
-	return filepath.Join(home, strings.TrimPrefix(dir, "~")), nil
 }

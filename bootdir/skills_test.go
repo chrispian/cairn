@@ -419,3 +419,43 @@ func TestSkillFileModeMapsOnlyTheExecutableBit(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillsExpandAVariable closes the same gap trees had. A skills directory
+// is the other bare path a manifest declares, and an operator who learns that
+// a slot's path takes a variable will write one here too.
+func TestSkillsExpandAVariable(t *testing.T) {
+	root := t.TempDir()
+	writeSkillTree(t, root, "code-review", map[string]string{SkillFileName: "# code review\n"})
+
+	inst := skillsInstance(t, "$SKILLS_ROOT", "code-review")
+	inst.Env = func(name string) string {
+		if name == "SKILLS_ROOT" {
+			return root
+		}
+		return ""
+	}
+
+	files, err := RenderSkills(inst)
+	if err != nil {
+		t.Fatalf("RenderSkills(): %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("rendered %v, want the variable expanded", filePaths(files))
+	}
+}
+
+// TestSkillsNameAnUnsetVariableAsItWasWritten is the diagnostic, for the same
+// reason a tree's is: an error quoting only the expansion sends the operator
+// looking for a path they never wrote.
+func TestSkillsNameAnUnsetVariableAsItWasWritten(t *testing.T) {
+	inst := skillsInstance(t, "$SKILLS_ROOT/skills", "code-review")
+	inst.Env = func(string) string { return "" }
+
+	_, err := RenderSkills(inst)
+	if !errors.Is(err, ErrSkillsSource) {
+		t.Fatalf("RenderSkills() = %v, want ErrSkillsSource", err)
+	}
+	if !strings.Contains(err.Error(), "$SKILLS_ROOT/skills") {
+		t.Errorf("the refusal %q does not quote what the operator wrote", err)
+	}
+}

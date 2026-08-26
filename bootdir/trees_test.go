@@ -141,3 +141,86 @@ func writeTreeFile(t *testing.T, dir, rel, content string, mode fs.FileMode) {
 		t.Fatalf("set the mode on %s: %v", dest, err)
 	}
 }
+
+// TestTreesExpandAVariable is the gap this key had longest. A tree source is
+// nothing but "point at a path", which is the manifest value most likely to
+// want a variable, and until this it was the one place hardcoding was
+// mandatory.
+func TestTreesExpandAVariable(t *testing.T) {
+	root := t.TempDir()
+	writeTreeFile(t, filepath.Join(root, "engineering"), "process.md", "read it\n", 0o644)
+
+	inst := treeInstance(t, "", map[string]string{"docs": "$ROOT/engineering"})
+	inst.Env = func(name string) string {
+		if name == "ROOT" {
+			return root
+		}
+		return ""
+	}
+
+	files, err := renderTrees(inst)
+	if err != nil {
+		t.Fatalf("renderTrees(): %v", err)
+	}
+	if got := filePaths(files); !slices.Equal(got, []string{"docs/process.md"}) {
+		t.Errorf("copied %v, want the variable expanded", got)
+	}
+}
+
+// TestATreeSourceExpandsVariablesBeforeTheTilde covers the order, which is the
+// only part of it that is a decision. A variable holding a home-relative path
+// gets its tilde expanded too; expanding the tilde first would leave one in the
+// middle of the result.
+func TestATreeSourceExpandsVariablesBeforeTheTilde(t *testing.T) {
+	home := t.TempDir()
+	writeTreeFile(t, filepath.Join(home, "agents", "docs"), "x.md", "content\n", 0o644)
+
+	inst := treeInstance(t, home, map[string]string{"docs": "$AGENT_HOME/docs"})
+	inst.Env = func(string) string { return "~/agents" }
+
+	files, err := renderTrees(inst)
+	if err != nil {
+		t.Fatalf("renderTrees(): %v", err)
+	}
+	if got := filePaths(files); !slices.Equal(got, []string{"docs/x.md"}) {
+		t.Errorf("copied %v, want the tilde inside the variable expanded too", got)
+	}
+}
+
+// TestAnUnsetVariableIsNamedAsTheOperatorWroteIt is the diagnostic this had to
+// get right.
+//
+// "$ROOT/docs" with ROOT unset expands to "/docs", which is absolute and passes
+// every check but the last. An error quoting only "/docs" sends the operator
+// looking for a path they never wrote instead of at the variable they did not
+// set, so the message carries both.
+func TestAnUnsetVariableIsNamedAsTheOperatorWroteIt(t *testing.T) {
+	inst := treeInstance(t, "", map[string]string{"docs": "$ROOT/never-created"})
+	inst.Env = func(string) string { return "" }
+
+	_, err := renderTrees(inst)
+	if !errors.Is(err, ErrTreeSource) {
+		t.Fatalf("renderTrees() = %v, want ErrTreeSource", err)
+	}
+	for _, want := range []string{"$ROOT/never-created", "/never-created"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestNoEnvironmentLeavesTheOperatorsTextAlone states what an instance carrying
+// no environment does. Not the process environment: a renderer reads nothing
+// outside the instance it was handed, which is the same rule that carries the
+// operator's home rather than looking it up.
+func TestNoEnvironmentLeavesTheOperatorsTextAlone(t *testing.T) {
+	inst := treeInstance(t, "", map[string]string{"docs": "$ROOT/docs"})
+
+	_, err := renderTrees(inst)
+	if !errors.Is(err, ErrTreeSource) {
+		t.Fatalf("renderTrees() = %v, want ErrTreeSource", err)
+	}
+	if !strings.Contains(err.Error(), "$ROOT/docs") {
+		t.Errorf("the refusal %q does not quote what the operator wrote", err)
+	}
+}

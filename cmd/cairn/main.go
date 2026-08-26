@@ -160,7 +160,8 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// name a source, and reading one is I/O. No slots are resolved — see
 	// install.layerInstance — so a template's slot markers substitute nothing
 	// in this layer.
-	templates, err := slots.ResolveEntries(ctx, resolved.Spec, profile.SpecKeyTemplates, slots.Options{})
+	templates, err := slots.ResolveEntries(ctx, resolved.Spec, profile.SpecKeyTemplates,
+		slots.Options{Env: os.Getenv})
 	if err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
@@ -168,6 +169,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		Root:      root,
 		Profile:   resolved,
 		Home:      home,
+		Env:       os.Getenv,
 		Templates: templates,
 		Values: instanceValues(map[string]string{
 			"binding":  target,
@@ -304,6 +306,11 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// Slots resolve here rather than inside a renderer: resolving one runs
 	// commands and makes requests, and a renderer may do neither.
 	assembled, err := slots.Assemble(ctx, resolved.Spec, slots.Options{
+		// The one place cairn reads the environment. Everything below is
+		// handed the lookup rather than reaching for it, so a renderer and a
+		// resolver expand the same manifest the same way and neither has a
+		// hidden input.
+		Env: os.Getenv,
 		// Scope is the instance's working directory, and the workdir is what
 		// workdir-relative slot paths resolve against. They are the same
 		// directory, and joining them is this composition root's call to make
@@ -338,7 +345,8 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// Files resolve here for the same reason slots do, and unlike a slot a
 	// source that fails fails the boot: a missing section is degraded context,
 	// a missing file is a hole at a path the profile promised.
-	planted, err := slots.ResolveFiles(ctx, resolved.Spec, slots.Options{Workdir: scopeDir})
+	planted, err := slots.ResolveFiles(ctx, resolved.Spec,
+		slots.Options{Workdir: scopeDir, Env: os.Getenv})
 	if err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
@@ -347,7 +355,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// reason: a profile keeps its prose in a file more often than in the
 	// database, and reading one is I/O.
 	templates, err := slots.ResolveEntries(ctx, resolved.Spec, profile.SpecKeyTemplates,
-		slots.Options{Workdir: scopeDir})
+		slots.Options{Workdir: scopeDir, Env: os.Getenv})
 	if err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
@@ -365,6 +373,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		Dir:       dir,
 		Layout:    layout,
 		Home:      home,
+		Env:       os.Getenv,
 		Profile:   resolved,
 		Scope:     scopeDir,
 		Files:     planted,

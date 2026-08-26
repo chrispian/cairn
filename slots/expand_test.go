@@ -68,8 +68,24 @@ func TestExpandLeavesACommandAlone(t *testing.T) {
 // TestExpandAnUnsetNameYieldsNothing pins the behaviour of a name nobody set,
 // which is [os.Expand]'s and every shell's.
 func TestExpandAnUnsetNameYieldsNothing(t *testing.T) {
-	if got := expand("${NOT_SET_ANYWHERE}/tail", testEnv(nil)); got != "/tail" {
-		t.Errorf("expand() = %q, want the unset name to yield nothing", got)
+	if got := profile.ExpandEnv("${NOT_SET_ANYWHERE}/tail", testEnv(nil)); got != "/tail" {
+		t.Errorf("ExpandEnv() = %q, want the unset name to yield nothing", got)
+	}
+}
+
+// TestNoEnvironmentExpandsNothing states what a caller that supplies none gets.
+// Not the process environment: nothing below the composition root reads that,
+// for the reason the operator's home is carried rather than looked up.
+func TestNoEnvironmentExpandsNothing(t *testing.T) {
+	const declared = "${HOME}/docs"
+	if got := profile.ExpandEnv(declared, nil); got != declared {
+		t.Errorf("ExpandEnv(%q, nil) = %q, want it untouched", declared, got)
+	}
+	got := expandSources([]agentcontext.SlotSpec{{
+		Source: agentcontext.SlotSource{StaticFile: agentcontext.StaticFileSource{Path: declared}},
+	}}, nil)
+	if got[0].Source.StaticFile.Path != declared {
+		t.Errorf("expandSources with no environment = %q, want it untouched", got[0].Source.StaticFile.Path)
 	}
 }
 

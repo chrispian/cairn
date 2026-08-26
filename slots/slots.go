@@ -46,8 +46,9 @@ type Options struct {
 	Provider agentcontext.ContextProvider
 
 	// Env answers an environment variable named in a source's path or URL. Nil
-	// means the process environment. See [expandSources] for which fields are
-	// expanded and why it is only those.
+	// expands nothing, so a caller that supplies none leaves the operator's own
+	// text in place and a diagnostic quotes what they wrote. See
+	// [expandSources] for which fields are expanded and why it is only those.
 	Env Expander
 }
 

@@ -72,6 +72,13 @@ type Instance struct {
 	// fails by saying so.
 	Home string
 
+	// Env answers an environment variable named in a manifest path — a tree's
+	// source, or the skills directory. It is carried for the same reason Home
+	// is: a renderer reads nothing outside the instance it was handed, and the
+	// process environment is exactly that. Nil expands nothing, so a caller
+	// that supplies none leaves the operator's own text in the diagnostic.
+	Env profile.Expander
+
 	// Scope is the directory the materialized instance works in, or empty for
 	// no declared scope. It is a rendered field, not a validated one — the
 	// containment check that guards the write lives in package scope.

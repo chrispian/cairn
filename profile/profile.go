@@ -12,6 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hollis-labs/agentkit/agentcontext"
@@ -366,6 +369,60 @@ func parseFileEntry(raw json.RawMessage) (FileEntry, error) {
 			`{"kind": "...", ...}`)
 	}
 }
+
+// Expander returns the value of an environment variable, or the empty string
+// for one that is not set.
+//
+// It is a parameter rather than a direct read so that nothing below the
+// composition root consults the process environment on its own. A renderer
+// reads nothing outside the instance it was handed — the same rule that puts
+// the operator's home on the instance rather than in the renderer that expands
+// a "~/" — and an environment is the same kind of hidden input.
+type Expander func(name string) string
+
+// ExpandEnv returns s with $VAR and ${VAR} replaced by look's answers, and a
+// name that is not set replaced by nothing, which is [os.Expand]'s behaviour
+// and every shell's.
+//
+// A nil look expands nothing and returns s unchanged. That is deliberate: a
+// caller that was handed no environment leaves the operator's own text in
+// place, so a diagnostic quotes what they wrote rather than what an
+// unconfigured expansion made of it.
+func ExpandEnv(s string, look Expander) string {
+	if s == "" || look == nil {
+		return s
+	}
+	return os.Expand(s, look)
+}
+
+// ExpandPath returns a manifest path with its variables expanded and a leading
+// "~" replaced by home.
+//
+// The order is variables first. A variable holding a home-relative path — an
+// AGENT_HOME of "~/agents" — then has its tilde expanded too, where expanding
+// the tilde first would leave it in the middle of the result. Anything else
+// beginning with "~", "~user/x" included, is returned untouched and left to the
+// caller's absolute-path check, so an unexpanded form fails by naming itself
+// rather than by resolving somewhere unexpected.
+//
+// A path that needs home and has none returns [ErrNoHomeForPath]. Every other
+// judgement — whether the result is absolute, whether it exists, whether it is
+// the right kind of thing — belongs to the caller, which knows what the path
+// was for.
+func ExpandPath(raw string, home string, look Expander) (string, error) {
+	expanded := ExpandEnv(raw, look)
+	if expanded != "~" && !strings.HasPrefix(expanded, "~/") {
+		return expanded, nil
+	}
+	if strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("%w: %q", ErrNoHomeForPath, expanded)
+	}
+	return filepath.Join(home, strings.TrimPrefix(expanded, "~")), nil
+}
+
+// ErrNoHomeForPath reports a manifest path written with a leading "~/" where no
+// home directory is known.
+var ErrNoHomeForPath = errors.New("no home directory to expand a path against")
 
 // isUndeclared reports whether a manifest value carries nothing: absent bytes,
 // or the JSON null a profile clears an ancestor's key with.

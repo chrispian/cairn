@@ -233,14 +233,26 @@ provider renderer if it knows it, and ignored otherwise. It is never an error.
 and an explicit null is presence — it wins with an empty value rather than
 falling through to the ancestor.
 
-`$VAR` and `${VAR}` are expanded in the two source fields that name somewhere
-to read from — a static path and an HTTP URL — so a profile can say where a
-service lives without hardcoding a host that differs between machines and
-without Cairn growing a second configuration file to hold one. A `cmd`'s command
-line is deliberately **not** expanded: letting the environment rewrite what runs
-is a larger promise than "say where to read from", and a command already runs
-through a shell that does its own. An unset name expands to nothing, as in every
-shell.
+`$VAR` and `${VAR}` are expanded in **every manifest value that names somewhere
+to read from**: a slot source's static path and HTTP URL, a `trees` source, and
+`skills_dir`. A profile can then say where something lives without hardcoding a
+path that differs between machines and without Cairn growing a second
+configuration file to hold one. A leading `~/` expands too, and after the
+variables rather than before — a variable holding `~/agents` gets its tilde
+expanded as well, where the other order would leave one in the middle of the
+result.
+
+A `cmd`'s command line is deliberately **not** expanded: letting the environment
+rewrite what runs is a larger promise than "say where to read from", and a
+command already runs through a shell that does its own. An unset name expands to
+nothing, as in every shell — so a diagnostic about a path names **what the
+operator wrote and what it expanded to**, because `$ROOT/docs` with `ROOT` unset
+becomes `/docs`, which is absolute and passes every check but the last.
+
+Nothing below the composition root reads the environment. The lookup is carried
+on the instance the way the operator's home is, so a renderer has no hidden
+input and a caller that supplies none expands nothing rather than silently
+reaching for the process's.
 
 `spec` is JSON, so slot entries use `agentcontext.SlotSpec`'s **JSON** tags.
 `SlotSource.Kind` is `json:"kind"` and `yaml:"type"` — a slot copied out of a

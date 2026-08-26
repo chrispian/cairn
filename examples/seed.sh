@@ -87,6 +87,10 @@ SQL
 # static_file source; do NOT reach for a static_dir slot, which concatenates
 # what it finds into one string.
 #
+# Note the $AGENT_DOCS below: every manifest value that names somewhere to read
+# from takes $VAR and ~/ — slot paths and URLs, tree sources, skills_dir. Set it
+# before booting, or cairn will tell you it expanded to nothing.
+#
 # Note the `|| true`. A slot that fails is survivable and Cairn carries on; a
 # FILE source that fails REFUSES THE BOOT, because a missing file is a hole at
 # a path the profile promised and nothing downstream notices. Guard anything
@@ -107,7 +111,7 @@ VALUES (
       "CLAUDE.md": "@AGENTS.md\n"
     },
     "trees": {
-      "docs/engineering": "$HOME/.config/agents/docs/engineering"
+      "docs/engineering": "\$AGENT_DOCS"
     },
     "slots": [
       { "name": "git",
