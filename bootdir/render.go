@@ -1,0 +1,160 @@
+package bootdir
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"path"
+	"strings"
+
+	"github.com/chrispian/cairn/profile"
+	"github.com/hollis-labs/agentkit/agentlaunch"
+)
+
+// ErrNoProfile reports that an [Instance] carries no resolved profile. Every
+// artifact is derived from one, so there is nothing to render without it.
+var ErrNoProfile = errors.New("instance has no resolved profile")
+
+// ErrArtifactPath reports that a [Renderer] produced a [File] whose path
+// cannot name something inside the boot directory: it is empty, absolute, not
+// slash-separated, escapes upward, or targets a reserved name.
+var ErrArtifactPath = errors.New("invalid artifact path")
+
+// ErrDuplicatePath reports that two rendered files claim the same path inside
+// the boot directory. Which one won would depend on renderer order, so neither
+// does.
+var ErrDuplicatePath = errors.New("duplicate artifact path")
+
+// File is one rendered boot-directory artifact, held in memory. Rendering
+// produces every file before anything is written, so a render that fails
+// writes nothing at all.
+type File struct {
+	// Path is the file's location relative to the boot directory root, always
+	// slash-separated regardless of platform — ".claude/settings.json", never
+	// an absolute path and never one that escapes upward.
+	Path string
+
+	// Content is the file's exact bytes.
+	Content []byte
+
+	// Mode is the permission mode to write with. Zero means [DefaultFileMode].
+	Mode fs.FileMode
+}
+
+// mode returns the permission mode f is written with, substituting
+// [DefaultFileMode] for the zero value.
+func (f File) mode() fs.FileMode {
+	if f.Mode == 0 {
+		return DefaultFileMode
+	}
+	return f.Mode
+}
+
+// Instance is one materialized boot directory: the resolved profile, where it
+// goes, and everything that varies between two materializations. It is the
+// only input a [Renderer] receives, so nothing further down reads the
+// environment.
+type Instance struct {
+	// Dir is the absolute path of the boot directory to write.
+	Dir string
+
+	// Layout is where this instance's harness reads each artifact from.
+	Layout Layout
+
+	// Profile is the fully resolved profile. Rendering never cascades again.
+	Profile *profile.Resolved
+
+	// Scope is the directory the materialized instance works in, or empty for
+	// no declared scope. It is a rendered field, not a validated one — the
+	// containment check that guards the write lives in package scope.
+	Scope string
+
+	// Boot is the assembled slot content that becomes the boot file. It is
+	// resolved before rendering, because resolving a slot runs commands and
+	// makes requests and a renderer may do neither. Empty renders no boot
+	// file.
+	Boot string
+}
+
+// Renderer produces one boot-directory artifact. It is a value rather than an
+// interface so that registering an artifact is one entry in [Renderers] plus a
+// render function in its own file.
+//
+// A renderer receives only an [Instance]. It must not consult a clock, a
+// random source, or the process environment: the same instance has to render
+// byte-identical files every time. It may read the content the instance names
+// — that is how a skill's bytes reach a [File] — but only from a path the
+// instance carries, never one it resolves itself.
+type Renderer struct {
+	// Artifact names what this renderer produces, for diagnostics and for
+	// reading the registration list. It is a label, not a path: the skills
+	// renderer emits many files.
+	Artifact string
+
+	// Render returns the files this renderer contributes. Returning no files
+	// is legal and means the profile declared nothing for this artifact.
+	Render func(inst *Instance) ([]File, error)
+}
+
+// Render returns every file of inst's boot directory, with each path validated
+// and checked for collisions. It writes nothing — it only reads the content
+// inst names — so a caller can diff a rendering against disk without touching
+// the boot directory.
+//
+// Errors wrap [ErrNoProfile], [ErrArtifactPath] or [ErrDuplicatePath], or come
+// from a renderer unchanged.
+func Render(inst *Instance) ([]File, error) {
+	if inst == nil || inst.Profile == nil {
+		return nil, ErrNoProfile
+	}
+	seen := make(map[string]struct{})
+	var out []File
+	for _, r := range Renderers() {
+		files, err := r.Render(inst)
+		if err != nil {
+			return nil, fmt.Errorf("render %s: %w", r.Artifact, err)
+		}
+		for _, f := range files {
+			clean, err := CleanArtifactPath(f.Path)
+			if err != nil {
+				return nil, fmt.Errorf("render %s: %w", r.Artifact, err)
+			}
+			if _, dup := seen[clean]; dup {
+				return nil, fmt.Errorf("render %s: %w: %q", r.Artifact, ErrDuplicatePath, clean)
+			}
+			seen[clean] = struct{}{}
+			f.Path = clean
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// CleanArtifactPath validates a rendered file's path and returns it cleaned.
+//
+// Artifact paths are slash-separated by contract, so a backslash is rejected
+// rather than silently accepted as a filename character on Unix and a
+// separator on Windows. The cleaned path is then put to
+// [agentlaunch.ValidateBootDirRelPath], which is the same question asked by
+// the library that plants boot directories for the rest of the portfolio: two
+// independent opinions on whether a path stays inside the directory, and a
+// disagreement fails the render.
+func CleanArtifactPath(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", fmt.Errorf("%w: the path is empty", ErrArtifactPath)
+	}
+	if strings.ContainsRune(raw, '\\') {
+		return "", fmt.Errorf("%w: %q is not slash-separated", ErrArtifactPath, raw)
+	}
+	if path.IsAbs(raw) {
+		return "", fmt.Errorf("%w: %q is absolute", ErrArtifactPath, raw)
+	}
+	clean := path.Clean(raw)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("%w: %q does not name a file inside the boot dir", ErrArtifactPath, raw)
+	}
+	if err := agentlaunch.ValidateBootDirRelPath(clean); err != nil {
+		return "", fmt.Errorf("%w: %q: %w", ErrArtifactPath, raw, err)
+	}
+	return clean, nil
+}
