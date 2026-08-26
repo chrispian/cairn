@@ -29,12 +29,12 @@ func TestSettingsAreWrittenVerbatim(t *testing.T) {
 		manifest := `{"settings": ` + document + `}`
 		inst := testInstance(t, profile.Resolved{ID: "reviewer", Spec: testSpec(t, manifest)})
 
-		files, err := renderSettings(inst)
+		files, err := RenderSettings(inst)
 		if err != nil {
-			t.Fatalf("renderSettings() with %s: %v", document, err)
+			t.Fatalf("RenderSettings() with %s: %v", document, err)
 		}
 		if len(files) != 1 {
-			t.Fatalf("renderSettings() with %s wrote %v, want one file", document, filePaths(files))
+			t.Fatalf("RenderSettings() with %s wrote %v, want one file", document, filePaths(files))
 		}
 		if want := inst.Layout.Settings.RelPath; files[0].Path != want {
 			t.Errorf("rendered at %q, want %q", files[0].Path, want)
@@ -53,9 +53,9 @@ func TestSettingsKeepASingleTrailingNewline(t *testing.T) {
 		Spec: profile.Spec{profile.SpecKeySettings: []byte("{\"model\": \"opus\"}\n")},
 	})
 
-	files, err := renderSettings(inst)
+	files, err := RenderSettings(inst)
 	if err != nil {
-		t.Fatalf("renderSettings(): %v", err)
+		t.Fatalf("RenderSettings(): %v", err)
 	}
 	if want := "{\"model\": \"opus\"}\n"; string(files[0].Content) != want {
 		t.Errorf("the settings document is %q, want %q", files[0].Content, want)
@@ -69,12 +69,12 @@ func TestSettingsAreAbsentWhenUndeclared(t *testing.T) {
 	for _, manifest := range []string{"", `{}`, `{"settings": null}`} {
 		inst := testInstance(t, profile.Resolved{ID: "quiet", Spec: testSpec(t, manifest)})
 
-		files, err := renderSettings(inst)
+		files, err := RenderSettings(inst)
 		if err != nil {
-			t.Fatalf("renderSettings() with manifest %q: %v", manifest, err)
+			t.Fatalf("RenderSettings() with manifest %q: %v", manifest, err)
 		}
 		if len(files) != 0 {
-			t.Errorf("renderSettings() with manifest %q wrote %v, want no file",
+			t.Errorf("RenderSettings() with manifest %q wrote %v, want no file",
 				manifest, filePaths(files))
 		}
 	}
@@ -90,7 +90,7 @@ func TestSettingsRefuseToBeDropped(t *testing.T) {
 	})
 	inst.Layout.Settings = Artifact{}
 
-	if _, err := renderSettings(inst); err == nil {
-		t.Fatal("renderSettings() with no declared settings path returned no error")
+	if _, err := RenderSettings(inst); err == nil {
+		t.Fatal("RenderSettings() with no declared settings path returned no error")
 	}
 }

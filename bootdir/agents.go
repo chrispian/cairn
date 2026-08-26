@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// renderAgents returns the instruction file every boot directory carries.
+// RenderAgents returns the instruction file every boot directory carries.
 //
 // It is composed of declared fields and nothing else: the profile's own name,
 // description and body, followed by a block listing the fields the profile
@@ -16,7 +16,7 @@ import (
 // The file is always rendered, including for a profile that declares nothing
 // at all, in which case it is empty rather than absent: a boot directory whose
 // instruction file is missing looks like a render that stopped halfway.
-func renderAgents(inst *Instance) ([]File, error) {
+func RenderAgents(inst *Instance) ([]File, error) {
 	if inst == nil || inst.Profile == nil {
 		return nil, ErrNoProfile
 	}

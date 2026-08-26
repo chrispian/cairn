@@ -50,9 +50,9 @@ func TestSkillsArePlantedAsDirectories(t *testing.T) {
 	})
 
 	inst := skillsInstance(t, source, "code-review", "capture-decision")
-	files, err := renderSkills(inst)
+	files, err := RenderSkills(inst)
 	if err != nil {
-		t.Fatalf("renderSkills(): %v", err)
+		t.Fatalf("RenderSkills(): %v", err)
 	}
 
 	want := []string{
@@ -101,9 +101,9 @@ func TestSkillsAreOrderedDeterministically(t *testing.T) {
 	writeSkillTree(t, source, "alpha", map[string]string{SkillFileName: "a\n"})
 
 	inst := skillsInstance(t, source, "zulu", "alpha")
-	first, err := renderSkills(inst)
+	first, err := RenderSkills(inst)
 	if err != nil {
-		t.Fatalf("renderSkills(): %v", err)
+		t.Fatalf("RenderSkills(): %v", err)
 	}
 	want := []string{
 		".claude/skills/zulu/SKILL.md",
@@ -116,9 +116,9 @@ func TestSkillsAreOrderedDeterministically(t *testing.T) {
 		t.Fatalf("rendered %v, want %v", got, want)
 	}
 	for i := range 8 {
-		again, err := renderSkills(inst)
+		again, err := RenderSkills(inst)
 		if err != nil {
-			t.Fatalf("renderSkills() on render %d: %v", i, err)
+			t.Fatalf("RenderSkills() on render %d: %v", i, err)
 		}
 		if got := filePaths(again); !slices.Equal(got, want) {
 			t.Fatalf("render %d produced %v, want %v", i, got, want)
@@ -134,9 +134,9 @@ func TestSkillsAreCopiedNotLinked(t *testing.T) {
 	source := t.TempDir()
 	writeSkillTree(t, source, "code-review", map[string]string{SkillFileName: "the original body\n"})
 
-	files, err := renderSkills(skillsInstance(t, source, "code-review"))
+	files, err := RenderSkills(skillsInstance(t, source, "code-review"))
 	if err != nil {
-		t.Fatalf("renderSkills(): %v", err)
+		t.Fatalf("RenderSkills(): %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(source, "code-review", SkillFileName),
 		[]byte("rewritten after rendering\n"), 0o644); err != nil {
@@ -250,9 +250,9 @@ func TestSkillsRefuseWhatAHarnessWouldNotLoad(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			inst := skillsInstance(t, tt.source, tt.declare...)
 
-			files, err := renderSkills(inst)
+			files, err := RenderSkills(inst)
 			if !errors.Is(err, tt.want) {
-				t.Fatalf("renderSkills() error = %v, want %v; it rendered %v", err, tt.want, filePaths(files))
+				t.Fatalf("RenderSkills() error = %v, want %v; it rendered %v", err, tt.want, filePaths(files))
 			}
 			for _, want := range tt.names {
 				if !strings.Contains(err.Error(), want) {
@@ -275,9 +275,9 @@ func TestSkillsRefuseSomethingThatIsNotAFile(t *testing.T) {
 		t.Skipf("this filesystem does not support symlinks: %v", err)
 	}
 
-	_, err := renderSkills(skillsInstance(t, source, "code-review"))
+	_, err := RenderSkills(skillsInstance(t, source, "code-review"))
 	if !errors.Is(err, ErrSkillContent) {
-		t.Fatalf("renderSkills() error = %v, want ErrSkillContent", err)
+		t.Fatalf("RenderSkills() error = %v, want ErrSkillContent", err)
 	}
 }
 
@@ -296,9 +296,9 @@ func TestSkillsExpandALeadingTilde(t *testing.T) {
 
 	inst := skillsInstance(t, "~/skills", "code-review")
 	inst.Home = home
-	files, err := renderSkills(inst)
+	files, err := RenderSkills(inst)
 	if err != nil {
-		t.Fatalf("renderSkills() with a home-relative skills_dir: %v", err)
+		t.Fatalf("RenderSkills() with a home-relative skills_dir: %v", err)
 	}
 	if got := filePaths(files); !slices.Equal(got, []string{".claude/skills/code-review/SKILL.md"}) {
 		t.Errorf("rendered %v, want the one skill under %s", got, SkillsDirName)
@@ -308,8 +308,8 @@ func TestSkillsExpandALeadingTilde(t *testing.T) {
 	// failure says which key could not be resolved rather than resolving
 	// somewhere unexpected.
 	inst.Home = ""
-	if _, err := renderSkills(inst); !errors.Is(err, ErrSkillsSource) {
-		t.Errorf("renderSkills() with no home = %v, want ErrSkillsSource", err)
+	if _, err := RenderSkills(inst); !errors.Is(err, ErrSkillsSource) {
+		t.Errorf("RenderSkills() with no home = %v, want ErrSkillsSource", err)
 	}
 }
 
@@ -321,12 +321,12 @@ func TestSkillsAreAbsentWhenNoneAreDeclared(t *testing.T) {
 		`{"skills": [], "skills_dir": "/nowhere"}`} {
 		inst := testInstance(t, profile.Resolved{ID: "quiet", Spec: testSpec(t, manifest)})
 
-		files, err := renderSkills(inst)
+		files, err := RenderSkills(inst)
 		if err != nil {
-			t.Fatalf("renderSkills() with manifest %q: %v", manifest, err)
+			t.Fatalf("RenderSkills() with manifest %q: %v", manifest, err)
 		}
 		if len(files) != 0 {
-			t.Errorf("renderSkills() with manifest %q rendered %v, want nothing", manifest, filePaths(files))
+			t.Errorf("RenderSkills() with manifest %q rendered %v, want nothing", manifest, filePaths(files))
 		}
 	}
 }
@@ -339,8 +339,8 @@ func TestSkillsRefuseALayoutWithNoSkillsDirectory(t *testing.T) {
 	inst := skillsInstance(t, source, "code-review")
 	inst.Layout.SkillsDir = ""
 
-	if _, err := renderSkills(inst); !errors.Is(err, ErrProviderLayout) {
-		t.Fatalf("renderSkills() error = %v, want ErrProviderLayout", err)
+	if _, err := RenderSkills(inst); !errors.Is(err, ErrProviderLayout) {
+		t.Fatalf("RenderSkills() error = %v, want ErrProviderLayout", err)
 	}
 }
 

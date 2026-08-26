@@ -1,6 +1,6 @@
 package bootdir
 
-// renderPointer returns the harness's own instruction file, holding nothing
+// RenderPointer returns the harness's own instruction file, holding nothing
 // but an include of [AgentsFileName].
 //
 // The content is one line so that there is one place agent instructions live.
@@ -10,7 +10,7 @@ package bootdir
 //
 // A layout whose harness reads [AgentsFileName] directly declares no pointer
 // path, and renders no file.
-func renderPointer(inst *Instance) ([]File, error) {
+func RenderPointer(inst *Instance) ([]File, error) {
 	if inst == nil || inst.Profile == nil {
 		return nil, ErrNoProfile
 	}

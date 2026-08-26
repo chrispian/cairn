@@ -14,12 +14,12 @@ package bootdir
 // renderers each emit a tree.
 func Renderers() []Renderer {
 	return []Renderer{
-		{Artifact: AgentsFileName, Render: renderAgents},
-		{Artifact: "CLAUDE.md", Render: renderPointer},
+		{Artifact: AgentsFileName, Render: RenderAgents},
+		{Artifact: "CLAUDE.md", Render: RenderPointer},
 		{Artifact: "boot.md", Render: renderBoot},
 		{Artifact: ".mcp.json", Render: renderMCP},
-		{Artifact: ".claude/settings.json", Render: renderSettings},
-		{Artifact: SkillsDirName, Render: renderSkills},
+		{Artifact: ".claude/settings.json", Render: RenderSettings},
+		{Artifact: SkillsDirName, Render: RenderSkills},
 		{Artifact: "files", Render: renderFiles},
 	}
 }

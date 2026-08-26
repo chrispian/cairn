@@ -7,7 +7,7 @@ import (
 	"github.com/chrispian/cairn/profile"
 )
 
-// renderSettings returns the harness settings document, exactly as the
+// RenderSettings returns the harness settings document, exactly as the
 // operator stored it.
 //
 // Nothing here reads the document. Cairn models no permission mode, validates
@@ -19,7 +19,7 @@ import (
 // The only edit is a trailing newline where the stored bytes lack one, so that
 // the planted file is a text file. A manifest that declares no settings key
 // renders no file.
-func renderSettings(inst *Instance) ([]File, error) {
+func RenderSettings(inst *Instance) ([]File, error) {
 	if inst == nil || inst.Profile == nil {
 		return nil, ErrNoProfile
 	}

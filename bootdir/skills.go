@@ -40,7 +40,7 @@ var ErrSkillNotFound = errors.New("skill not found")
 // a regular file.
 var ErrSkillContent = errors.New("unusable skill content")
 
-// renderSkills returns every file of every skill the profile declares, planted
+// RenderSkills returns every file of every skill the profile declares, planted
 // under the layout's skills directory with one directory per skill.
 //
 // Skills are copied, never linked. Each file's bytes are read here and carried
@@ -59,7 +59,7 @@ var ErrSkillContent = errors.New("unusable skill content")
 // and the files inside each in the lexical order [filepath.WalkDir] walks.
 // Empty directories inside a skill are not reproduced, because a [File] names
 // a file.
-func renderSkills(inst *Instance) ([]File, error) {
+func RenderSkills(inst *Instance) ([]File, error) {
 	if inst == nil || inst.Profile == nil {
 		return nil, ErrNoProfile
 	}

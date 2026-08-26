@@ -112,12 +112,24 @@ type Renderer struct {
 // Errors wrap [ErrNoProfile], [ErrArtifactPath] or [ErrDuplicatePath], or come
 // from a renderer unchanged.
 func Render(inst *Instance) ([]File, error) {
+	return RenderWith(Renderers(), inst)
+}
+
+// RenderWith is [Render] over a caller-supplied renderer list.
+//
+// It exists for the installed layer, which is the same artifacts written to
+// different paths and without the ones that only make sense per session — a
+// boot file assembled from slots, and MCP servers a boot directory declares.
+// Rendering it through this rather than through a second copy of every
+// renderer is what keeps the two layers from drifting apart: they are the same
+// functions over an [Instance] whose [Layout] names different paths.
+func RenderWith(renderers []Renderer, inst *Instance) ([]File, error) {
 	if inst == nil || inst.Profile == nil {
 		return nil, ErrNoProfile
 	}
 	seen := make(map[string]struct{})
 	var out []File
-	for _, r := range Renderers() {
+	for _, r := range renderers {
 		files, err := r.Render(inst)
 		if err != nil {
 			return nil, fmt.Errorf("render %s: %w", r.Artifact, err)

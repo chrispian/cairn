@@ -73,12 +73,12 @@ func TestAgentsRendersDeclaredFieldsOnly(t *testing.T) {
 			inst := testInstance(t, tt.resolved)
 			inst.Scope = tt.scope
 
-			files, err := renderAgents(inst)
+			files, err := RenderAgents(inst)
 			if err != nil {
-				t.Fatalf("renderAgents(): %v", err)
+				t.Fatalf("RenderAgents(): %v", err)
 			}
 			if len(files) != 1 {
-				t.Fatalf("renderAgents() rendered %v, want exactly %s", filePaths(files), AgentsFileName)
+				t.Fatalf("RenderAgents() rendered %v, want exactly %s", filePaths(files), AgentsFileName)
 			}
 			if files[0].Path != AgentsFileName {
 				t.Errorf("rendered at %q, want %q", files[0].Path, AgentsFileName)
@@ -95,9 +95,9 @@ func TestAgentsRendersDeclaredFieldsOnly(t *testing.T) {
 func TestAgentsFallsBackToTheProfileID(t *testing.T) {
 	inst := testInstance(t, profile.Resolved{ID: "base.reviewer"})
 
-	files, err := renderAgents(inst)
+	files, err := RenderAgents(inst)
 	if err != nil {
-		t.Fatalf("renderAgents(): %v", err)
+		t.Fatalf("RenderAgents(): %v", err)
 	}
 	want := "# base.reviewer\n\n## Profile\n\n- profile: base.reviewer\n"
 	if got := string(files[0].Content); got != want {
@@ -112,9 +112,9 @@ func TestAgentsBodyIsVerbatim(t *testing.T) {
 	body := "    indented, which is a code block\n\ncontinued\ttext   \n\n\n"
 	inst := testInstance(t, profile.Resolved{Body: body})
 
-	files, err := renderAgents(inst)
+	files, err := RenderAgents(inst)
 	if err != nil {
-		t.Fatalf("renderAgents(): %v", err)
+		t.Fatalf("RenderAgents(): %v", err)
 	}
 	want := "    indented, which is a code block\n\ncontinued\ttext   \n"
 	if got := string(files[0].Content); got != want {
@@ -151,9 +151,9 @@ func TestAgentsRendersNoCairnAuthoredVocabulary(t *testing.T) {
 	})
 	inst.Scope = "/tmp/scope"
 
-	files, err := renderAgents(inst)
+	files, err := RenderAgents(inst)
 	if err != nil {
-		t.Fatalf("renderAgents(): %v", err)
+		t.Fatalf("RenderAgents(): %v", err)
 	}
 	rendered := strings.ToLower(string(files[0].Content))
 	for _, word := range []string{
