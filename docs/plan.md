@@ -249,6 +249,12 @@ nothing, as in every shell — so a diagnostic about a path names **what the
 operator wrote and what it expanded to**, because `$ROOT/docs` with `ROOT` unset
 becomes `/docs`, which is absolute and passes every check but the last.
 
+That holds for a slot as well as for the values Cairn checks itself, and there
+it is the only way the declared form survives at all: expansion runs before the
+request is built, so a resolver is handed `/process.md` and reports
+`/process.md` — correct, and all it can say. Cairn adds what was written ahead
+of the resolver's own message and leaves that message untouched.
+
 Nothing below the composition root reads the environment. The lookup is carried
 on the instance the way the operator's home is, so a renderer has no hidden
 input and a caller that supplies none expands nothing rather than silently

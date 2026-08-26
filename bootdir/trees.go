@@ -84,7 +84,7 @@ func treeSource(dest, declared, home string, look profile.Expander) (string, err
 	if err != nil {
 		return "", fmt.Errorf("%w: spec.%s copies %q: %w", ErrTreeSource, profile.SpecKeyTrees, dest, err)
 	}
-	named := quotedExpansion(raw, dir)
+	named := profile.QuotedExpansion(raw, dir)
 	if !filepath.IsAbs(dir) {
 		return "", fmt.Errorf("%w: spec.%s copies %q from %s, which is not an absolute path",
 			ErrTreeSource, profile.SpecKeyTrees, dest, named)

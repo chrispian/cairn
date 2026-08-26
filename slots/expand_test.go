@@ -188,3 +188,87 @@ func (p *recordingProvider) Assemble(_ context.Context, req agentcontext.Context
 	}
 	return res, nil
 }
+
+// TestExpansionsNamesWhatTheOperatorWrote is the information only cairn ever
+// holds. Expansion runs before the request is built, so a resolver is handed
+// "/process.md" and reports "/process.md" — correct, and all it can say. The
+// declared form has to come from here or from nowhere.
+func TestExpansionsNamesWhatTheOperatorWrote(t *testing.T) {
+	spec := profile.Spec{profile.SpecKeySlots: []byte(`[
+		{"name":"memory","source":{"kind":"static_file","static_file":{"path":"$AGENT_DOCS/process.md"}}},
+		{"name":"recall","source":{"kind":"http_json","http_json":{"url":"${MEMORY_URL}/recall"}}},
+		{"name":"role",  "source":{"kind":"role_summary","role_summary":{"path":"$ROLES/eng.md"}}}
+	]`)}
+
+	got, err := Expansions(spec, profile.SpecKeySlots, testEnv(nil))
+	if err != nil {
+		t.Fatalf("Expansions(): %v", err)
+	}
+	want := map[string]string{
+		"memory": `the static_file path is "$AGENT_DOCS/process.md", which expanded to "/process.md"`,
+		"recall": `the http_json url is "${MEMORY_URL}/recall", which expanded to "/recall"`,
+		"role":   `the role_summary path is "$ROLES/eng.md", which expanded to "/eng.md"`,
+	}
+	for name, note := range want {
+		if got[name] != note {
+			t.Errorf("Expansions()[%q] =\n%q\nwant\n%q", name, got[name], note)
+		}
+	}
+}
+
+// TestExpansionsSayNothingAboutWhatDidNotExpand keeps the common case quiet. A
+// slot with no variable in it reports exactly as it always did; adding "which
+// expanded to" where nothing expanded is noise on every boot.
+func TestExpansionsSayNothingAboutWhatDidNotExpand(t *testing.T) {
+	spec := profile.Spec{profile.SpecKeySlots: []byte(`[
+		{"name":"plain","source":{"kind":"static_file","static_file":{"path":"/srv/process.md"}}},
+		{"name":"inline","source":{"kind":"inline","inline":{"content":"$NOT_A_PATH"}}},
+		{"name":"cmd","source":{"kind":"cmd","cmd":{"run":"echo $TASK"}}}
+	]`)}
+
+	got, err := Expansions(spec, profile.SpecKeySlots, testEnv(map[string]string{"TASK": "T-1"}))
+	if err != nil {
+		t.Fatalf("Expansions(): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Expansions() = %v, want nothing for sources that name no path or did not change", got)
+	}
+}
+
+// TestExpansionsCoverAFilesEntry states that the same loss is answered on the
+// key where it fails the boot rather than warning. A files entry is addressed
+// by its destination, which is the name its failure is reported against.
+func TestExpansionsCoverAFilesEntry(t *testing.T) {
+	spec := profile.Spec{profile.SpecKeyFiles: []byte(`{
+		"process.md": {"kind":"static_file","static_file":{"path":"$AGENT_HOME/process.md"}},
+		"literal.md": "no source at all"
+	}`)}
+
+	got, err := Expansions(spec, profile.SpecKeyFiles, testEnv(nil))
+	if err != nil {
+		t.Fatalf("Expansions(): %v", err)
+	}
+	if len(got) != 1 || got["process.md"] == "" {
+		t.Fatalf("Expansions() = %v, want the sourced entry only", got)
+	}
+	if !strings.Contains(got["process.md"], "$AGENT_HOME/process.md") {
+		t.Errorf("Expansions()[%q] = %q, does not name what was written", "process.md", got["process.md"])
+	}
+}
+
+// TestRoleSummaryPathExpands covers the field that named somewhere to read from
+// and was not expanded. It is the same rule as every other path; it was simply
+// missed.
+func TestRoleSummaryPathExpands(t *testing.T) {
+	got := expandSources([]agentcontext.SlotSpec{{
+		Name: "role",
+		Source: agentcontext.SlotSource{
+			Kind:        agentcontext.SlotSourceKindRoleSummary,
+			RoleSummary: agentcontext.RoleSummarySource{Path: "$ROLES/eng.md"},
+		},
+	}}, testEnv(map[string]string{"ROLES": "/srv/roles"}))
+
+	if want := "/srv/roles/eng.md"; got[0].Source.RoleSummary.Path != want {
+		t.Errorf("the role_summary path expanded to %q, want %q", got[0].Source.RoleSummary.Path, want)
+	}
+}

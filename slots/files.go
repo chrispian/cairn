@@ -112,10 +112,17 @@ func ResolveEntries(ctx context.Context, spec profile.Spec, key string, opts Opt
 	// what lets the error name the path: the library records the resolver's
 	// error against the slot, and the slot's name is where the file goes.
 	if result != nil {
+		expansions, expErr := Expansions(spec, key, opts.Env)
+		if expErr != nil {
+			return nil, expErr
+		}
 		for _, s := range result.Slots {
 			if s.Err != nil {
-				return nil, fmt.Errorf("%w: spec.%s entry %q: %w",
-					ErrFileSource, key, s.Name, s.Err)
+				// The same information loss the slot report fixes, on the key
+				// where it fails the boot rather than warning: the resolver was
+				// handed the expanded value and can only name that one.
+				return nil, fmt.Errorf("%w: spec.%s entry %q: %s%w",
+					ErrFileSource, key, s.Name, prefixed(expansions[s.Name]), s.Err)
 			}
 			out[s.Name] = s.Content
 		}
@@ -143,6 +150,16 @@ func entriesOf(spec profile.Spec, key string) (map[string]profile.FileEntry, err
 	default:
 		return nil, fmt.Errorf("%w: spec.%s does not hold path-to-entry values", ErrFileSource, key)
 	}
+}
+
+// prefixed renders a diagnostic note to stand ahead of the resolver's own
+// message, and renders nothing at all for an empty one so a source with no
+// variable in it reads exactly as it did before.
+func prefixed(note string) string {
+	if note == "" {
+		return ""
+	}
+	return note + ": "
 }
 
 // checkEntryKinds reports an entry whose source kind is missing or is not one

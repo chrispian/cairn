@@ -138,12 +138,20 @@ A leading `~/` expands too, after the variables — so a variable holding
 through a shell that does its own.
 
 An unset name expands to nothing, so `$ROOT/docs` becomes `/docs`. Cairn's
-diagnostics name both forms for exactly that reason:
+diagnostics name both forms for exactly that reason — a resolver is handed the
+expansion and can only report that one, so what you wrote comes from Cairn or
+from nowhere:
 
 ```
 spec.trees copies "docs" from "$ROOT/docs", which expanded to "/docs",
 which does not exist
+
+slot "memory" did not resolve: the static_file path is "$AGENT_DOCS/process.md",
+which expanded to "/process.md": static_file: read /process.md: no such file
 ```
+
+A path with no variable in it reads exactly as it always did; the pair appears
+only when expansion changed something.
 
 ### `files`: the same sources, at arbitrary paths
 

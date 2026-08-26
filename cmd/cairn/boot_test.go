@@ -327,6 +327,61 @@ func TestBootRefusesAFileSourceThatDoesNotResolve(t *testing.T) {
 	}
 }
 
+// TestAFailedSlotNamesWhatTheOperatorWrote covers the diagnostic on the path
+// that fails softest and is used most.
+//
+// Expansion runs before the request is built, so the resolver is handed the
+// expanded value and reports that one — correct, and all it can say. A slot
+// written "$NEVER_SET/process.md" with the variable unset therefore fails to
+// open "/process.md", and without the declared form beside it the operator
+// searches for a path nobody typed.
+func TestAFailedSlotNamesWhatTheOperatorWrote(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	engineer, err := st.Profile(ctx, "engineer")
+	if err != nil {
+		t.Fatalf("load the profile: %v", err)
+	}
+	engineer.Spec["slots"] = json.RawMessage(`[
+		{"name":"memory","section":"## Memory",
+		 "source":{"kind":"static_file","static_file":{"path":"$CAIRN_TEST_NEVER_SET/process.md"}}}
+	]`)
+	if err := st.PutProfile(ctx, *engineer); err != nil {
+		t.Fatalf("put the profile: %v", err)
+	}
+	_ = st.Close()
+
+	var stdout, stderr bytes.Buffer
+	if err := run(ctx, []string{
+		"boot", "engineer", "--db", dbPath,
+		"--boot-root", filepath.Join(home, "runtime"), "--session", "s1",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("boot: %v\nstderr: %s", err, stderr.String())
+	}
+
+	report := stderr.String()
+	for _, want := range []string{
+		`slot "memory" did not resolve`,    // unchanged, and still the library's message
+		`$CAIRN_TEST_NEVER_SET/process.md`, // what the operator wrote
+		`which expanded to "/process.md"`,  // and what was actually tried
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("the report does not carry %q:\n%s", want, report)
+		}
+	}
+}
+
 // TestBootRefusals covers the three ways a boot is refused: an abstract
 // profile, a target that names nothing, and a boot directory that would land
 // inside the scope.

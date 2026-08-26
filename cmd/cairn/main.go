@@ -331,7 +331,16 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
 	if assembled != nil {
-		reportSlotFailures(stderr, assembled)
+		// The declared form of an expanded path or URL, which only cairn ever
+		// held: the resolver was handed the expansion and can name nothing
+		// else. Without this a slot written "$AGENT_DOCS/process.md" with the
+		// variable unset reports a failure to open "/process.md", and the
+		// operator searches for a path nobody typed.
+		expansions, err := slots.Expansions(resolved.Spec, profile.SpecKeySlots, os.Getenv)
+		if err != nil {
+			return fmt.Errorf("profile %q: %w", resolved.ID, err)
+		}
+		reportSlotFailures(stderr, assembled, expansions)
 	}
 	// One rendered section per declared slot, addressed by name. The assembled
 	// rendering the library returns is discarded: a template decides what order
@@ -525,17 +534,30 @@ func reportUnfilledMarkers(stderr io.Writer, templates, sections map[string]stri
 	return nil
 }
 
-// reportSlotFailures prints every non-required slot that failed to resolve.
+// reportSlotFailures prints every non-required slot that failed to resolve,
+// with the manifest value behind it when expansion changed one.
 //
 // The library records such a failure on the slot instead of blocking the
 // assembly, which is the behaviour Cairn wants — one unreachable endpoint
 // should not stop a boot. It is not a behaviour that should be silent: the
 // boot directory is written either way, and the operator has no other way to
-// learn that a section of the boot file is missing.
-func reportSlotFailures(stderr io.Writer, res *agentcontext.ContextResult) {
+// learn that a section is missing.
+//
+// The library's message is passed through untouched and the declared form is
+// added ahead of it, so the line reads cause first and consequence second: what
+// the operator wrote, what was tried, then what went wrong with it. Expansion runs before the request is built, so a resolver
+// only ever saw the expanded value: the two halves together are what the
+// operator asked for and what was tried. A slot whose value expansion did not
+// change reads exactly as it did before.
+func reportSlotFailures(stderr io.Writer, res *agentcontext.ContextResult, expansions map[string]string) {
 	for _, s := range res.Slots {
-		if s.Err != nil {
-			_, _ = fmt.Fprintf(stderr, "cairn: slot %q did not resolve: %v\n", s.Name, s.Err)
+		if s.Err == nil {
+			continue
 		}
+		note := ""
+		if expanded := expansions[s.Name]; expanded != "" {
+			note = expanded + ": "
+		}
+		_, _ = fmt.Fprintf(stderr, "cairn: slot %q did not resolve: %s%v\n", s.Name, note, s.Err)
 	}
 }

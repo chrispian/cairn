@@ -420,6 +420,25 @@ func ExpandPath(raw string, home string, look Expander) (string, error) {
 	return filepath.Join(home, strings.TrimPrefix(expanded, "~")), nil
 }
 
+// QuotedExpansion names a manifest value for a diagnostic: what the operator
+// wrote, and what it expanded to when the two differ.
+//
+// Naming only the expansion is the failure this exists to prevent. A profile
+// writing "$ROOT/docs" with ROOT unset expands to "/docs", which is absolute
+// and passes every check but the last, and an error quoting "/docs" sends the
+// operator looking for a path they never wrote instead of at the variable they
+// did not set.
+//
+// It is one function so that every diagnostic about an expanded value reads the
+// same way, whether the value was a tree's source, a skills directory, or the
+// path inside a slot.
+func QuotedExpansion(declared, expanded string) string {
+	if declared == expanded {
+		return fmt.Sprintf("%q", declared)
+	}
+	return fmt.Sprintf("%q, which expanded to %q", declared, expanded)
+}
+
 // ErrNoHomeForPath reports a manifest path written with a leading "~/" where no
 // home directory is known.
 var ErrNoHomeForPath = errors.New("no home directory to expand a path against")

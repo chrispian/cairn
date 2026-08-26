@@ -133,7 +133,7 @@ func skillsSource(spec profile.Spec, names []string, home string, look profile.E
 	if err != nil {
 		return "", fmt.Errorf("%w: spec.%s: %w", ErrSkillsSource, profile.SpecKeySkillsDir, err)
 	}
-	named := quotedExpansion(raw, dir)
+	named := profile.QuotedExpansion(raw, dir)
 	if !filepath.IsAbs(dir) {
 		return "", fmt.Errorf("%w: spec.%s is %s, which is not an absolute path",
 			ErrSkillsSource, profile.SpecKeySkillsDir, named)
@@ -150,21 +150,6 @@ func skillsSource(spec profile.Spec, names []string, home string, look profile.E
 			ErrSkillsSource, profile.SpecKeySkillsDir, named)
 	}
 	return dir, nil
-}
-
-// quotedExpansion names a manifest path for a diagnostic: what the operator
-// wrote, and what it expanded to when the two differ.
-//
-// Naming only the expansion is the failure this exists to prevent. A profile
-// writing "$ROOT/docs" with ROOT unset expands to "/docs", which is absolute
-// and passes every check but the last, and an error quoting "/docs" sends the
-// operator looking for a path they never wrote instead of at the variable they
-// did not set.
-func quotedExpansion(declared, expanded string) string {
-	if declared == expanded {
-		return fmt.Sprintf("%q", declared)
-	}
-	return fmt.Sprintf("%q, which expanded to %q", declared, expanded)
 }
 
 // copySkill returns the skill named name under source as artifacts under
