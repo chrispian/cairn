@@ -368,3 +368,28 @@ Steps 2–5 are independent enough to run in parallel behind the interfaces step
   authored paragraphs.
 - Codex and opencode planters, via `go-providers` `BootDirSpec`. Claude first.
 - `cairn profile import/export`.
+
+### Named at the end of the MVP build, deliberately not chased
+
+None is a defect. Each is recorded because the reason for leaving it is the
+useful part, and an unnamed loose end gets rediscovered as a bug.
+
+- **`bootdir.Renderers()` labels are Claude-shaped strings** — `.mcp.json`,
+  `.claude/settings.json`, `.claude/skills`. `Renderer.Artifact` is a label and
+  never a path, so nothing breaks, but a render error would name a path codex
+  does not use. Rewriting them provider-neutral with no second provider to test
+  against is speculative; the right moment is when the codex layout arrives.
+- **`bootdir.Planter`, the `plant.Planter` adapter, has no caller.** It exists
+  because §2 names that contract as the write boundary, so Cairn speaks what
+  Nanite speaks. Cairn's own path uses `PlantFiles`, because `plant.Spec`
+  carries no file modes and a skill's executable bit is load-bearing. If
+  nothing external ever calls it, it is ceremony — decide when something tries.
+- **`cairn install` prints every path it wrote, unchanged ones included.**
+  `--check` before an install already answers "what would change", and
+  inventing a diff format nobody has asked for is how a small tool grows.
+
+Bounded by construction, and worth knowing: §6 says `spec.settings` is written
+verbatim with no validation, but a value that is not valid JSON cannot be
+stored at all — `encodeSpec` runs `json.Valid` per value. Verbatim is bounded
+by "it is at least JSON", which is shape rather than meaning. That is the
+intended line.
