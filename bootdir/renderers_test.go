@@ -1,0 +1,214 @@
+package bootdir
+
+import (
+	"encoding/json"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/chrispian/cairn/profile"
+)
+
+// contractInstance returns an instance whose profile declares every artifact
+// of the output contract at once, so that a test can assert the whole boot
+// directory rather than one renderer's share of it.
+func contractInstance(t *testing.T) *Instance {
+	t.Helper()
+	source := t.TempDir()
+	writeSkillTree(t, source, "code-review", map[string]string{
+		SkillFileName:             "# code review\n",
+		"references/checklist.md": "- read the diff\n",
+	})
+
+	manifest, err := json.Marshal(map[string]any{
+		profile.SpecKeyMCP: []map[string]any{
+			{"name": "notes", "command": "notes-server", "args": []string{"--stdio"}},
+		},
+		profile.SpecKeySkills:    []string{"code-review"},
+		profile.SpecKeySkillsDir: source,
+		profile.SpecKeySettings:  json.RawMessage(`{"model": "opus"}`),
+		profile.SpecKeyFiles:     map[string]string{"notes/decisions.md": "a planted note\n"},
+		"a key nothing renders":  "carried and ignored",
+	})
+	if err != nil {
+		t.Fatalf("encode the manifest: %v", err)
+	}
+
+	inst := testInstance(t, profile.Resolved{
+		ID:          "reviewer",
+		Name:        "Reviewer",
+		Description: "Reviews changes before they land.",
+		Provider:    profile.ProviderClaude,
+		Model:       "claude-sonnet-4-5",
+		Body:        "You read diffs.\n",
+		Spec:        testSpec(t, string(manifest)),
+	})
+	inst.Scope = "/Users/chrispian/dev/projects/cairn"
+	inst.Boot = "## repo\n\nthe assembled slot content\n"
+	return inst
+}
+
+// TestRenderProducesTheOutputContract is the whole of docs/plan.md §5 as one
+// assertion: every artifact, at the path its harness reads it from, in render
+// order, from one profile that declares all of them.
+func TestRenderProducesTheOutputContract(t *testing.T) {
+	inst := contractInstance(t)
+
+	files, err := Render(inst)
+	if err != nil {
+		t.Fatalf("Render(): %v", err)
+	}
+	want := []string{
+		"AGENTS.md",
+		"CLAUDE.md",
+		"boot.md",
+		".mcp.json",
+		".claude/settings.json",
+		".claude/skills/code-review/SKILL.md",
+		".claude/skills/code-review/references/checklist.md",
+		"notes/decisions.md",
+	}
+	if got := filePaths(files); !slices.Equal(got, want) {
+		t.Fatalf("Render() produced\n%v\nwant\n%v", got, want)
+	}
+	for _, f := range files {
+		if len(f.Content) == 0 {
+			t.Errorf("%s was rendered with no bytes", f.Path)
+		}
+	}
+	if got := string(fileByPath(t, files, "CLAUDE.md").Content); got != PointerFileContent {
+		t.Errorf("the pointer holds %q, want %q", got, PointerFileContent)
+	}
+	if got := string(fileByPath(t, files, "boot.md").Content); got != inst.Boot {
+		t.Errorf("the boot file holds %q, want the assembled content %q", got, inst.Boot)
+	}
+	stored, declared := inst.Profile.Spec.Settings()
+	if !declared {
+		t.Fatal("the manifest declares settings, but the spec reports none")
+	}
+	if got := string(fileByPath(t, files, ".claude/settings.json").Content); got != string(stored)+"\n" {
+		t.Errorf("the settings document holds %q, want the stored bytes %q", got, stored)
+	}
+}
+
+// TestRenderIsByteStable states the determinism contract over the whole
+// rendering rather than over one artifact of it: same instance, same bytes,
+// same order, however many times it is rendered.
+func TestRenderIsByteStable(t *testing.T) {
+	inst := contractInstance(t)
+
+	first, err := Render(inst)
+	if err != nil {
+		t.Fatalf("Render(): %v", err)
+	}
+	for i := range 16 {
+		again, err := Render(inst)
+		if err != nil {
+			t.Fatalf("Render() on render %d: %v", i, err)
+		}
+		if len(again) != len(first) {
+			t.Fatalf("render %d produced %v, want %v", i, filePaths(again), filePaths(first))
+		}
+		for j := range again {
+			if again[j].Path != first[j].Path {
+				t.Fatalf("render %d file %d is %q, want %q", i, j, again[j].Path, first[j].Path)
+			}
+			if string(again[j].Content) != string(first[j].Content) {
+				t.Fatalf("render %d changed %s", i, again[j].Path)
+			}
+			if again[j].Mode != first[j].Mode {
+				t.Fatalf("render %d changed the mode of %s", i, again[j].Path)
+			}
+		}
+	}
+}
+
+// TestRenderRefusesTwoFilesAtOnePath covers the collision the manifest's
+// escape hatch makes reachable: a declared file at the path an artifact
+// already claims. Which one won would depend on renderer order, so neither
+// does.
+func TestRenderRefusesTwoFilesAtOnePath(t *testing.T) {
+	for _, taken := range []string{"AGENTS.md", "CLAUDE.md", "boot.md", ".mcp.json"} {
+		inst := contractInstance(t)
+		declared, err := inst.Profile.Spec.Files()
+		if err != nil {
+			t.Fatalf("read the files key: %v", err)
+		}
+		declared[taken] = "a second file at a path an artifact already claims"
+		encoded, err := json.Marshal(declared)
+		if err != nil {
+			t.Fatalf("encode the files key: %v", err)
+		}
+		inst.Profile.Spec[profile.SpecKeyFiles] = encoded
+
+		_, err = Render(inst)
+		if !errors.Is(err, ErrDuplicatePath) {
+			t.Errorf("Render() with a second file at %s returned error %v, want ErrDuplicatePath",
+				taken, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), taken) {
+			t.Errorf("the error %q does not name %s", err, taken)
+		}
+	}
+}
+
+// TestRenderersAreRegisteredOnce guards the registration list itself: every
+// entry renders something and names itself, and no two entries share a label,
+// so a diagnostic naming an artifact names one renderer.
+func TestRenderersAreRegisteredOnce(t *testing.T) {
+	seen := make(map[string]struct{})
+	for i, renderer := range Renderers() {
+		if renderer.Render == nil {
+			t.Errorf("the renderer at index %d has no render function", i)
+		}
+		if strings.TrimSpace(renderer.Artifact) == "" {
+			t.Errorf("the renderer at index %d has no artifact label", i)
+			continue
+		}
+		if _, duplicate := seen[renderer.Artifact]; duplicate {
+			t.Errorf("two renderers are labelled %q", renderer.Artifact)
+		}
+		seen[renderer.Artifact] = struct{}{}
+	}
+	if len(seen) != 7 {
+		t.Errorf("%d artifacts are registered, want the 7 of the output contract: %v",
+			len(seen), seen)
+	}
+}
+
+// TestRenderNeedsAResolvedProfile covers the one input every renderer derives
+// from. Each guards it in its own right, so a renderer called directly reports
+// the same thing [Render] does.
+func TestRenderNeedsAResolvedProfile(t *testing.T) {
+	if _, err := Render(&Instance{Layout: testLayout(t)}); !errors.Is(err, ErrNoProfile) {
+		t.Errorf("Render() with no profile returned error %v, want ErrNoProfile", err)
+	}
+	for _, renderer := range Renderers() {
+		if _, err := renderer.Render(&Instance{}); !errors.Is(err, ErrNoProfile) {
+			t.Errorf("%s rendered from no profile and returned error %v, want ErrNoProfile",
+				renderer.Artifact, err)
+		}
+	}
+}
+
+// TestRenderCarriesAnUnknownManifestKeyPastEveryRenderer states the rule from
+// docs/plan.md §3 at the point it matters: a key nothing renders reaches the
+// rendering and changes nothing about it.
+func TestRenderCarriesAnUnknownManifestKeyPastEveryRenderer(t *testing.T) {
+	inst := contractInstance(t)
+	before, err := Render(inst)
+	if err != nil {
+		t.Fatalf("Render(): %v", err)
+	}
+	inst.Profile.Spec["another key nothing renders"] = json.RawMessage(`{"deeply": ["nested"]}`)
+
+	after, err := Render(inst)
+	if err != nil {
+		t.Fatalf("Render() with an unknown manifest key: %v", err)
+	}
+	if !slices.Equal(filePaths(before), filePaths(after)) {
+		t.Errorf("an unknown manifest key changed the rendering from %v to %v",
+			filePaths(before), filePaths(after))
+	}
+}

@@ -105,10 +105,10 @@ func NewSession(now time.Time, entropy io.Reader) (string, error) {
 // Cairn then creates, and a name a shell or a filesystem reads specially would
 // be a surprise nobody asked for.
 func checkSegment(what, seg string) error {
-	switch {
-	case seg == "":
+	switch seg {
+	case "":
 		return fmt.Errorf("%w: the %s is empty", ErrLocation, what)
-	case seg == "." || seg == "..":
+	case ".", "..":
 		return fmt.Errorf("%w: the %s is %q", ErrLocation, what, seg)
 	}
 	for _, r := range seg {
