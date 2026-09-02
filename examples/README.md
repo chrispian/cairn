@@ -30,9 +30,9 @@ in a sqlite database at `$XDG_CONFIG_HOME/agents/cairn.db` (override with
 ```
 
 It writes an abstract `base`, a concrete `engineer` that extends it, a
-`reviewer` that exists only to be dispatched, two scope aliases, two bindings,
-and the templates those profiles name. Read it — it is the profile-authoring
-documentation.
+`reviewer` the engineer dispatches and that also boots on its own, two scope
+aliases, two bindings, and the templates those profiles name. Read it — it is
+the profile-authoring documentation.
 
 Three things it demonstrates that are easy to get wrong:
 
@@ -236,6 +236,13 @@ model: sonnet
 
 Read the diff. Report what you found and nothing else.
 ```
+
+**Being dispatchable is a capability, not a mode.** `spec.subagent` is what
+lets another profile name this one. It takes nothing away: the same `reviewer`
+boots into a session of its own with `cairn boot reviewer`, off the same
+cascade and the same prose, and the planted definition is that role narrowed to
+a dispatch rather than a different role. A profile with no `subagent` block
+refuses to be named; `abstract: true` is the only key that rules out both.
 
 **A parent may not narrow or expand a child.** There is no tool intersection,
 no ceiling, no depth cap — Cairn has no `tools` concept and reads none of these
