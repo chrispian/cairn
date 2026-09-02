@@ -70,6 +70,10 @@ Confirm a path resolves before relying on it.
 
 End of task, commit, push, pull request, release — each has a skill that carries
 the current steps.
+## Repository
+## main
+## Recent commits
+6c51b51 Seed the golden fixture scope
 
 ## Profile
 
