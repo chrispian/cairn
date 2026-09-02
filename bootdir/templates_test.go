@@ -64,6 +64,11 @@ func TestATemplateIsTheOnlyWayToGetProse(t *testing.T) {
 // TestATemplateThatSubstitutesAwayRendersNoFile covers the document whose every
 // marker filled nothing. An empty file is a profile saying something and
 // meaning nothing by it; an absent one is the profile not having said it.
+//
+// [Substitute] takes each vanished marker's own line with it, which leaves the
+// author's blank lines around them rather than nothing at all. This trim is
+// what turns that residue into no file, so it stays even though the rendering
+// it sees is shorter than it used to be.
 func TestATemplateThatSubstitutesAwayRendersNoFile(t *testing.T) {
 	inst := templateInstance(t, map[string]string{"AGENTS.md": "\n<!-- cairn:slot memory -->\n\n"})
 

@@ -131,6 +131,20 @@ func parseMarker(text, body string) (Marker, error) {
 // with no declared scope substitutes nothing and the template reads as though
 // the marker were not there.
 //
+// A line that held nothing but markers and whitespace, every one of which
+// substituted the empty string, is removed entirely — its newline with it. The
+// alternative leaves a blank line wherever a marker stood for nothing, and one
+// shared template carrying every marker any profile might fill would open a
+// role's instruction file with a run of them. A marker that shares its line
+// with content is the other case: only the marker goes, and the line stays
+// exactly as it was written, so "- scope: <!-- cairn:value scope -->" with no
+// scope still renders "- scope: " and the trailing space is the template's.
+//
+// Consecutive blank lines are not collapsed. A blank line an operator wrote
+// between two markers is their content, and a substitution pass that reflowed
+// prose would be a worse promise than the one this makes. A template wanting
+// no gap between two blocks writes their markers on adjacent lines.
+//
 // Substitution does not look at where in the document a marker sits. A marker
 // inside a fenced code block is substituted like any other, so a template that
 // documents this syntax has to avoid writing a live one.
@@ -139,14 +153,68 @@ func Substitute(text string, sections, values map[string]string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	for _, marker := range markers {
-		replacement := values[marker.Name]
-		if marker.Verb == MarkerVerbSlot {
-			replacement = sections[marker.Name]
+	// The line walk uses markerPattern to find positions, and takes the
+	// meaning of each match from the slice [Markers] already returned. Both
+	// come from that one regex over this one text, so the nth match on the
+	// walk is the nth marker in the slice — which is also what keeps two
+	// markers spelled identically from being confused for each other, since
+	// each is consumed at the position it was found rather than by its text.
+	var out strings.Builder
+	out.Grow(len(text))
+	next := 0
+	for rest := text; rest != ""; {
+		line := rest
+		if end := strings.IndexByte(rest, '\n'); end >= 0 {
+			line, rest = rest[:end+1], rest[end+1:]
+		} else {
+			rest = ""
 		}
-		text = strings.Replace(text, marker.Text, replacement, 1)
+		locs := markerPattern.FindAllStringIndex(line, -1)
+		rendered, vanished := substituteLine(line, locs, markers[next:next+len(locs)], sections, values)
+		next += len(locs)
+		if vanished {
+			continue
+		}
+		out.WriteString(rendered)
 	}
-	return text, nil
+	return out.String(), nil
+}
+
+// substituteLine returns line with the markers found at locs replaced, and
+// reports whether the line vanished: it held nothing but markers and
+// whitespace, and every one of them substituted the empty string.
+//
+// The emptiness test is on each replacement rather than on the finished line,
+// so a slot whose section is itself only whitespace still holds its line. That
+// section is content the slot produced, and this is not the place that decides
+// it was worthless.
+func substituteLine(line string, locs [][]int, markers []Marker, sections, values map[string]string) (string, bool) {
+	if len(locs) == 0 {
+		return line, false
+	}
+	var out strings.Builder
+	out.Grow(len(line))
+	filled := false
+	prev := 0
+	for i, loc := range locs {
+		replacement := values[markers[i].Name]
+		if markers[i].Verb == MarkerVerbSlot {
+			replacement = sections[markers[i].Name]
+		}
+		if replacement != "" {
+			filled = true
+		}
+		out.WriteString(line[prev:loc[0]])
+		out.WriteString(replacement)
+		prev = loc[1]
+	}
+	out.WriteString(line[prev:])
+
+	rendered := out.String()
+	if !filled && strings.TrimSpace(rendered) == "" {
+		return "", true
+	}
+	return rendered, false
 }
 
 // Unfilled returns the markers in text whose slot was declared and then filled

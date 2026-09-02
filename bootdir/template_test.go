@@ -49,13 +49,210 @@ func TestSubstituteOmitsASlotThatFilledNothing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Substitute(): %v", err)
 			}
-			if want := "before\n\n\n\nafter\n"; got != want {
+			// The marker's own line is gone, newline included. The two
+			// blank lines around it are the author's and survive — see
+			// TestSubstituteKeepsTheBlankLinesTheAuthorWrote.
+			if want := "before\n\n\nafter\n"; got != want {
 				t.Errorf("Substitute() = %q, want %q", got, want)
 			}
 			if strings.Contains(got, "cairn:") {
 				t.Errorf("Substitute() left a marker behind: %q", got)
 			}
 		})
+	}
+}
+
+// TestSubstituteTakesTheLineAMarkerHadToItself pins the rule this behaviour
+// exists for: a marker with nothing but whitespace either side of it on its
+// line, substituting the empty string, takes the line with it — the newline
+// included.
+//
+// Without it every marker that stood for nothing left a blank line where it
+// was. That was a curiosity while each profile had its own template; it stops
+// being one the moment a single shared document carries every marker any
+// profile might fill, because then a role's instruction file opens with a run
+// of blanks for every block that role does not use.
+//
+// The indented and trailing-space spellings are here because whitespace around
+// a marker is invisible in a template and nobody should have to think about
+// which side of it they left a space on.
+func TestSubstituteTakesTheLineAMarkerHadToItself(t *testing.T) {
+	for name, template := range map[string]string{
+		"flush left":                     "a\n<!-- cairn:slot memory -->\nb\n",
+		"indented":                       "a\n    <!-- cairn:slot memory -->\nb\n",
+		"trailing spaces":                "a\n<!-- cairn:slot memory -->   \nb\n",
+		"a tab either side":              "a\n\t<!-- cairn:slot memory -->\t\nb\n",
+		"last line, no trailing newline": "a\n<!-- cairn:slot memory -->",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Substitute(template, map[string]string{"memory": ""}, nil)
+			if err != nil {
+				t.Fatalf("Substitute(): %v", err)
+			}
+			want := "a\nb\n"
+			if !strings.HasSuffix(template, "b\n") {
+				want = "a\n"
+			}
+			if got != want {
+				t.Errorf("Substitute() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestSubstituteKeepsTheLineAMarkerFilled is the other half of that rule, and
+// the reason it is stated as "substituted nothing" rather than "was a marker".
+// A marker alone on its line that filled a section leaves the line exactly
+// where the operator put it.
+func TestSubstituteKeepsTheLineAMarkerFilled(t *testing.T) {
+	got, err := Substitute("a\n<!-- cairn:slot memory -->\nb\n",
+		map[string]string{"memory": "## Memory\n\nwhat is known"}, nil)
+	if err != nil {
+		t.Fatalf("Substitute(): %v", err)
+	}
+	if want := "a\n## Memory\n\nwhat is known\nb\n"; got != want {
+		t.Errorf("Substitute() = %q, want %q", got, want)
+	}
+}
+
+// TestSubstituteKeepsALineAMarkerShared is the case that keeps this change
+// byte-neutral, and the one easiest to get wrong.
+//
+// templates/agents.md ends "- scope: <!-- cairn:value scope -->", and a profile
+// with no scope substitutes the empty string there. The marker goes and nothing
+// else on the line does — not the label, and not the space between the colon
+// and the marker. The want string below ends in that space deliberately: it is
+// the template's byte, not cairn's, and tidying it away would move
+// testdata/goldens/trees/install/base/.claude/AGENTS.md, whose last line is
+// "- scope: " with exactly that trailing space.
+func TestSubstituteKeepsALineAMarkerShared(t *testing.T) {
+	const template = "## Profile\n\n" +
+		"- profile: <!-- cairn:value profile -->\n" +
+		"- provider: <!-- cairn:value provider -->\n" +
+		"- scope: <!-- cairn:value scope -->\n"
+
+	got, err := Substitute(template, nil, map[string]string{
+		"profile":  "base",
+		"provider": "claude",
+		"scope":    "",
+	})
+	if err != nil {
+		t.Fatalf("Substitute(): %v", err)
+	}
+	want := "## Profile\n\n- profile: base\n- provider: claude\n- scope: \n"
+	if got != want {
+		t.Errorf("Substitute() =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestSubstituteKeepsTheBlankLinesTheAuthorWrote is the fence around the rule.
+//
+// Removing a marker's line is not licence to collapse the blank lines left
+// around it. A blank line between two markers is the operator's content —
+// cairn does not know it was only ever a separator — and a substitution pass
+// that reflowed prose would break a larger promise than the one it kept. Two
+// markers written a blank line apart, both filling nothing, leave that blank
+// line behind. The way to close it is to write the markers on adjacent lines,
+// which is the template's business and not this function's.
+func TestSubstituteKeepsTheBlankLinesTheAuthorWrote(t *testing.T) {
+	const template = "<!-- cairn:slot role -->\n\n<!-- cairn:slot context -->\n\nprose\n"
+
+	got, err := Substitute(template, map[string]string{"role": "", "context": ""}, nil)
+	if err != nil {
+		t.Fatalf("Substitute(): %v", err)
+	}
+	if want := "\n\nprose\n"; got != want {
+		t.Errorf("Substitute() = %q, want %q — the author's blank lines are content", got, want)
+	}
+}
+
+// TestSubstituteTakesALineOfNothingButMarkers settles the case the rule does
+// not name: two markers sharing a line with nothing else, both substituting
+// nothing.
+//
+// Strictly neither is "alone on its line", but the line is the same defect and
+// takes the same remedy — a line that held only markers, all of which vanished,
+// is not content anyone wrote. The alternative reading, that two markers keep
+// each other's line alive, would mean an operator could reintroduce the blank
+// line by putting two markers where one was, which is not a distinction worth
+// having. A marker on that line that does fill holds it, by the same test every
+// other line gets.
+func TestSubstituteTakesALineOfNothingButMarkers(t *testing.T) {
+	const template = "a\n<!-- cairn:slot one --> <!-- cairn:slot two -->\nb\n"
+
+	t.Run("both fill nothing", func(t *testing.T) {
+		got, err := Substitute(template, map[string]string{"one": "", "two": ""}, nil)
+		if err != nil {
+			t.Fatalf("Substitute(): %v", err)
+		}
+		if want := "a\nb\n"; got != want {
+			t.Errorf("Substitute() = %q, want %q", got, want)
+		}
+	})
+	t.Run("one of them fills", func(t *testing.T) {
+		got, err := Substitute(template, map[string]string{"one": "", "two": "kept"}, nil)
+		if err != nil {
+			t.Fatalf("Substitute(): %v", err)
+		}
+		if want := "a\n kept\nb\n"; got != want {
+			t.Errorf("Substitute() = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestSubstituteRepeatsAMarkerByPosition covers a line carrying the same marker
+// text twice.
+//
+// Substitution used to walk the marker list replacing the first occurrence of
+// each one's text, which resolved duplicates by position for free. The line
+// walk has to keep that: it takes each match's position from the same regex
+// that produced the marker list, so the nth match on a line is the nth marker,
+// and two markers spelled identically cannot be confused for each other.
+func TestSubstituteRepeatsAMarkerByPosition(t *testing.T) {
+	got, err := Substitute("<!-- cairn:slot one --> then <!-- cairn:slot one -->\n",
+		map[string]string{"one": "x"}, nil)
+	if err != nil {
+		t.Fatalf("Substitute(): %v", err)
+	}
+	if want := "x then x\n"; got != want {
+		t.Errorf("Substitute() = %q, want %q", got, want)
+	}
+}
+
+// TestSubstituteLandsAMultiLineSectionOnASingleMarkerLine covers the ordinary
+// case for a slot, which the line walk has to not break: a section is a heading
+// and a body and is almost always several lines, arriving on a line that held
+// one marker. The replacement's own newlines are its, and the line's newline is
+// still the line's.
+func TestSubstituteLandsAMultiLineSectionOnASingleMarkerLine(t *testing.T) {
+	const section = "## Repository\n\n## main...origin/main\n\n## Recent commits\nabc1234 a change\n"
+
+	got, err := Substitute("before\n<!-- cairn:slot repo -->\nafter\n",
+		map[string]string{"repo": section}, nil)
+	if err != nil {
+		t.Fatalf("Substitute(): %v", err)
+	}
+	if want := "before\n" + section + "\nafter\n"; got != want {
+		t.Errorf("Substitute() =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestSubstituteKeepsALineWhoseSectionIsOnlyWhitespace pins where the emptiness
+// test sits: on each replacement, not on the finished line.
+//
+// A slot that produced nothing arrives here as the empty string —
+// [github.com/chrispian/cairn/slots.Sections] is explicit about that — so a
+// section made only of whitespace is a section that produced something. Testing
+// the finished line instead would silently drop it, and this function is not
+// the place that decides a slot's output was worthless.
+func TestSubstituteKeepsALineWhoseSectionIsOnlyWhitespace(t *testing.T) {
+	got, err := Substitute("a\n<!-- cairn:slot odd -->\nb\n",
+		map[string]string{"odd": "   "}, nil)
+	if err != nil {
+		t.Fatalf("Substitute(): %v", err)
+	}
+	if want := "a\n   \nb\n"; got != want {
+		t.Errorf("Substitute() = %q, want %q", got, want)
 	}
 }
 
