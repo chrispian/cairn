@@ -75,8 +75,22 @@ const (
 
 	// SpecKeySkillsDir holds the directory those skill names are copied from.
 	// Cairn ships no skills, so a profile declaring skills has to say where
-	// they live.
+	// they live. Both skill sets resolve against it.
 	SpecKeySkillsDir = "skills_dir"
+
+	// SpecKeyInstall holds the keys only the installed layer reads. Its
+	// "skills" are the skill directories `cairn install` plants into the
+	// harness's own skills directory, resolved against [SpecKeySkillsDir] the
+	// same way [SpecKeySkills] is.
+	//
+	// The two skill sets are two questions and not one. [SpecKeySkills] names
+	// what a single boot directory carries; this one names what every session
+	// on the machine loads. A profile that answered both from one key could
+	// not say the first without saying the second.
+	//
+	// It is a nested object rather than a flat install_skills so that the next
+	// install-only key has somewhere to go without another top-level name.
+	SpecKeyInstall = "install"
 
 	// SpecKeySettings holds the provider settings document, written verbatim.
 	SpecKeySettings = "settings"
@@ -205,6 +219,25 @@ func (s Spec) Skills() ([]string, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// InstallSkills returns the skill names under [SpecKeyInstall]'s "skills". A
+// manifest declaring no install key, and one declaring it without skills,
+// both return nil and no error — the key is not obliged to exist, and one
+// that does is not obliged to name skills.
+//
+// It is deliberately not [Spec.Skills]. What every session on the machine
+// loads and what one boot directory carries are separate declarations, so a
+// profile can hold the installed set without every profile extending it
+// planting the same set beside its own boot file.
+func (s Spec) InstallSkills() ([]string, error) {
+	var installed struct {
+		Skills []string `json:"skills"`
+	}
+	if err := s.decode(SpecKeyInstall, &installed); err != nil {
+		return nil, err
+	}
+	return installed.Skills, nil
 }
 
 // SkillsDir returns the directory under [SpecKeySkillsDir] that skill names

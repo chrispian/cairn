@@ -31,6 +31,10 @@ type reportSection struct {
 // are printed: what differs from the render first, what matches last. It is
 // the order an operator reads for — the findings are at the top, and the list
 // of files that are fine does not have to be scrolled past to reach them.
+//
+// [StatusUnclaimed] sits between the two, because it is neither. It is not a
+// finding, so it does not belong among the things that need doing; it is not
+// the render either, so it does not belong in the tail an operator skips.
 func reportSections() []reportSection {
 	return []reportSection{
 		{StatusMissing, "Missing", "cairn renders these and there is nothing at the path."},
@@ -38,6 +42,8 @@ func reportSections() []reportSection {
 		{StatusNotAFile, "Not a file", "cairn renders a file at these paths and something else is there."},
 		{StatusUnreadable, "Unreadable", "these could not be read, so nothing is known about them."},
 		{StatusOrphan, "Orphan", "cairn claims these paths and this render does not produce them."},
+		{StatusUnclaimed, "Unclaimed", "these share a directory cairn writes into and are not cairn's: " +
+			"nothing here is rendered, reported as drift, or touched."},
 		{StatusMatch, "Match", "these are on disk with the render's bytes."},
 	}
 }
@@ -76,21 +82,28 @@ func (r *Report) Count(status Status) int {
 	return n
 }
 
-// Clean reports whether every path the check looked at holds what the render
+// Clean reports whether every path cairn claims holds what the render
 // produces.
 //
-// Every status other than [StatusMatch] makes a report unclean, orphans
-// included. An orphan is a path cairn claims — one of its own file paths, or
+// The verdict is by status rather than by "everything matched" — see
+// [Status.Finding], which is the one place the rule is written down. Missing,
+// modified, not-a-file, unreadable and orphan are all findings, orphans
+// included: an orphan is a path cairn claims — one of its own file paths, or
 // anything inside a directory it fills whole — that this render does not
-// produce: what a profile leaves behind when it stops declaring something. The
-// sweep exists to find them, so a verdict that ignored them would ignore half
-// the check.
+// produce, which is what a profile leaves behind when it stops declaring
+// something. The sweep exists to find them, so a verdict that ignored them
+// would ignore half the check.
+//
+// [StatusUnclaimed] is the one status that is reported and does not count. It
+// names what the operator keeps in a directory cairn writes into, and a check
+// that failed on those would fail on every real installation forever — which
+// is a gate that has stopped gating.
 func (r *Report) Clean() bool {
 	if r == nil {
 		return true
 	}
 	for _, entry := range r.Entries {
-		if entry.Status != StatusMatch {
+		if entry.Status.Finding() {
 			return false
 		}
 	}

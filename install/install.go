@@ -128,23 +128,37 @@ type Result struct {
 // Renderer produces one artifact of the installed layer.
 //
 // It carries the same [bootdir.Renderer] the boot directory runs, plus where
-// the artifact lands and whether it is a tree — see [Renderer.Tree].
+// the artifact lands and, when the artifact is a directory, which of its
+// subdirectories cairn fills — see [Renderer.Fills].
 type Renderer struct {
 	// Artifact names what this renderer produces, for diagnostics and for
 	// reading the registration list. It is a label relative to the provider
 	// directory, not a path.
 	Artifact string
 
-	// Tree reports that Artifact names a directory this renderer fills rather
-	// than one file.
+	// Fills names the subdirectories of Artifact this renderer writes whole,
+	// read from the profile the layer is rendered from. A nil Fills means
+	// Artifact is one file.
 	//
-	// It exists so that [Check] derives the directories cairn owns from this
-	// list rather than from what a particular render produced. The difference
-	// is whether an orphan is found: a profile declaring no skills renders
-	// nothing into the skills directory, and a sweep scoped to the render
-	// would stop looking at that directory in exactly the case where something
-	// was left behind.
-	Tree bool
+	// It says that Artifact is a directory cairn writes into rather than one
+	// cairn owns, and it is how [Check] learns which parts of it are cairn's.
+	// A named subdirectory is claimed and swept to the bottom; anything else
+	// in Artifact is the operator's and is reported as [StatusUnclaimed],
+	// which says what was found without failing the check.
+	//
+	// The names come from the manifest through this registration and never
+	// from a render, which is what keeps a leftover findable: a profile that
+	// stopped shipping one file of a skill it still declares renders less than
+	// it did, and a claim set scoped to the render would stop looking in
+	// exactly that case. Per named subdirectory, the old whole-directory
+	// property holds unchanged.
+	//
+	// What is not named is not claimed, and that is the point. ~/.claude/skills
+	// holds skills the operator wrote as well as the ones cairn plants, and a
+	// rule that claimed the directory whole reported every hand-written one as
+	// drift on every run — the same disease [SweepPlan] describes for
+	// settings.local.json, one level down.
+	Fills func(*profile.Resolved) ([]string, error)
 
 	// Render is the boot-directory renderer this artifact is produced by. The
 	// instance it is handed carries a [bootdir.Layout] naming the installed
@@ -174,12 +188,16 @@ type Renderer struct {
 //
 // Templates are rendered, but only the two destinations this list registers.
 // A template free to name any path in the operator's home would be the same
-// problem in a new key, and it would cost the check its whole point: the claim
-// set comes from this registration rather than from a render, which is what
-// lets it report a file left behind by a profile that stopped declaring one.
-// A claim set derived from the profile being checked cannot see that case at
-// all. A template declared for any other destination is a boot-directory
-// artifact and is not rendered here.
+// problem in a new key, and it would cost the check its whole point: which
+// artifacts cairn claims is settled here, not by the profile being checked,
+// which is what lets a check report a file left behind by a profile that
+// stopped declaring one. A template declared for any other destination is a
+// boot-directory artifact and is not rendered here.
+//
+// [Renderer.Fills] is not a hole in that. It lets a profile name the
+// subdirectories of an artifact this list already registers — never a new
+// artifact, and never a path outside one — and the leftover case still holds
+// inside every subdirectory named.
 //
 // The caller receives a fresh slice it may modify.
 func ClaudeRenderers() []Renderer {
@@ -187,8 +205,22 @@ func ClaudeRenderers() []Renderer {
 		{Artifact: bootdir.AgentsFileName, Render: bootdir.RenderAgentsTemplate},
 		{Artifact: bootdir.PointerFileName, Render: bootdir.RenderPointerTemplate},
 		{Artifact: SettingsFileName, Render: bootdir.RenderSettings},
-		{Artifact: SkillsDirName, Render: bootdir.RenderSkills, Tree: true},
+		{Artifact: SkillsDirName, Render: bootdir.RenderInstallSkills, Fills: installedSkillNames},
 	}
+}
+
+// installedSkillNames returns the skill directories the installed layer claims
+// inside its skills directory: the ones spec.install.skills names, and no
+// others.
+//
+// It is the skills artifact's [Renderer.Fills], so what cairn claims there is
+// what the profile declared rather than what one render happened to write —
+// and a directory the profile never named is left alone.
+func installedSkillNames(resolved *profile.Resolved) ([]string, error) {
+	if resolved == nil {
+		return nil, ErrNoProfile
+	}
+	return resolved.Spec.InstallSkills()
 }
 
 // ClaudeLayout returns the [bootdir.Layout] the installed layer is rendered

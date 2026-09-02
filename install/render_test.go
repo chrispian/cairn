@@ -107,11 +107,15 @@ func renderedFile(t *testing.T, files []File, path string) File {
 // declaredManifest returns a manifest declaring every key cairn renders
 // somewhere, including the three the installed layer deliberately does not:
 // slots, mcp, and files.
+//
+// The skills come from install.skills. spec.skills is the boot directory's
+// key, and this layer does not read it — see
+// TestRenderPlantsTheInstalledSkillsAndNotTheBootDirectorys.
 func declaredManifest(skillsDir string) string {
 	return fmt.Sprintf(`{
 	  "slots":      [{"name": "memory", "source": {"kind": "inline", "value": "remembered"}}],
 	  "mcp":        [{"name": "memory", "command": "memoryd", "args": ["--stdio"]}],
-	  "skills":     ["code-review"],
+	  "install":    {"skills": ["code-review"]},
 	  "skills_dir": %s,
 	  "settings":   {"model": "opus"},
 	  "files":      {"notes/todo.md": "do the thing"},
@@ -414,7 +418,7 @@ func TestRenderExpandsTheSkillsDirectoryAgainstTheLayerHome(t *testing.T) {
 	lay := fixtureLayer(t, profile.Resolved{
 		ID:       "base",
 		Provider: profile.ProviderClaude,
-		Spec:     fixtureSpec(t, `{"skills": ["capture-decision"], "skills_dir": "~/skills"}`),
+		Spec:     fixtureSpec(t, `{"install": {"skills": ["capture-decision"]}, "skills_dir": "~/skills"}`),
 	})
 	lay.Home = home
 
@@ -472,7 +476,7 @@ func TestRenderReportsAFailedRenderer(t *testing.T) {
 		ID:       "base",
 		Provider: profile.ProviderClaude,
 		Spec: fixtureSpec(t, fmt.Sprintf(
-			`{"skills": ["code-review"], "skills_dir": %s}`,
+			`{"install": {"skills": ["code-review"]}, "skills_dir": %s}`,
 			strconv.Quote(filepath.Join(t.TempDir(), "absent")))),
 	})
 	_, err := Render(lay)
@@ -485,7 +489,8 @@ func TestRenderReportsAFailedRenderer(t *testing.T) {
 }
 
 // TestPlanterForClaude checks the registration list a check reads to learn
-// which directories cairn owns, including the tree flag that is the difference
+// which parts of the provider directory cairn owns, including which artifact
+// is a directory whose subdirectories the profile names — the difference
 // between finding an orphan and not.
 func TestPlanterForClaude(t *testing.T) {
 	renderers, layout, err := PlanterFor(profile.ProviderClaude)
@@ -500,7 +505,7 @@ func TestPlanterForClaude(t *testing.T) {
 	}
 	want := []struct {
 		artifact string
-		tree     bool
+		fills    bool
 	}{
 		{bootdir.AgentsFileName, false},
 		{bootdir.PointerFileName, false},
@@ -511,13 +516,89 @@ func TestPlanterForClaude(t *testing.T) {
 		t.Fatalf("PlanterFor returned %d renderers, want %d", len(renderers), len(want))
 	}
 	for i, w := range want {
-		if renderers[i].Artifact != w.artifact || renderers[i].Tree != w.tree {
-			t.Errorf("renderer %d is %q (tree %v), want %q (tree %v)",
-				i, renderers[i].Artifact, renderers[i].Tree, w.artifact, w.tree)
+		fills := renderers[i].Fills != nil
+		if renderers[i].Artifact != w.artifact || fills != w.fills {
+			t.Errorf("renderer %d is %q (fills named subdirectories: %v), want %q (%v)",
+				i, renderers[i].Artifact, fills, w.artifact, w.fills)
 		}
 		if renderers[i].Render == nil {
 			t.Errorf("renderer %q carries no render function", renderers[i].Artifact)
 		}
+	}
+	// The skills renderer's claim is the profile's declaration, read through
+	// the registration rather than through a render.
+	skills := renderers[len(renderers)-1]
+	names, err := skills.Fills(&profile.Resolved{
+		Spec: fixtureSpec(t, `{"skills": ["boot-only"], "install": {"skills": ["installed"]}}`),
+	})
+	if err != nil {
+		t.Fatalf("Fills: %v", err)
+	}
+	if !slices.Equal(names, []string{"installed"}) {
+		t.Errorf("Fills = %v, want [installed]: the installed layer claims install.skills", names)
+	}
+	if _, err := skills.Fills(nil); !errors.Is(err, ErrNoProfile) {
+		t.Errorf("Fills(nil) = %v, want ErrNoProfile", err)
+	}
+}
+
+// TestRenderPlantsTheInstalledSkillsAndNotTheBootDirectorys is the net effect
+// of splitting the key: a profile's spec.skills is a boot directory's, and the
+// installed layer neither plants it nor resolves it.
+//
+// The boot-only name is not on disk anywhere. That is the assertion, not an
+// oversight: if the installed layer read spec.skills the render would fail
+// looking for it, and a render that succeeds proves the key was never read.
+func TestRenderPlantsTheInstalledSkillsAndNotTheBootDirectorys(t *testing.T) {
+	skillsDir := t.TempDir()
+	fixtureSkill(t, skillsDir, "installed", map[string]string{"SKILL.md": "# Installed\n"})
+
+	lay := fixtureLayer(t, profile.Resolved{
+		ID:       "base",
+		Provider: profile.ProviderClaude,
+		Spec: fixtureSpec(t, fmt.Sprintf(
+			`{"skills": ["boot-only"], "install": {"skills": ["installed"]}, "skills_dir": %s}`,
+			strconv.Quote(skillsDir))),
+	})
+	files, err := Render(lay)
+	if err != nil {
+		t.Fatalf("Render a profile declaring both skill sets: %v", err)
+	}
+	if skill := renderedFile(t, files, ".claude/skills/installed/SKILL.md"); string(skill.Content) != "# Installed\n" {
+		t.Errorf("the installed skill rendered %q", skill.Content)
+	}
+	for _, f := range files {
+		if strings.HasPrefix(f.Path, ".claude/skills/boot-only/") {
+			t.Errorf("Render produced %q; spec.skills belongs to a boot directory", f.Path)
+		}
+	}
+
+	// And the sweep claims the same one name, so a check does not go looking
+	// for the boot directory's skill in the installed layer either.
+	plan, err := NewSweepPlan(lay)
+	if err != nil {
+		t.Fatalf("NewSweepPlan: %v", err)
+	}
+	if !slices.Equal(plan.Trees, []string{".claude/skills/installed"}) {
+		t.Errorf("Trees = %v, want [.claude/skills/installed]", plan.Trees)
+	}
+}
+
+// TestRenderReportsTheKeyItActuallyRead pins the diagnostic. The two skill
+// renders share a body, and an error naming "spec.skills" for a set declared
+// under install would send the operator to edit a key they never wrote.
+func TestRenderReportsTheKeyItActuallyRead(t *testing.T) {
+	lay := fixtureLayer(t, profile.Resolved{
+		ID:       "base",
+		Provider: profile.ProviderClaude,
+		Spec:     fixtureSpec(t, `{"install": {"skills": ["capture-decision"]}}`),
+	})
+	_, err := Render(lay)
+	if !errors.Is(err, bootdir.ErrSkillsSource) {
+		t.Fatalf("Render with no skills_dir = %v, want bootdir.ErrSkillsSource", err)
+	}
+	if !strings.Contains(err.Error(), "spec.install.skills") {
+		t.Errorf("the error does not name the key it read: %v", err)
 	}
 }
 

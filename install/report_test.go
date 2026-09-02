@@ -24,8 +24,9 @@ func mixedReport() *install.Report {
 			{Path: ".claude/skills/beta/SKILL.md", Status: install.StatusMatch},
 			{Path: ".claude/skills/alpha/SKILL.md", Status: install.StatusUnreadable,
 				Detail: "open .claude/skills/alpha/SKILL.md: permission denied"},
-			{Path: ".claude/skills/stale/SKILL.md", Status: install.StatusOrphan},
-			{Path: ".claude/skills/stale/references/notes.md", Status: install.StatusOrphan},
+			{Path: ".claude/skills/beta/extra.md", Status: install.StatusOrphan},
+			{Path: ".claude/skills/beta/references/notes.md", Status: install.StatusOrphan},
+			{Path: ".claude/skills/handwritten", Status: install.StatusUnclaimed},
 		},
 	}
 }
@@ -54,7 +55,7 @@ func TestReportByStatusReturnsOnlyThatStatusInPathOrder(t *testing.T) {
 		}
 		got = append(got, entry.Path)
 	}
-	want := []string{".claude/skills/stale/SKILL.md", ".claude/skills/stale/references/notes.md"}
+	want := []string{".claude/skills/beta/extra.md", ".claude/skills/beta/references/notes.md"}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Errorf("ByStatus(orphan) = %v, want %v in path order", got, want)
@@ -91,6 +92,7 @@ func TestReportCount(t *testing.T) {
 		install.StatusNotAFile:   1,
 		install.StatusUnreadable: 1,
 		install.StatusOrphan:     2,
+		install.StatusUnclaimed:  1,
 	} {
 		if got := report.Count(status); got != want {
 			t.Errorf("Count(%q) = %d, want %d", status, got, want)
@@ -136,7 +138,14 @@ func TestReportEveryFindingMakesItUnclean(t *testing.T) {
 		install.StatusNotAFile,
 		install.StatusUnreadable,
 		install.StatusOrphan,
+		// A status this package has not defined. The verdict is by status, so
+		// a new one has to default somewhere, and unclean is the safe
+		// direction for a gate.
+		install.Status("something nobody has named yet"),
 	} {
+		if !status.Finding() {
+			t.Errorf("Status(%q).Finding() = false", status)
+		}
 		report := &install.Report{Entries: []install.Entry{
 			{Path: ".claude/AGENTS.md", Status: install.StatusMatch},
 			{Path: ".claude/settings.json", Status: status},
@@ -150,6 +159,39 @@ func TestReportEveryFindingMakesItUnclean(t *testing.T) {
 	}
 }
 
+// TestReportUnclaimedIsReportedAndDoesNotFail is the verdict rule the whole
+// change turns on. If Clean stayed "every status but match is unclean", the
+// new status would fail a check on every hand-written skill in the operator's
+// own directory — the opposite of what claiming by name is for.
+func TestReportUnclaimedIsReportedAndDoesNotFail(t *testing.T) {
+	t.Parallel()
+	if install.StatusUnclaimed.Finding() {
+		t.Error("StatusUnclaimed.Finding() = true; an unclaimed path is what the operator put there")
+	}
+	report := &install.Report{
+		Root: "/home/operator",
+		Entries: []install.Entry{
+			{Path: ".claude/AGENTS.md", Status: install.StatusMatch},
+			{Path: ".claude/skills/handwritten", Status: install.StatusUnclaimed},
+		},
+	}
+	if !report.Clean() {
+		t.Errorf("Clean() = false for a report whose only non-match is unclaimed:\n%s", report)
+	}
+	if got := report.ExitCode(); got != 0 {
+		t.Errorf("ExitCode() = %d, want 0", got)
+	}
+	// Clean, and still said out loud: the check reports what it found in a
+	// directory it shares.
+	printed := report.String()
+	if !strings.Contains(printed, "Unclaimed (1)") || !strings.Contains(printed, ".claude/skills/handwritten") {
+		t.Errorf("String() does not name the unclaimed path:\n%s", printed)
+	}
+	if !strings.Contains(printed, "In sync") {
+		t.Errorf("the verdict is not clean:\n%s", printed)
+	}
+}
+
 func TestReportSummaryIsOneLine(t *testing.T) {
 	t.Parallel()
 	got := mixedReport().Summary()
@@ -157,7 +199,7 @@ func TestReportSummaryIsOneLine(t *testing.T) {
 		t.Errorf("Summary() = %q, want one line", got)
 	}
 	for _, want := range []string{"/home/operator", "1 missing", "1 modified", "1 not a file",
-		"1 unreadable", "2 orphan", "1 match"} {
+		"1 unreadable", "2 orphan", "1 unclaimed", "1 match"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Summary() = %q, want it to carry %q", got, want)
 		}
@@ -198,7 +240,7 @@ func TestReportStringGroupsByStatusFindingsFirst(t *testing.T) {
 	t.Parallel()
 	got := mixedReport().String()
 	headings := []string{"Missing (1)", "Modified (1)", "Not a file (1)", "Unreadable (1)",
-		"Orphan (2)", "Match (1)"}
+		"Orphan (2)", "Unclaimed (1)", "Match (1)"}
 	at := -1
 	for _, heading := range headings {
 		next := strings.Index(got, heading)
@@ -212,8 +254,8 @@ func TestReportStringGroupsByStatusFindingsFirst(t *testing.T) {
 	}
 	// Paths are sorted inside a section, so two runs over one tree read the
 	// same however a directory happened to be listed.
-	first := strings.Index(got, ".claude/skills/stale/SKILL.md")
-	second := strings.Index(got, ".claude/skills/stale/references/notes.md")
+	first := strings.Index(got, ".claude/skills/beta/extra.md")
+	second := strings.Index(got, ".claude/skills/beta/references/notes.md")
 	if first > second {
 		t.Errorf("the orphan section is not in path order:\n%s", got)
 	}
@@ -231,7 +273,7 @@ func TestReportStringSaysWhatTheCheckDidNotDo(t *testing.T) {
 	if !strings.Contains(clean, "In sync") {
 		t.Errorf("a clean report does not say so:\n%s", clean)
 	}
-	for _, heading := range []string{"Missing", "Modified", "Not a file", "Unreadable", "Orphan"} {
+	for _, heading := range []string{"Missing", "Modified", "Not a file", "Unreadable", "Orphan", "Unclaimed"} {
 		if strings.Contains(clean, heading+" (") {
 			t.Errorf("a clean report prints an empty %q section:\n%s", heading, clean)
 		}

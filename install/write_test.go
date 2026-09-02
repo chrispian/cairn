@@ -235,7 +235,7 @@ func TestInstallFailedRenderWritesNothing(t *testing.T) {
 		ID:       "base",
 		Provider: profile.ProviderClaude,
 		Spec: fixtureSpec(t, fmt.Sprintf(
-			`{"settings": {"model": "opus"}, "skills": ["code-review"], "skills_dir": %s}`,
+			`{"settings": {"model": "opus"}, "install": {"skills": ["code-review"]}, "skills_dir": %s}`,
 			strconv.Quote(filepath.Join(t.TempDir(), "absent")))),
 	})
 	before := rootEntries(t, lay.Root)
@@ -312,7 +312,7 @@ func TestInstallRemovesNothingAPreviousInstallLeft(t *testing.T) {
 	lay := fixtureLayer(t, profile.Resolved{
 		ID:       "base",
 		Provider: profile.ProviderClaude,
-		Spec: fixtureSpec(t, fmt.Sprintf(`{"skills": ["code-review"], "skills_dir": %s}`,
+		Spec: fixtureSpec(t, fmt.Sprintf(`{"install": {"skills": ["code-review"]}, "skills_dir": %s}`,
 			strconv.Quote(skillsDir))),
 	})
 	if _, err := Install(lay); err != nil {

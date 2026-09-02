@@ -44,8 +44,24 @@ var ErrSkillNotFound = errors.New("skill not found")
 // a regular file.
 var ErrSkillContent = errors.New("unusable skill content")
 
-// RenderSkills returns every file of every skill the profile declares, planted
+// skillsKey is the manifest key one skills render reads, spelled the way a
+// diagnostic names it: "skills" for a boot directory, "install.skills" for the
+// installed layer.
+//
+// The two entry points share every line of behaviour — the same source, the
+// same target, the same name checking, the same order — and differ only in
+// which key an error should send the operator to edit. So the key travels
+// through the render rather than being restated in a second copy of it.
+type skillsKey string
+
+// installSkillsKey names spec.install.skills as a diagnostic spells it.
+const installSkillsKey skillsKey = profile.SpecKeyInstall + "." + profile.SpecKeySkills
+
+// RenderSkills returns every file of every skill spec.skills declares, planted
 // under the layout's skills directory with one directory per skill.
+//
+// It is the boot directory's skill set. The installed layer reads a different
+// key — see [RenderInstallSkills].
 //
 // Skills are copied, never linked. Each file's bytes are read here and carried
 // in a [File], so a planted skill cannot reference the directory it came from:
@@ -71,6 +87,38 @@ func RenderSkills(inst *Instance) ([]File, error) {
 	if err != nil {
 		return nil, err
 	}
+	return renderSkills(inst, declared, profile.SpecKeySkills)
+}
+
+// RenderInstallSkills is [RenderSkills] over spec.install.skills: the skills
+// the installed layer plants, rather than the ones a boot directory carries.
+//
+// Everything about the render is the same — the [profile.SpecKeySkillsDir]
+// source, the layout's skills directory, the name checking, the duplicate
+// detection, the order. Only the key differs, and a diagnostic names the one
+// it read so that an operator is sent to the declaration they wrote.
+//
+// The two keys are separate because the two answers are. A profile holding the
+// machine's skill set says so once, under install, and every profile extending
+// it inherits that set for the installed layer without planting it beside its
+// own boot file.
+func RenderInstallSkills(inst *Instance) ([]File, error) {
+	if inst == nil || inst.Profile == nil {
+		return nil, ErrNoProfile
+	}
+	declared, err := inst.Profile.Spec.InstallSkills()
+	if err != nil {
+		return nil, err
+	}
+	return renderSkills(inst, declared, installSkillsKey)
+}
+
+// renderSkills plants the named skills under the layout's skills directory,
+// reporting key as the manifest key that declared them.
+//
+// It is the whole body of both entry points. What is above them is one spec
+// accessor each; everything a skill render does is here, once.
+func renderSkills(inst *Instance, declared []string, key skillsKey) ([]File, error) {
 	if len(declared) == 0 {
 		return nil, nil
 	}
@@ -78,9 +126,9 @@ func RenderSkills(inst *Instance) ([]File, error) {
 	if target == "" {
 		return nil, fmt.Errorf(
 			"%w: spec.%s declares %s, but this layout declares no skills directory",
-			ErrProviderLayout, profile.SpecKeySkills, quotedNames(declared))
+			ErrProviderLayout, key, quotedNames(declared))
 	}
-	source, err := skillsSource(inst.Profile.Spec, declared, inst.Home, inst.Env)
+	source, err := skillsSource(inst.Profile.Spec, declared, key, inst.Home, inst.Env)
 	if err != nil {
 		return nil, err
 	}
@@ -89,16 +137,16 @@ func RenderSkills(inst *Instance) ([]File, error) {
 	var files []File
 	for _, raw := range declared {
 		name := strings.TrimSpace(raw)
-		if err := checkSkillName(name); err != nil {
+		if err := checkSkillName(name, key); err != nil {
 			return nil, err
 		}
 		if _, duplicate := seen[name]; duplicate {
 			return nil, fmt.Errorf("%w: spec.%s declares %q twice",
-				ErrSkillName, profile.SpecKeySkills, name)
+				ErrSkillName, key, name)
 		}
 		seen[name] = struct{}{}
 
-		planted, err := copySkill(source, target, name)
+		planted, err := copySkill(source, target, name, key)
 		if err != nil {
 			return nil, err
 		}
@@ -118,7 +166,7 @@ func RenderSkills(inst *Instance) ([]File, error) {
 // The result must be absolute: a relative path would resolve against whatever
 // directory cairn happened to be invoked from, which is not a property of the
 // profile.
-func skillsSource(spec profile.Spec, names []string, home string, look profile.Expander) (string, error) {
+func skillsSource(spec profile.Spec, names []string, key skillsKey, home string, look profile.Expander) (string, error) {
 	declared, err := spec.SkillsDir()
 	if err != nil {
 		return "", err
@@ -127,7 +175,7 @@ func skillsSource(spec profile.Spec, names []string, home string, look profile.E
 	if raw == "" {
 		return "", fmt.Errorf(
 			"%w: spec.%s declares %s, but spec.%s is not set and cairn ships no skills of its own",
-			ErrSkillsSource, profile.SpecKeySkills, quotedNames(names), profile.SpecKeySkillsDir)
+			ErrSkillsSource, key, quotedNames(names), profile.SpecKeySkillsDir)
 	}
 	dir, err := profile.ExpandPath(raw, home, look)
 	if err != nil {
@@ -155,13 +203,13 @@ func skillsSource(spec profile.Spec, names []string, home string, look profile.E
 // copySkill returns the skill named name under source as artifacts under
 // target, refusing one a harness would not load. The copying itself is
 // [CopyTree]'s; what is here is the part that is about skills.
-func copySkill(source, target, name string) ([]File, error) {
+func copySkill(source, target, name string, key skillsKey) ([]File, error) {
 	dir := filepath.Join(source, name)
 	info, err := os.Stat(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, fmt.Errorf("%w: spec.%s declares %q, which is not in %s: nothing at %s",
-			ErrSkillNotFound, profile.SpecKeySkills, name, source, dir)
+			ErrSkillNotFound, key, name, source, dir)
 	case err != nil:
 		return nil, fmt.Errorf("stat skill %q at %s: %w", name, dir, err)
 	case !info.IsDir():
@@ -268,12 +316,12 @@ func CopyTree(source, target string) ([]File, error) {
 // checkSkillName rejects any name that cannot be one directory beneath the
 // skills source. A name holding a separator would reach outside the source on
 // the way in and outside the skills directory on the way out.
-func checkSkillName(name string) error {
+func checkSkillName(name string, key skillsKey) error {
 	switch {
 	case name == "":
-		return fmt.Errorf("%w: spec.%s holds an empty name", ErrSkillName, profile.SpecKeySkills)
+		return fmt.Errorf("%w: spec.%s holds an empty name", ErrSkillName, key)
 	case name == "." || name == "..":
-		return fmt.Errorf("%w: spec.%s holds %q", ErrSkillName, profile.SpecKeySkills, name)
+		return fmt.Errorf("%w: spec.%s holds %q", ErrSkillName, key, name)
 	case strings.ContainsRune(name, '/'), strings.ContainsRune(name, filepath.Separator):
 		return fmt.Errorf("%w: %q holds a path separator, so it does not name one skill directory",
 			ErrSkillName, name)

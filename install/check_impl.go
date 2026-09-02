@@ -7,28 +7,35 @@ import (
 	"io/fs"
 	"path"
 	"slices"
+	"strings"
 )
 
 // SweepPlan is exactly what cairn claims in the install root, and therefore
-// exactly what a check will report on.
+// exactly what a check will report on as a finding.
 //
-// It is derived from the provider's renderer registration rather than from one
-// render's output — see [Renderer.Tree] — which is what lets a check look into
-// a directory the current profile renders nothing into. A sweep scoped to what
-// was rendered would stop looking in precisely the case where something was
-// left behind.
+// It is derived from the provider's renderer registration and the profile's
+// declarations rather than from one render's output — see [Renderer.Fills] —
+// which is what lets a check look into a directory the current profile renders
+// nothing into. A sweep scoped to what was rendered would stop looking in
+// precisely the case where something was left behind.
 //
 // # Cairn does not own the provider directory
 //
-// The plan is two lists rather than one because ~/.claude is a live harness's
-// home: session state, credentials, caches, one directory per project. Cairn
-// writes three files into it and fills one subtree, and claims nothing else.
+// The plan is three lists rather than one because ~/.claude is a live
+// harness's home: session state, credentials, caches, one directory per
+// project. Cairn writes three files into it and fills the skill directories
+// its profile names, and claims nothing else.
 //
 // A sweep that read the provider directory one level deep and called every
 // unrendered file an orphan would report settings.local.json and
 // .credentials.json on every run of every real installation, so `--check`
 // would exit non-zero forever and stop meaning anything. That is the same
 // disease as a lint gate configured not to fail.
+//
+// [SweepPlan.Shared] is that same rule one level down. ~/.claude/skills is
+// shared with the operator, whose hand-written skills sit beside the ones
+// cairn plants, so cairn claims the directories it was told to plant and
+// reports the rest without failing on them.
 //
 // It is exported so that a caller can print how far a check reached. A check
 // that reports nothing says nothing unless its scope can be read.
@@ -41,26 +48,44 @@ type SweepPlan struct {
 	// reported, whatever is in it.
 	Claims []string
 
-	// Trees are the directories cairn fills whole, from the renderers that
-	// set [Renderer.Tree]. Each is walked to the bottom, and every file in one
-	// that the render did not produce is a [StatusOrphan]. Here the
-	// whole-directory rule is right: cairn writes every file under
-	// .claude/skills, so anything else in it is a leftover.
+	// Trees are the directories cairn fills whole: for each renderer that
+	// declares [Renderer.Fills], one path per subdirectory the profile named.
+	// Each is walked to the bottom, and every file in one that the render did
+	// not produce is a [StatusOrphan]. Here the whole-directory rule is right:
+	// cairn writes every file of a skill it was told to plant, so anything
+	// else inside that skill's directory is a leftover.
 	Trees []string
+
+	// Shared are the artifacts those trees sit in — directories cairn writes
+	// into and does not own. Each is read one level deep, and what is in one
+	// and is not a tree is reported as [StatusUnclaimed]: named, so a check
+	// says what it saw, and not a finding, because cairn did not put it there
+	// and will not touch it.
+	//
+	// A skill directory the profile stopped declaring lands here rather than
+	// in Trees, so it is still named — the lost case is reported, without the
+	// false alarm on every skill the operator wrote by hand.
+	Shared []string
 }
 
 // NewSweepPlan returns the [SweepPlan] for lay: the provider directory its
-// profile is installed into, plus every directory artifact that provider's
-// renderers register.
+// profile is installed into, the file artifacts that provider's renderers
+// register, and for each directory artifact the subdirectories lay's profile
+// declares.
 //
 // The registration list is the source, not the render. A profile that declares
-// no skills renders nothing into the skills directory, and a plan derived from
-// the render would stop looking at that directory in exactly the case where
-// something was left behind.
+// a skill whose source lost a file renders less than it did, and a plan
+// derived from the render would stop looking inside that skill in exactly the
+// case where something was left behind.
 //
-// Errors wrap [ErrNoProfile], or
+// A subdirectory name that cannot name one directory beneath its artifact is
+// not claimed — see [subdirOf]. The render refuses the same names outright, so
+// a check never reaches this; it matters only for a plan built on its own.
+//
+// Errors wrap [ErrNoProfile],
 // [github.com/chrispian/cairn/bootdir.ErrUnsupportedProvider] for a provider
-// the installed layer has no harness for.
+// the installed layer has no harness for, or come from reading the manifest
+// key a [Renderer.Fills] is declared over.
 func NewSweepPlan(lay *Layer) (SweepPlan, error) {
 	if lay == nil || lay.Profile == nil {
 		return SweepPlan{}, ErrNoProfile
@@ -79,17 +104,47 @@ func NewSweepPlan(lay *Layer) (SweepPlan, error) {
 		// and an artifact list answered by different switch statements could
 		// disagree, and the sweep would claim the wrong paths.
 		p := path.Join(h.dir, r.Artifact)
-		if r.Tree {
-			plan.Trees = append(plan.Trees, p)
+		if r.Fills == nil {
+			plan.Claims = append(plan.Claims, p)
 			continue
 		}
-		plan.Claims = append(plan.Claims, p)
+		names, err := r.Fills(lay.Profile)
+		if err != nil {
+			return SweepPlan{}, fmt.Errorf("plan the %s artifact: %w", r.Artifact, err)
+		}
+		plan.Shared = append(plan.Shared, p)
+		for _, name := range names {
+			if sub, ok := subdirOf(p, name); ok {
+				plan.Trees = append(plan.Trees, sub)
+			}
+		}
 	}
 	slices.Sort(plan.Claims)
 	plan.Claims = slices.Compact(plan.Claims)
 	slices.Sort(plan.Trees)
 	plan.Trees = slices.Compact(plan.Trees)
+	slices.Sort(plan.Shared)
+	plan.Shared = slices.Compact(plan.Shared)
 	return plan, nil
+}
+
+// subdirOf returns the path of the subdirectory of dir named name, and whether
+// name can name one at all.
+//
+// An empty name, "." or "..", and a name holding a separator are refused
+// rather than joined. [path.Join] would normalize each of them into a path
+// that is not one directory beneath dir — ".." reaches the provider directory
+// itself — and a plan that claimed one would sweep somewhere the profile never
+// asked for.
+func subdirOf(dir, name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	switch {
+	case name == "", name == ".", name == "..":
+		return "", false
+	case strings.ContainsAny(name, `/\`):
+		return "", false
+	}
+	return path.Join(dir, name), true
 }
 
 // Check renders lay and compares it against what is on disk beneath lay's
@@ -105,8 +160,9 @@ func NewSweepPlan(lay *Layer) (SweepPlan, error) {
 //
 //  1. Every file the render produces is looked up on disk: identical, absent,
 //     different, something that is not a file, or unreadable.
-//  2. Every directory in the [SweepPlan] is swept for files the render did not
-//     produce.
+//  2. Every directory in the [SweepPlan] is swept — the claimed ones for files
+//     the render did not produce, the shared ones for what cairn never claimed
+//     at all.
 //
 // The first half can only confirm what it already knew to look for. The second
 // is why the plan is derived from the renderer registration.
@@ -233,7 +289,12 @@ func checkRendered(fsys fs.ReadLinkFS, f File) Entry {
 }
 
 // sweep is the second half: every file inside a directory of the plan that the
-// render did not produce.
+// render did not produce, and what is beside those directories.
+//
+// The order is the reading order of the plan — the exact claims, then the
+// trees they sit above, then what shares a directory with those trees. Each
+// path is classified once, and a tree is classified as a tree rather than as
+// one of its parent's entries.
 //
 // A read that fails is reported as a [StatusUnreadable] entry for the
 // directory and the sweep carries on, for the reason [checkRendered] does not
@@ -247,8 +308,89 @@ func sweep(fsys fs.ReadLinkFS, plan SweepPlan, rendered map[string]struct{}) []E
 			entries = append(entries, entry)
 		}
 	}
+	claimed := make(map[string]struct{}, len(plan.Trees))
 	for _, tree := range plan.Trees {
-		entries = append(entries, sweepDir(fsys, tree, rendered, seen)...)
+		claimed[tree] = struct{}{}
+		entries = append(entries, sweepTree(fsys, tree, rendered, seen)...)
+	}
+	for _, dir := range plan.Shared {
+		entries = append(entries, sweepShared(fsys, dir, claimed, rendered, seen)...)
+	}
+	return entries
+}
+
+// sweepTree reports what is inside one directory cairn fills whole.
+//
+// The root is inspected before it is read, for the reason [sweepDir] tests a
+// link before descending: cairn renders bytes and has no way to emit a link,
+// so a symbolic link where cairn fills a directory is not cairn's tree. It is
+// reported and not followed, whatever is on the far end.
+//
+// A tree that is absent is not a finding. Nothing has been installed there,
+// and the manifest half already reports every file that should have been.
+func sweepTree(fsys fs.ReadLinkFS, dir string, rendered map[string]struct{}, seen map[string]struct{}) []Entry {
+	info, err := fs.Lstat(fsys, dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return []Entry{{Path: dir, Status: StatusUnreadable, Detail: err.Error()}}
+	case info.Mode()&fs.ModeSymlink != 0:
+		if _, already := seen[dir]; already {
+			return nil
+		}
+		seen[dir] = struct{}{}
+		return []Entry{{Path: dir, Status: StatusOrphan, Detail: describeLink(fsys, dir)}}
+	}
+	return sweepDir(fsys, dir, rendered, seen)
+}
+
+// sweepShared reports what is directly inside a directory cairn writes into
+// and does not own: every entry that is not one of the trees the profile
+// named.
+//
+// These are the operator's. A skill they wrote by hand sits in the same
+// directory as the ones cairn plants, and the rule that made it drift is the
+// one this replaces — so it is [StatusUnclaimed]: named, because a check
+// should say what it found in a directory it shares, and not a finding,
+// because cairn neither wrote it nor will touch it.
+//
+// It reads one level and descends into nothing. What is inside an unclaimed
+// directory is no more cairn's than the directory is, and walking it would
+// turn one line of report into however many files the operator keeps there.
+func sweepShared(fsys fs.ReadLinkFS, dir string, claimed, rendered, seen map[string]struct{}) []Entry {
+	listing, err := fs.ReadDir(fsys, dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return []Entry{{Path: dir, Status: StatusUnreadable, Detail: err.Error()}}
+	}
+
+	var entries []Entry
+	for _, item := range listing {
+		p := path.Join(dir, item.Name())
+		if _, isTree := claimed[p]; isTree {
+			// A tree of its own, already swept as one.
+			continue
+		}
+		if _, produced := rendered[p]; produced {
+			// The manifest half classified this one against the bytes.
+			continue
+		}
+		if _, already := seen[p]; already {
+			continue
+		}
+		seen[p] = struct{}{}
+
+		entry := Entry{Path: p, Status: StatusUnclaimed}
+		switch {
+		case item.Type()&fs.ModeSymlink != 0:
+			entry.Detail = describeLink(fsys, p)
+		case !item.IsDir():
+			entry.Detail = "not a directory"
+		}
+		entries = append(entries, entry)
 	}
 	return entries
 }
@@ -279,8 +421,9 @@ func sweepClaim(fsys fs.ReadLinkFS, claim string, rendered map[string]struct{}) 
 	return entry, true
 }
 
-// sweepDir reports every file directly inside dir that the render did not
-// produce, descending only when dir is a directory cairn fills whole.
+// sweepDir reports every file inside dir that the render did not produce,
+// descending to the bottom. It is only ever called on a directory cairn fills
+// whole — see [sweepTree] for the entry point that checks that.
 //
 // A directory that is absent is not a finding: nothing has been installed
 // there, and the first half already reports every file that should have been.

@@ -37,7 +37,37 @@ const (
 	// every unrendered file in it an orphan would report the harness's own
 	// state on every run. See [SweepPlan].
 	StatusOrphan Status = "orphan"
+
+	// StatusUnclaimed means something sits in a directory cairn writes into
+	// and does not own, and cairn did not put it there. A skill the operator
+	// wrote by hand, beside the ones their profile declares, is the case it
+	// exists for.
+	//
+	// It is informational and never a finding: a report carrying nothing else
+	// is clean and exits zero. Cairn says what it found in a directory it
+	// shares, and only what cairn claims can fail a check. The rule this
+	// replaced claimed ~/.claude/skills whole and reported every hand-written
+	// skill in it as drift, on every run, forever.
+	StatusUnclaimed Status = "unclaimed"
 )
+
+// Finding reports whether a status is something wrong at a path cairn claims,
+// and so whether it makes a report unclean — see [Report.Clean].
+//
+// Two statuses are not findings. [StatusMatch] is the layer exactly as cairn
+// rendered it. [StatusUnclaimed] is the operator's own, in a directory cairn
+// shares with them, reported so that a check says what it saw. Every other
+// status is a finding, including one this package has not defined yet: a new
+// status counts against a check until somebody decides otherwise, which is the
+// safe direction for a gate to default in.
+func (s Status) Finding() bool {
+	switch s {
+	case StatusMatch, StatusUnclaimed:
+		return false
+	default:
+		return true
+	}
+}
 
 // Entry is one finding: a path, what was found there, and a sentence naming
 // what to do about it when the status alone does not say.

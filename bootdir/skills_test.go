@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -457,5 +458,120 @@ func TestSkillsNameAnUnsetVariableAsItWasWritten(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "$SKILLS_ROOT/skills") {
 		t.Errorf("the refusal %q does not quote what the operator wrote", err)
+	}
+}
+
+// TestInstallSkillsAreTheOtherKeyAndTheSameRender pins the split of one key
+// into two: the boot directory's skills and the installed layer's are separate
+// declarations, and neither renderer reads the other's.
+//
+// The render itself is shared, so what is checked here is only what a shared
+// body cannot check for itself — which list each entry point read.
+func TestInstallSkillsAreTheOtherKeyAndTheSameRender(t *testing.T) {
+	source := t.TempDir()
+	writeSkillTree(t, source, "booted", map[string]string{SkillFileName: "# booted\n"})
+	writeSkillTree(t, source, "installed", map[string]string{
+		SkillFileName:        "# installed\n",
+		"references/note.md": "beside it\n",
+	})
+
+	inst := testInstance(t, profile.Resolved{ID: "base", Spec: testSpec(t, `{
+		"skills":     ["booted"],
+		"install":    {"skills": ["installed"]},
+		"skills_dir": `+strconv.Quote(source)+`
+	}`)})
+
+	booted, err := RenderSkills(inst)
+	if err != nil {
+		t.Fatalf("RenderSkills(): %v", err)
+	}
+	if want := []string{".claude/skills/booted/SKILL.md"}; !slices.Equal(filePaths(booted), want) {
+		t.Errorf("RenderSkills() = %v, want %v", filePaths(booted), want)
+	}
+
+	installed, err := RenderInstallSkills(inst)
+	if err != nil {
+		t.Fatalf("RenderInstallSkills(): %v", err)
+	}
+	want := []string{
+		".claude/skills/installed/SKILL.md",
+		".claude/skills/installed/references/note.md",
+	}
+	if !slices.Equal(filePaths(installed), want) {
+		t.Errorf("RenderInstallSkills() = %v, want %v", filePaths(installed), want)
+	}
+}
+
+// TestInstallSkillsPlantNothingIntoABootDirectory is the net effect the split
+// exists for. A profile holding only the installed set renders nothing beside
+// a boot directory, which is what makes the next stage's keyed merge a no-op
+// for skills rather than a union of every profile's.
+func TestInstallSkillsPlantNothingIntoABootDirectory(t *testing.T) {
+	source := t.TempDir()
+	writeSkillTree(t, source, "installed", map[string]string{SkillFileName: "# installed\n"})
+
+	inst := testInstance(t, profile.Resolved{ID: "base", Spec: testSpec(t, `{
+		"install":    {"skills": ["installed"]},
+		"skills_dir": `+strconv.Quote(source)+`
+	}`)})
+
+	files, err := RenderSkills(inst)
+	if err != nil {
+		t.Fatalf("RenderSkills(): %v", err)
+	}
+	if len(files) != 0 {
+		t.Errorf("RenderSkills() rendered %v; install.skills is not a boot directory's", filePaths(files))
+	}
+}
+
+// TestInstallSkillsNameTheirOwnKeyInEveryRefusal is the diagnostic the shared
+// body has to carry. The two renders differ in one thing an operator can act
+// on — which declaration they read — so an error that named "spec.skills" for
+// a set written under install would send them to edit a key they never wrote.
+func TestInstallSkillsNameTheirOwnKeyInEveryRefusal(t *testing.T) {
+	source := t.TempDir()
+	writeSkillTree(t, source, "installed", map[string]string{SkillFileName: "# installed\n"})
+
+	tests := map[string]struct {
+		manifest string
+		layout   string
+		want     error
+	}{
+		"no skills directory": {
+			manifest: `{"install": {"skills": ["installed"]}}`,
+			want:     ErrSkillsSource,
+		},
+		"an empty name": {
+			manifest: `{"install": {"skills": [""]}, "skills_dir": ` + strconv.Quote(source) + `}`,
+			want:     ErrSkillName,
+		},
+		"the same name twice": {
+			manifest: `{"install": {"skills": ["installed","installed"]}, "skills_dir": ` + strconv.Quote(source) + `}`,
+			want:     ErrSkillName,
+		},
+		"a skill that is not there": {
+			manifest: `{"install": {"skills": ["absent"]}, "skills_dir": ` + strconv.Quote(source) + `}`,
+			want:     ErrSkillNotFound,
+		},
+		"nowhere to plant it": {
+			manifest: `{"install": {"skills": ["installed"]}, "skills_dir": ` + strconv.Quote(source) + `}`,
+			layout:   "-",
+			want:     ErrProviderLayout,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			inst := testInstance(t, profile.Resolved{ID: "base", Spec: testSpec(t, tc.manifest)})
+			if tc.layout == "-" {
+				inst.Layout.SkillsDir = ""
+			}
+			_, err := RenderInstallSkills(inst)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("RenderInstallSkills() = %v, want %v", err, tc.want)
+			}
+			if got := err.Error(); !strings.Contains(got, "spec.install.skills") {
+				t.Errorf("the refusal %q does not name the key it read", got)
+			}
+		})
 	}
 }

@@ -127,6 +127,46 @@ func TestSpecSkillsAndSkillsDir(t *testing.T) {
 	}
 }
 
+// TestSpecInstallSkills covers the key the installed layer reads, and the
+// three shapes it has to survive: declared, declared without skills, and a
+// manifest with no install key at all.
+//
+// The last two are the same answer for a reason. The key is a namespace for
+// install-only declarations, so a profile that declares one of them and not
+// skills has declared no installed skills — not an error, and not the boot
+// directory's set either.
+func TestSpecInstallSkills(t *testing.T) {
+	t.Parallel()
+
+	s := spec(t, map[string]string{
+		SpecKeySkills:  `["boot-only"]`,
+		SpecKeyInstall: `{"skills":["commit","push"]}`,
+	})
+	installed, err := s.InstallSkills()
+	if err != nil {
+		t.Fatalf("InstallSkills() = error %v", err)
+	}
+	if !slices.Equal(installed, []string{"commit", "push"}) {
+		t.Errorf("InstallSkills() = %v", installed)
+	}
+	// The two sets are separate declarations and neither reads the other.
+	booted, err := s.Skills()
+	if err != nil || !slices.Equal(booted, []string{"boot-only"}) {
+		t.Errorf("Skills() = %v, %v; want [boot-only], nil", booted, err)
+	}
+
+	for name, manifest := range map[string]Spec{
+		"install without skills": spec(t, map[string]string{SpecKeyInstall: `{"other":1}`}),
+		"an empty install":       spec(t, map[string]string{SpecKeyInstall: `{}`}),
+		"no install key":         spec(t, map[string]string{SpecKeySkills: `["boot-only"]`}),
+	} {
+		got, err := manifest.InstallSkills()
+		if err != nil || got != nil {
+			t.Errorf("InstallSkills() with %s = %v, %v; want nil, nil", name, got, err)
+		}
+	}
+}
+
 func TestSpecSettingsAreCarriedVerbatim(t *testing.T) {
 	t.Parallel()
 
@@ -330,6 +370,7 @@ func TestSpecAccessorsOnAnEmptyManifest(t *testing.T) {
 		SpecKeySlots:     `null`,
 		SpecKeyMCP:       `null`,
 		SpecKeySkills:    `null`,
+		SpecKeyInstall:   `null`,
 		SpecKeyFiles:     `null`,
 		SpecKeySubagents: `null`,
 	})} {
@@ -344,6 +385,10 @@ func TestSpecAccessorsOnAnEmptyManifest(t *testing.T) {
 		skills, err := s.Skills()
 		if err != nil || skills != nil {
 			t.Errorf("Skills() = %v, %v; want nil, nil", skills, err)
+		}
+		installed, err := s.InstallSkills()
+		if err != nil || installed != nil {
+			t.Errorf("InstallSkills() = %v, %v; want nil, nil", installed, err)
 		}
 		dir, err := s.SkillsDir()
 		if err != nil || dir != "" {
@@ -386,6 +431,12 @@ func TestSpecMalformedValueNamesItsKey(t *testing.T) {
 			key:   SpecKeySkills,
 			value: `[1,2]`,
 			call:  func(s Spec) error { _, err := s.Skills(); return err },
+		},
+		{
+			name:  "install is not an object",
+			key:   SpecKeyInstall,
+			value: `["commit"]`,
+			call:  func(s Spec) error { _, err := s.InstallSkills(); return err },
 		},
 		{
 			name:  "skills_dir is not a string",

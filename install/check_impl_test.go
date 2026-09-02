@@ -52,7 +52,10 @@ func newCheckFixture(t *testing.T, skills ...string) checkFixture {
 		"templates": map[string]any{"AGENTS.md": "declared, and resolved onto the layer"},
 	}
 	if len(skills) > 0 {
-		manifest["skills"] = skills
+		// install.skills, not skills: the installed layer plants the set every
+		// session on the machine loads, and spec.skills is one boot
+		// directory's.
+		manifest["install"] = map[string]any{"skills": skills}
 		manifest["skills_dir"] = writeCheckSkills(t, skills)
 	}
 	lay := &install.Layer{
@@ -217,9 +220,9 @@ func symlinkOrSkip(t *testing.T, target, name string) {
 	}
 }
 
-func TestNewSweepPlanClaimsTheFilesAndTheTreesAndNothingElse(t *testing.T) {
+func TestNewSweepPlanClaimsTheFilesAndTheNamedSkillsAndNothingElse(t *testing.T) {
 	t.Parallel()
-	fixture := newCheckFixture(t)
+	fixture := newCheckFixture(t, "alpha", "beta")
 	plan, err := install.NewSweepPlan(fixture.lay)
 	if err != nil {
 		t.Fatalf("NewSweepPlan: %v", err)
@@ -228,24 +231,48 @@ func TestNewSweepPlanClaimsTheFilesAndTheTreesAndNothingElse(t *testing.T) {
 	if !slices.Equal(plan.Claims, wantClaims) {
 		t.Errorf("Claims = %v, want %v", plan.Claims, wantClaims)
 	}
-	wantTrees := []string{".claude/skills"}
+	// One tree per declared skill, and the skills directory itself is not one
+	// of them: cairn writes into it and does not own it.
+	wantTrees := []string{".claude/skills/alpha", ".claude/skills/beta"}
 	if !slices.Equal(plan.Trees, wantTrees) {
 		t.Errorf("Trees = %v, want %v", plan.Trees, wantTrees)
 	}
-	// The provider directory itself is claimed by neither list. ~/.claude is a
-	// live harness's home, and a sweep that read it one level deep would call
+	if !slices.Equal(plan.Shared, []string{".claude/skills"}) {
+		t.Errorf("Shared = %v, want [.claude/skills]", plan.Shared)
+	}
+	// The provider directory itself is claimed by no list. ~/.claude is a live
+	// harness's home, and a sweep that read it one level deep would call
 	// settings.local.json and .credentials.json orphans on every run of every
 	// real installation.
 	for _, claimed := range append(slices.Clone(plan.Claims), plan.Trees...) {
-		if claimed == ".claude" {
-			t.Error("the plan claims the provider directory itself")
+		if claimed == ".claude" || claimed == ".claude/skills" {
+			t.Errorf("the plan claims %q, which cairn shares", claimed)
 		}
 	}
-	// The fixture declares no skills at all. The plan still claims the skills
-	// tree, because it is derived from the renderer registration and not from
-	// what this profile rendered.
-	if skills, err := fixture.lay.Profile.Spec.Skills(); err != nil || len(skills) != 0 {
+}
+
+// TestNewSweepPlanClaimsNoSkillDirectoryForAProfileDeclaringNone is the half
+// of the rule that used to be the opposite. A profile declaring no skills
+// claims no skill directory at all — the skills directory is still read, so a
+// check can say what is in it, and nothing in it is cairn's to report as
+// drift.
+func TestNewSweepPlanClaimsNoSkillDirectoryForAProfileDeclaringNone(t *testing.T) {
+	t.Parallel()
+	fixture := newCheckFixture(t)
+	if skills, err := fixture.lay.Profile.Spec.InstallSkills(); err != nil || len(skills) != 0 {
 		t.Fatalf("the fixture should declare no skills; got %v, %v", skills, err)
+	}
+	plan, err := install.NewSweepPlan(fixture.lay)
+	if err != nil {
+		t.Fatalf("NewSweepPlan: %v", err)
+	}
+	if len(plan.Trees) != 0 {
+		t.Errorf("Trees = %v, want none: the profile named no skill directory", plan.Trees)
+	}
+	// The directory is still in the plan, because a check still reads it. What
+	// changed is that reading it is not the same as claiming it.
+	if !slices.Equal(plan.Shared, []string{".claude/skills"}) {
+		t.Errorf("Shared = %v, want [.claude/skills]", plan.Shared)
 	}
 }
 
@@ -432,48 +459,154 @@ func TestCheckReportsADirectoryWhereItRendersAFile(t *testing.T) {
 	}
 }
 
-func TestCheckReportsAStrayFileInASkillsTree(t *testing.T) {
+// TestCheckReportsAStrayFileInASkillDirectoryItDeclares is the case claiming
+// by name exists to keep, and the reason the sweep was not simply deleted.
+//
+// A declared skill's directory is cairn's whole: cairn wrote every file in it,
+// so a file in it the render does not produce is a leftover — the skill's
+// source dropped a reference document, say, and the copy is still on disk.
+// That is a finding and the report says so.
+func TestCheckReportsAStrayFileInASkillDirectoryItDeclares(t *testing.T) {
 	t.Parallel()
 	fixture := newCheckFixture(t, "alpha")
-	const stray = ".claude/skills/stale/SKILL.md"
-	writeInRoot(t, fixture.dir, stray, "# a skill the profile no longer declares\n")
+	stray := []string{
+		".claude/skills/alpha/references/notes.md",
+		".claude/skills/alpha/run.sh",
+	}
+	for _, rel := range stray {
+		writeInRoot(t, fixture.dir, rel, "left behind by a source that no longer holds it\n")
+	}
 
 	report := fixture.check(t)
-	if got := pathsWithStatus(report, install.StatusOrphan); !slices.Equal(got, []string{stray}) {
-		t.Errorf("orphan = %v, want [%s]", got, stray)
+	if got := pathsWithStatus(report, install.StatusOrphan); !slices.Equal(got, stray) {
+		t.Errorf("orphan = %v, want %v", got, stray)
 	}
 	if report.Clean() {
-		t.Error("Clean() = true with an orphan in the skills tree")
+		t.Error("Clean() = true with an orphan inside a skill cairn fills")
+	}
+	if report.ExitCode() == 0 {
+		t.Error("ExitCode() = 0 with an orphan inside a skill cairn fills")
 	}
 	// The check deletes nothing.
-	if _, err := os.Lstat(fixture.path(stray)); err != nil {
-		t.Errorf("the check removed %s: %v", stray, err)
+	for _, rel := range stray {
+		if _, err := os.Lstat(fixture.path(rel)); err != nil {
+			t.Errorf("the check removed %s: %v", rel, err)
+		}
 	}
 }
 
-func TestCheckReportsAStrayFileInASkillsTreeTheProfileDoesNotFill(t *testing.T) {
+// TestCheckLeavesAHandWrittenSkillAloneAndStillReportsIt is the rule this
+// replaces the whole-directory sweep with.
+//
+// ~/.claude/skills is where the operator keeps their own skills, beside the
+// ones their profile declares. Claiming the directory whole reported every one
+// of them as drift on every run — the settings.local.json disease, one level
+// down — so cairn claims the directories it was told to plant and nothing
+// else.
+//
+// It is still named. Cairn says what it found in a directory it shares; only
+// what cairn claims can fail the check.
+func TestCheckLeavesAHandWrittenSkillAloneAndStillReportsIt(t *testing.T) {
 	t.Parallel()
-	// This is the case a sweep derived from the render misses. The profile
-	// declares no skills, so nothing is rendered into the skills directory and
-	// a render-derived sweep would stop looking at it — which is exactly when
-	// something is left behind there. It is why Renderer.Tree exists.
+	fixture := newCheckFixture(t, "alpha")
+	theirs := []string{
+		".claude/skills/handwritten/SKILL.md",
+		".claude/skills/handwritten/references/notes.md",
+		".claude/skills/another/SKILL.md",
+	}
+	for _, rel := range theirs {
+		writeInRoot(t, fixture.dir, rel, "the operator wrote this\n")
+	}
+
+	report := fixture.check(t)
+	if !report.Clean() {
+		t.Errorf("Clean() = false; a skill the operator wrote is not drift. Report:\n%s", report)
+	}
+	if got := report.ExitCode(); got != 0 {
+		t.Errorf("ExitCode() = %d, want 0", got)
+	}
+	// Named once each, at the directory: the sweep says what it found and does
+	// not walk into what is not cairn's.
+	want := []string{".claude/skills/another", ".claude/skills/handwritten"}
+	if got := pathsWithStatus(report, install.StatusUnclaimed); !slices.Equal(got, want) {
+		t.Errorf("unclaimed = %v, want %v", got, want)
+	}
+	for _, entry := range report.Entries {
+		if slices.Contains(theirs, entry.Path) {
+			t.Errorf("%s was reported as %q; the sweep walked into a directory that is not cairn's",
+				entry.Path, entry.Status)
+		}
+	}
+	// The declared skill is still checked against the bytes.
+	if entry := entryAt(t, report, ".claude/skills/alpha/"+bootdir.SkillFileName); entry.Status != install.StatusMatch {
+		t.Errorf("the declared skill is %q, want %q", entry.Status, install.StatusMatch)
+	}
+}
+
+// TestCheckOfAProfileDeclaringNoSkillsIsClean is the other half: a profile may
+// declare no skills at all, and then nothing under the skills directory is
+// cairn's.
+//
+// The directory is still read — every skill in it is named — and the report is
+// still clean, because naming and claiming are now two different things.
+func TestCheckOfAProfileDeclaringNoSkillsIsClean(t *testing.T) {
+	t.Parallel()
 	fixture := newCheckFixture(t)
 	for _, file := range fixture.files {
 		if strings.HasPrefix(file.Path, ".claude/skills/") {
 			t.Fatalf("the fixture rendered %s; it must declare no skills", file.Path)
 		}
 	}
-	stray := []string{
-		".claude/skills/stale/SKILL.md",
-		".claude/skills/stale/references/notes.md",
-	}
-	for _, rel := range stray {
-		writeInRoot(t, fixture.dir, rel, "left behind\n")
+	for _, rel := range []string{
+		".claude/skills/handwritten/SKILL.md",
+		".claude/skills/handwritten/references/notes.md",
+	} {
+		writeInRoot(t, fixture.dir, rel, "the operator wrote this\n")
 	}
 
 	report := fixture.check(t)
-	if got := pathsWithStatus(report, install.StatusOrphan); !slices.Equal(got, stray) {
-		t.Errorf("orphan = %v, want %v", got, stray)
+	if !report.Clean() {
+		t.Errorf("Clean() = false for a profile that declares no skills. Report:\n%s", report)
+	}
+	if got := report.ExitCode(); got != 0 {
+		t.Errorf("ExitCode() = %d, want 0", got)
+	}
+	if got := pathsWithStatus(report, install.StatusUnclaimed); !slices.Equal(got, []string{".claude/skills/handwritten"}) {
+		t.Errorf("unclaimed = %v, want [.claude/skills/handwritten]", got)
+	}
+	if n := report.Count(install.StatusOrphan); n != 0 {
+		t.Errorf("%d orphans; a profile declaring no skills claims nothing under the skills directory", n)
+	}
+}
+
+// TestInstallLeavesAHandWrittenSkillWhereItIs is the same rule through the
+// write rather than the check: an install plants what the profile declares and
+// touches nothing else in the directory it shares, and the check that follows
+// is clean.
+//
+// It installs into a temporary root, never a home directory — see the note at
+// the top of this file.
+func TestInstallLeavesAHandWrittenSkillWhereItIs(t *testing.T) {
+	t.Parallel()
+	fixture := newCheckFixture(t, "alpha")
+	const theirs = ".claude/skills/handwritten/SKILL.md"
+	const body = "# A skill cairn never heard of\n"
+	writeInRoot(t, fixture.dir, theirs, body)
+
+	if _, err := install.Install(fixture.lay); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	got, err := os.ReadFile(fixture.path(theirs))
+	if err != nil {
+		t.Fatalf("the install removed %s: %v", theirs, err)
+	}
+	if string(got) != body {
+		t.Errorf("%s holds %q, want %q: the install rewrote a skill it did not plant", theirs, got, body)
+	}
+
+	report := fixture.check(t)
+	if !report.Clean() || report.ExitCode() != 0 {
+		t.Errorf("--check after the install is unclean (exit %d):\n%s", report.ExitCode(), report)
 	}
 }
 
@@ -600,14 +733,14 @@ func TestCheckReportsAnUnreadablePathAndKeepsGoing(t *testing.T) {
 
 func TestCheckFSReadsAFilesystemItIsNotStandingIn(t *testing.T) {
 	t.Parallel()
-	fixture := newCheckFixture(t)
-	// A synthetic filesystem, holding the render plus one leftover. Nothing
-	// here is on disk anywhere.
+	fixture := newCheckFixture(t, "alpha")
+	// A synthetic filesystem, holding the render plus one leftover inside the
+	// skill the profile declares. Nothing here is on disk anywhere.
 	fsys := fstest.MapFS{}
 	for _, file := range fixture.files {
 		fsys[file.Path] = &fstest.MapFile{Data: file.Content, Mode: 0o644}
 	}
-	const stray = ".claude/skills/stale/SKILL.md"
+	const stray = ".claude/skills/alpha/references/notes.md"
 	fsys[stray] = &fstest.MapFile{Data: []byte("left behind\n"), Mode: 0o644}
 	delete(fsys, ".claude/CLAUDE.md")
 
@@ -662,25 +795,40 @@ func TestCheckRefusesARootItCannotRead(t *testing.T) {
 
 func TestCheckReportsALinkTheSweepFindsWithoutFollowingIt(t *testing.T) {
 	t.Parallel()
-	fixture := newCheckFixture(t)
-	// A directory of someone else's, linked into the skills tree. Cairn
-	// renders bytes and has no way to emit a link, so this is never cairn's
-	// output — and it is not descended into, whatever is on the far end.
+	fixture := newCheckFixture(t, "alpha")
+	// Two directories of someone else's, linked into the skills tree: one
+	// inside a skill cairn fills, one beside it. Cairn renders bytes and has
+	// no way to emit a link, so neither is ever cairn's output — and neither
+	// is descended into, whatever is on the far end.
 	target := t.TempDir()
 	writeInRoot(t, target, "SKILL.md", "# not cairn's\n")
 	writeInRoot(t, target, "references/deep.md", "# also not cairn's\n")
-	if err := os.MkdirAll(fixture.path(".claude/skills"), 0o755); err != nil {
-		t.Fatalf("create the skills directory: %v", err)
-	}
-	const linked = ".claude/skills/linked"
-	symlinkOrSkip(t, target, fixture.path(linked))
+
+	const inside = ".claude/skills/alpha/linked"
+	symlinkOrSkip(t, target, fixture.path(inside))
+	const beside = ".claude/skills/linked"
+	symlinkOrSkip(t, target, fixture.path(beside))
 
 	report := fixture.check(t)
-	if got := pathsWithStatus(report, install.StatusOrphan); !slices.Equal(got, []string{linked}) {
-		t.Errorf("orphan = %v, want [%s]: the link is reported and not walked", got, linked)
+	// Inside a directory cairn fills, a link is a leftover: cairn claims that
+	// path and did not write this.
+	if got := pathsWithStatus(report, install.StatusOrphan); !slices.Equal(got, []string{inside}) {
+		t.Errorf("orphan = %v, want [%s]: the link is reported and not walked", got, inside)
 	}
-	if detail := entryAt(t, report, linked).Detail; !strings.Contains(detail, target) {
-		t.Errorf("Detail = %q, want it to name the target %q", detail, target)
+	// Beside it, in the directory cairn shares, it is the operator's.
+	if got := pathsWithStatus(report, install.StatusUnclaimed); !slices.Equal(got, []string{beside}) {
+		t.Errorf("unclaimed = %v, want [%s]", got, beside)
+	}
+	for _, linked := range []string{inside, beside} {
+		if detail := entryAt(t, report, linked).Detail; !strings.Contains(detail, target) {
+			t.Errorf("Detail for %s = %q, want it to name the target %q", linked, detail, target)
+		}
+	}
+	// Neither link was followed: nothing on the far end is in the report.
+	for _, entry := range report.Entries {
+		if strings.Contains(entry.Path, "references/deep.md") {
+			t.Errorf("the sweep walked a symbolic link: %s", entry.Path)
+		}
 	}
 }
 
