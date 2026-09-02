@@ -160,6 +160,27 @@ type Renderer struct {
 	// settings.local.json, one level down.
 	Fills func(*profile.Resolved) ([]string, error)
 
+	// Normalize, when set, is applied to the render and to the bytes on disk
+	// before a check compares them, so that a difference it forgives is a
+	// difference in neither.
+	//
+	// It exists for one shape of false alarm. A JSON artifact is written by
+	// cairn and rewritten by the harness, and the two lay the same document out
+	// differently; a byte comparison then reports every run as drift over
+	// whitespace, which is the failure mode [SweepPlan] describes for a sweep
+	// that claims too much. Normalizing is how a check keeps saying something.
+	//
+	// What it forgives has to stay narrow, and that is why this is a byte
+	// transformation rather than a comparison. [bootdir.IndentJSON] moves
+	// whitespace and changes nothing else, so a reordered key, a changed value
+	// and an added key all still read as modified. A normalizer that parsed
+	// both sides and compared them as values would forgive far more than the
+	// operator asked it to, in the one layer that is not disposable.
+	//
+	// A renderer without one is compared byte for byte, which is the default
+	// for every artifact that is prose.
+	Normalize func([]byte) []byte
+
 	// Render is the boot-directory renderer this artifact is produced by. The
 	// instance it is handed carries a [bootdir.Layout] naming the installed
 	// paths, so the same function serves both layers.
@@ -204,7 +225,7 @@ func ClaudeRenderers() []Renderer {
 	return []Renderer{
 		{Artifact: bootdir.AgentsFileName, Render: bootdir.RenderAgentsTemplate},
 		{Artifact: bootdir.PointerFileName, Render: bootdir.RenderPointerTemplate},
-		{Artifact: SettingsFileName, Render: bootdir.RenderSettings},
+		{Artifact: SettingsFileName, Render: bootdir.RenderSettings, Normalize: bootdir.IndentJSON},
 		{Artifact: SkillsDirName, Render: bootdir.RenderInstallSkills, Fills: installedSkillNames},
 	}
 }

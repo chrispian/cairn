@@ -8,6 +8,8 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"github.com/chrispian/cairn/profile"
 )
 
 // SweepPlan is exactly what cairn claims in the install root, and therefore
@@ -221,7 +223,7 @@ func CheckFS(fsys fs.ReadLinkFS, lay *Layer) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries := checkManifest(fsys, rendered)
+	entries := checkManifest(fsys, rendered, normalizers(lay.Profile.Provider))
 	entries = append(entries, sweep(fsys, plan, manifestPaths(rendered))...)
 	return &Report{Entries: entries}, nil
 }
@@ -236,26 +238,59 @@ func manifestPaths(rendered []File) map[string]struct{} {
 	return paths
 }
 
+// normalizers returns the [Renderer.Normalize] of every artifact that declares
+// one, keyed by the path it lands at, so a comparison can find the one for a
+// rendered file.
+//
+// It reads the registration list rather than the render, for the reason
+// [NewSweepPlan] does: which artifacts cairn claims — and how it compares them
+// — is settled where they are registered, not by the profile being checked.
+//
+// A provider with no harness returns nothing rather than an error. The render
+// that reaches a comparison has already gone through [Render], which refuses
+// that provider outright, so there is nothing here to report a second opinion
+// on.
+func normalizers(p profile.Provider) map[string]func([]byte) []byte {
+	h, err := harnessFor(p)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]func([]byte) []byte)
+	for _, r := range h.renderers {
+		if r.Normalize == nil || r.Artifact == "" {
+			continue
+		}
+		out[path.Join(h.dir, r.Artifact)] = r.Normalize
+	}
+	return out
+}
+
 // checkManifest is the first half: every rendered file, looked up on disk, in
 // render order.
-func checkManifest(fsys fs.ReadLinkFS, rendered []File) []Entry {
+func checkManifest(fsys fs.ReadLinkFS, rendered []File, norm map[string]func([]byte) []byte) []Entry {
 	entries := make([]Entry, 0, len(rendered))
 	for _, f := range rendered {
-		entries = append(entries, checkRendered(fsys, f))
+		entries = append(entries, checkRendered(fsys, f, norm[f.Path]))
 	}
 	return entries
 }
 
 // checkRendered classifies one rendered file against what is at its path.
 //
-// Only the bytes are compared. A mode is not: the mode a file lands with
-// depends on the umask of whoever ran the install, so reporting one would
-// report the operator's shell rather than the layer's content.
+// Only the content is compared, and by default that means the bytes. A mode is
+// not compared: the mode a file lands with depends on the umask of whoever ran
+// the install, so reporting one would report the operator's shell rather than
+// the layer's content.
+//
+// An artifact registered with a [Renderer.Normalize] has it applied to both
+// sides first, so the comparison forgives exactly what that function moves and
+// nothing else. The detail still counts the bytes actually on disk, because
+// that is the number the operator sees in a directory listing.
 //
 // A path that cannot be read is a finding rather than a failure of the check.
 // One unreadable file in a skills tree should not hide what the rest of the
 // layer looks like.
-func checkRendered(fsys fs.ReadLinkFS, f File) Entry {
+func checkRendered(fsys fs.ReadLinkFS, f File, normalize func([]byte) []byte) Entry {
 	entry := Entry{Path: f.Path}
 	info, err := fs.Lstat(fsys, f.Path)
 	switch {
@@ -278,7 +313,11 @@ func checkRendered(fsys fs.ReadLinkFS, f File) Entry {
 		entry.Detail = err.Error()
 		return entry
 	}
-	if !bytes.Equal(content, f.Content) {
+	found, want := content, f.Content
+	if normalize != nil {
+		found, want = normalize(found), normalize(want)
+	}
+	if !bytes.Equal(found, want) {
 		entry.Status = StatusModified
 		entry.Detail = fmt.Sprintf("the bytes on disk are not the render's: %d on disk, %d rendered",
 			len(content), len(f.Content))

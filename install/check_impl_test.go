@@ -974,3 +974,71 @@ func renderedContent(t *testing.T, files []install.File, rel string) []byte {
 	t.Fatalf("no file was rendered at %q", rel)
 	return nil
 }
+
+// TestCheckForgivesTheHarnessRelayingOutTheSettingsDocument is the reason
+// [install.Renderer].Normalize exists.
+//
+// Claude Code rewrites the settings document it was handed. Before the two
+// layouts agreed, a byte comparison reported ~/.claude/settings.json as
+// modified on every run of every real installation — drift over whitespace,
+// which is the same disease as a lint gate configured not to fail. What the
+// harness moved is forgiven; what it changed is not, and the test after this
+// one is that half.
+func TestCheckForgivesTheHarnessRelayingOutTheSettingsDocument(t *testing.T) {
+	t.Parallel()
+	fixture := newCheckFixture(t)
+	const settings = ".claude/settings.json"
+	// The same document, spelled the way nothing renders it: compact, on one
+	// line, with no trailing newline.
+	if err := os.WriteFile(fixture.path(settings), []byte(`{"model":"opus"}`), 0o644); err != nil {
+		t.Fatalf("rewrite %s: %v", settings, err)
+	}
+
+	report := fixture.check(t)
+	if got := entryAt(t, report, settings).Status; got != install.StatusMatch {
+		t.Errorf("%s = %q, want %q: the document is the same one, laid out differently",
+			settings, got, install.StatusMatch)
+	}
+	if !report.Clean() {
+		t.Errorf("the report is not clean: %v", entryPaths(report.Entries))
+	}
+	// The check repairs nothing, so the operator's own layout survives it.
+	got, err := os.ReadFile(fixture.path(settings))
+	if err != nil {
+		t.Fatalf("read %s back: %v", settings, err)
+	}
+	if string(got) != `{"model":"opus"}` {
+		t.Errorf("the check rewrote %s to %q", settings, got)
+	}
+}
+
+// TestCheckStillReportsAChangedSettingsDocument is the other half. Normalizing
+// moves whitespace and nothing else, so a changed value, an added key and a
+// reordered key are all still findings — which is what keeps the forgiveness
+// above from being a hole.
+func TestCheckStillReportsAChangedSettingsDocument(t *testing.T) {
+	t.Parallel()
+	const settings = ".claude/settings.json"
+	for _, edit := range []struct {
+		name     string
+		document string
+	}{
+		{"a changed value", "{\n  \"model\": \"haiku\"\n}\n"},
+		{"an added key", "{\n  \"model\": \"opus\",\n  \"tui\": \"fullscreen\"\n}\n"},
+		{"a removed key", "{}\n"},
+		{"a document that is not JSON at all", "not a settings document\n"},
+	} {
+		t.Run(edit.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newCheckFixture(t)
+			if err := os.WriteFile(fixture.path(settings), []byte(edit.document), 0o644); err != nil {
+				t.Fatalf("rewrite %s: %v", settings, err)
+			}
+
+			report := fixture.check(t)
+			if got := entryAt(t, report, settings).Status; got != install.StatusModified {
+				t.Errorf("%s = %q, want %q", settings, got, install.StatusModified)
+			}
+		})
+	}
+}
