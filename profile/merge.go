@@ -98,8 +98,11 @@ func mergeSpecKey(key string, older, newer json.RawMessage) (json.RawMessage, er
 // declared. JSON null decodes into a map as an empty map rather than as an
 // error, so without the guard that leaf's document would be composed against
 // nothing and re-encoded in Go's spelling. Byte-identity is load-bearing:
-// bootdir.RenderSettings writes spec.settings verbatim into a file, and
-// re-spelling it rewrites every planted settings document on whitespace alone.
+// bootdir.RenderSettings writes spec.settings into a file, laying it out and
+// changing nothing else, so what the cascade re-spells lands in a settings
+// document the operator reads. Go's encoder sorts an object's keys, escapes
+// <, > and & inside its strings, renumbers 0.5e3 to 500 and drops a duplicate
+// key — none of which laying a document out would undo.
 // Pinned by TestResolveSettingsRedeclaredAfterAMidChainClearAreByteIdentical.
 //
 // The plainer route to the same promise is one level up: a key exactly one

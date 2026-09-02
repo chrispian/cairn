@@ -71,7 +71,7 @@ What lands:
 <boot-dir>/
   <spec.templates>       your text, markers substituted; any path, any number
   .mcp.json              spec.mcp
-  .claude/settings.json  spec.settings, verbatim
+  .claude/settings.json  spec.settings, laid out
   .claude/skills/        spec.skills, whole directory trees
   .claude/agents/<id>.md spec.subagents, one per named profile
   <spec.trees>           source directories, copied whole

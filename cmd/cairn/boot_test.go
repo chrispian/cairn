@@ -129,10 +129,9 @@ func TestBootEndToEnd(t *testing.T) {
 		t.Errorf(".mcp.json did not carry the declared server: %+v", mcp)
 	}
 
-	// Settings are written verbatim: the operator's bytes, not Cairn's opinion
-	// of them.
+	// Settings are the operator's own document, not Cairn's opinion of it.
 	if got := read(t, dir, ".claude/settings.json"); !strings.Contains(got, `"whateverTheOperatorWrote"`) {
-		t.Errorf("settings.json was not written verbatim:\n%s", got)
+		t.Errorf("settings.json did not carry the operator's own value:\n%s", got)
 	}
 
 	// A subagent definition is the named profile's own declaration, and only

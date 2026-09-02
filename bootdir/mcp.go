@@ -77,7 +77,7 @@ func renderMCP(inst *Instance) ([]File, error) {
 		}
 	}
 
-	content, err := json.MarshalIndent(mcpConfig{Servers: servers}, "", "  ")
+	content, err := json.MarshalIndent(mcpConfig{Servers: servers}, "", JSONIndent)
 	if err != nil {
 		return nil, fmt.Errorf("encode the MCP configuration: %w", err)
 	}

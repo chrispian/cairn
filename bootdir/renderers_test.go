@@ -126,8 +126,8 @@ func TestRenderProducesTheOutputContract(t *testing.T) {
 	if !declared {
 		t.Fatal("the manifest declares settings, but the spec reports none")
 	}
-	if got := string(fileByPath(t, files, ".claude/settings.json").Content); got != string(stored)+"\n" {
-		t.Errorf("the settings document holds %q, want the stored bytes %q", got, stored)
+	if got, want := string(fileByPath(t, files, ".claude/settings.json").Content), string(IndentJSON(stored)); got != want {
+		t.Errorf("the settings document holds %q, want the stored document laid out %q", got, want)
 	}
 }
 

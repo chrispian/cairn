@@ -41,6 +41,15 @@ const SkillsDirName = ".claude/skills"
 // the skill at all.
 const SkillFileName = "SKILL.md"
 
+// JSONIndent is one level of indentation in a rendered JSON artifact.
+//
+// Every JSON file cairn writes is laid out rather than compacted, because the
+// operator reads these files and diffs them. Two spaces is the harness's own
+// convention: Claude Code rewrites the settings document it was given at this
+// width, so a rendered document and the one the harness writes back differ by
+// their content and never by their shape.
+const JSONIndent = "  "
+
 // DefaultFileMode is the mode a rendered file is written with when its [File]
 // carries none.
 const DefaultFileMode fs.FileMode = 0o644
@@ -99,8 +108,8 @@ type Layout struct {
 	// MCP is the MCP server configuration.
 	MCP Artifact
 
-	// Settings is the harness settings document, written verbatim from the
-	// profile's manifest.
+	// Settings is the harness settings document, written from the profile's
+	// manifest, laid out and not otherwise touched.
 	Settings Artifact
 
 	// SkillsDir is the directory declared skills are planted under, one

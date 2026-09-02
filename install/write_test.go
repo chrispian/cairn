@@ -173,13 +173,18 @@ func TestInstallGeneratedMarkerSurvivesToDisk(t *testing.T) {
 }
 
 // TestInstallRoundTripsHTMLSpecialCharactersInSettings holds the settings
-// document to the operator's exact bytes across the whole install path.
+// document to the operator's exact characters across the whole install path.
 //
 // [json.Marshal] escapes "<", ">" and "&" into their \u00XX forms by default,
 // so anything on this path that re-marshalled a merged [profile.Spec]
 // would silently rewrite a settings document containing a shell pipeline, a
 // glob, or a comparison. The store assembles that column by hand for the same
 // reason. This is where the mistake gets caught if it is ever reintroduced.
+//
+// The render is laid out, so the comparison is against the document laid out
+// and the escape check is against the characters. Laying a document out moves
+// whitespace between tokens and never touches what is inside a string, which
+// is exactly the difference this test is drawing.
 func TestInstallRoundTripsHTMLSpecialCharactersInSettings(t *testing.T) {
 	const settings = `{"hooks": {"PreToolUse": "a < b && c > d"}}`
 	lay := fixtureLayer(t, profile.Resolved{
@@ -191,7 +196,7 @@ func TestInstallRoundTripsHTMLSpecialCharactersInSettings(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 	got := string(installed(t, lay.Root, ".claude/settings.json"))
-	if want := settings + "\n"; got != want {
+	if want := string(bootdir.IndentJSON([]byte(settings))); got != want {
 		t.Fatalf("the installed settings hold\n\t%s\nwant\n\t%s", got, want)
 	}
 	for _, escaped := range []string{"\\u003c", "\\u003e", "\\u0026"} {

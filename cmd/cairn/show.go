@@ -36,8 +36,9 @@ const columnGap = 2
 // The count of names is not a detail: it decides what the value below can be
 // trusted to be. One name and the value is that profile's own document, which
 // the cascade never re-serializes and this command only re-spaces — the case
-// that matters, because spec.settings is written verbatim into the harness's
-// settings document and an operator will diff the two. Two or more and it is a
+// that matters, because spec.settings reaches the harness's settings document
+// with its own spelling intact and an operator will diff the two. Both are
+// laid out at [specIndent], so that diff is about content. Two or more and it is a
 // composition: profile.encodeJSON marshals a Go map, so the members are what
 // the profiles declared and the order is the cascade's, at every depth. A note
 // promising byte identity for both would be wrong for exactly the key it was

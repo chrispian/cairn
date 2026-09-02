@@ -256,8 +256,9 @@ func TestRenderSettingsCarriesNoGeneratedMarker(t *testing.T) {
 		t.Fatalf("Render a fully declared profile: %v", err)
 	}
 	settings := renderedFile(t, files, ".claude/settings.json")
-	if string(settings.Content) != "{\"model\": \"opus\"}\n" {
-		t.Errorf(".claude/settings.json rendered %q, want the stored bytes and a newline", settings.Content)
+	if want := "{\n  \"model\": \"opus\"\n}\n"; string(settings.Content) != want {
+		t.Errorf(".claude/settings.json rendered %q, want the stored document laid out %q",
+			settings.Content, want)
 	}
 	var decoded map[string]json.RawMessage
 	if err := json.Unmarshal(settings.Content, &decoded); err != nil {

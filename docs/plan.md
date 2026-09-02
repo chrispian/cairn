@@ -171,7 +171,7 @@ the keys it renders. Anything else is carried and ignored.
   "slots":     [ /* agentcontext.SlotSpec — addressed by name from a template */ ],
   "mcp":       [ /* agentlaunch.MCPServerSpec */ ],
   "skills":    [ "code-review", "capture-decision" ],
-  "settings":  { /* verbatim into .claude/settings.json */ },
+  "settings":  { /* into .claude/settings.json, laid out and not otherwise touched */ },
   "subagents": [ "reviewer", "worker" ],   // profile ids; each renders a definition
   "subagent":  { /* this profile's own definition, when another names it */ },
   "trees":     { "docs/engineering": "~/.config/agents/docs/engineering" },
@@ -351,9 +351,10 @@ replace did not:
 - A key **exactly one profile in the chain declares is carried byte for byte**
   — spelling, whitespace and key order included. A merge needs two declared
   values, so one never reaches a merger. This is load-bearing rather than
-  incidental: `spec.settings` is written verbatim into the harness's settings
-  document, and re-serializing a document only `base` declares would rewrite
-  every planted `.claude/settings.json` on whitespace alone.
+  incidental: a manifest value is the operator's own, and re-serializing one
+  only `base` declares would HTML-escape the `<`, `>` and `&` inside it. What a
+  renderer does with a value afterwards is the renderer's, and the JSON
+  artifacts are laid out on the way out — see §6.
 
 `$VAR` and `${VAR}` are expanded in **every manifest value that names somewhere
 to read from**: a slot source's static path and HTTP URL, a `trees` source, and
@@ -408,7 +409,7 @@ The rest of the prior scope validation — rejecting `/etc`, `/usr`, `/var`,
 <boot-dir>/
   <spec.templates>       ← text with markers, substituted; any path, any number
   .mcp.json              ← spec.mcp
-  .claude/settings.json  ← spec.settings, verbatim
+  .claude/settings.json  ← spec.settings, laid out
   .claude/skills/        ← spec.skills, directory trees
   .claude/agents/<id>.md ← spec.subagents, one per named profile
   <spec.trees>           ← source directories, copied whole
@@ -588,7 +589,7 @@ manifest spelled it with, and the operator's key order is kept.
 ~/.claude/
   AGENTS.md              ← the template declared for AGENTS.md, + a provenance comment
   CLAUDE.md              ← the template declared for CLAUDE.md, no marker
-  settings.json          ← spec.settings, verbatim, no marker (JSON has no comments)
+  settings.json          ← spec.settings, laid out, no marker (JSON has no comments)
   skills/                ← spec.skills, directory trees
 ```
 
@@ -681,13 +682,25 @@ multi-file skill.
 
 ## 6. Authority is rendered, not decided
 
-`spec.settings` is written into the provider settings file verbatim. Cairn does
-not model permission modes, does not validate tool names, does not translate
-access grants into permission rules, and makes no claim about what the harness
-does with what it writes.
+`spec.settings` is written into the provider settings file as the cascade
+composed it. Cairn does not model permission modes, does not validate tool
+names, does not translate access grants into permission rules, and makes no
+claim about what the harness does with what it writes.
 
 If a rendered rule turns out not to enforce, that is a finding about the
 harness, not a Cairn defect.
+
+The one edit is layout. Every JSON artifact cairn writes — `.mcp.json` and the
+settings document — is indented two spaces per level, because the operator
+reads these files and diffs them, and because Claude Code rewrites the settings
+document it was handed at exactly that width. `json.Indent` moves whitespace
+between tokens and changes nothing else, so key order, string spelling and
+number spelling all survive it; laying a document out is not re-encoding it,
+and a hand-spelled document still comes back out with its own characters. That
+is also why `--check` normalizes both sides through the same function before
+comparing: a check that reported the harness's own layout as drift on every run
+would stop meaning anything, and one that forgave more than whitespace would
+stop being a check.
 
 This drops the prior tree's `bootdir/settings.go` and its 636 lines of tests,
 its closed `PermissionMode` enum, and its `access[] → Read(path/**)` translator.
@@ -820,7 +833,8 @@ useful part, and an unnamed loose end gets rediscovered as a bug.
   inventing a diff format nobody has asked for is how a small tool grows.
 
 Bounded by construction, and worth knowing: §6 says `spec.settings` is written
-verbatim with no validation, but a value that is not valid JSON cannot be
-stored at all — `encodeSpec` runs `json.Valid` per value. Verbatim is bounded
-by "it is at least JSON", which is shape rather than meaning. That is the
-intended line.
+with no validation, but a value that is not valid JSON cannot be stored at all
+— `encodeSpec` runs `json.Valid` per value. "Not validated" is bounded by "it
+is at least JSON", which is shape rather than meaning. That is the intended
+line, and it is what lets the renderer lay a document out without ever needing
+a fallback in practice.

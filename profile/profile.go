@@ -95,7 +95,8 @@ const (
 	// install-only key has somewhere to go without another top-level name.
 	SpecKeyInstall = "install"
 
-	// SpecKeySettings holds the provider settings document, written verbatim.
+	// SpecKeySettings holds the provider settings document, written as the
+	// cascade composed it and laid out for reading.
 	SpecKeySettings = "settings"
 
 	// SpecKeyFiles maps boot-directory-relative paths to their contents.

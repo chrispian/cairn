@@ -13,11 +13,12 @@ import (
 // agent-setup writes one: json.dumps with sort_keys and its default separators,
 // which are ", " and ": ". Go's encoder emits neither space.
 //
-// It is the fixture for the one rule this whole file exists to protect. The
-// bytes stored under spec.settings are written verbatim into the harness's
-// settings document, so an implementation that decoded and re-encoded a key
-// only one profile declared would change every one of those files on
-// whitespace alone, for zero behaviour change.
+// It is the fixture for the one rule this whole file exists to protect. What
+// is stored under spec.settings is written into the harness's settings
+// document, laid out and otherwise untouched, so an implementation that
+// decoded and re-encoded a key only one profile declared would reach the
+// operator's file. This fixture catches it by key order — "b" before "a",
+// which Go's encoder sorts and laying a document out does not.
 const pythonSpelling = `{"b": 1, "a": {"d": 2, "c": 3}}`
 
 // TestResolveSettingsFromOneProfileAreByteIdentical pins that rule: when
