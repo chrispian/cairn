@@ -257,6 +257,49 @@ for f in "$OUT"/stderr/*.txt; do
 	rm -f "$f.sorted"
 done
 
+# --- refuse a degraded capture ---------------------------------------------
+#
+# A golden that records a slot which failed to resolve, or a declared slot that
+# filled nothing, is a golden of a broken render — and the damage is that it
+# reads exactly like a golden of a working one. A section that is missing
+# because its slot failed is indistinguishable, in a captured tree, from a
+# section the profile never declared.
+#
+# The conductor's `fleet` slot is the case that motivated this. It is a cmd slot
+# reading ${CAIRN_DB:-$HOME/.config/agents/cairn.db} out of the environment,
+# `cairn boot --db <path>` does not export CAIRN_DB, and sqlite3's immutable=1
+# on an absent path opens an EMPTY database rather than erroring. So the query
+# fails with "no such table", the section renders nothing, and the boot still
+# exits 0. The export above is what prevents it; this is what catches it if the
+# export is ever lost.
+#
+# Both patterns are cmd/cairn/main.go's own: reportSlotFailures and
+# reportUnfilledMarkers. Anything else on stderr is printed and does not fail —
+# the installed layer's "renders no section for" line is a fact about which
+# kinds install resolves, not a fault.
+degraded=$(grep -lE 'slot "[^"]*" did not resolve|slot "[^"]*" filled nothing' \
+	"$OUT"/stderr/*.txt 2>/dev/null || true)
+if [ -n "$degraded" ]; then
+	echo "capture.sh: refusing to capture a degraded render" >&2
+	for f in $degraded; do
+		echo "  $(basename "$f" .txt):" >&2
+		grep -E 'did not resolve|filled nothing' "$f" | sed 's/^/    /' >&2
+	done
+	echo "" >&2
+	echo "A golden recording a failed or unfilled slot looks like a golden of a" >&2
+	echo "profile that never declared it. Fix the render; do not capture this." >&2
+	exit 1
+fi
+
+# Whatever else reached stderr is surfaced rather than silently baselined. It is
+# still captured — it is part of the golden — but an operator re-capturing sees
+# it rather than discovering it in a diff later.
+for f in "$OUT"/stderr/*.txt; do
+	[ -s "$f" ] || continue
+	echo "capture.sh: $(basename "$f" .txt) wrote to stderr:" >&2
+	sed 's/^/  /' "$f" >&2
+done
+
 files=$(find "$OUT" -type f | wc -l | tr -d ' ')
 bytes=$(find "$OUT" -type f -exec cat {} + | wc -c | tr -d ' ')
 echo "captured ${#BOOTS[@]} boots + 1 installed layer into $OUT ($files files, $bytes bytes)"

@@ -49,6 +49,31 @@ boot lands, or to the file list an install prints, is then a diff like any
 other. Today every `stderr` file is empty: against a fully staged fixture home
 no slot goes unfilled and no marker stands for nothing.
 
+## A degraded render is never captured
+
+`capture.sh` refuses to write a tree when any `stderr` file carries a slot that
+failed to resolve or a declared slot that filled nothing.
+
+The reason is that a golden is a poor witness against absence. A section missing
+because its slot failed looks, in a captured tree, exactly like a section the
+profile never declared — and a re-baseline review comparing the diff against a
+list of expected changes will tick it off as one of them. The failure mode is
+not that something breaks; it is that something breaks and the record of it
+looks correct.
+
+The `conductor` profile's `fleet` slot is the case that motivated the guard. It
+reads `${CAIRN_DB:-$HOME/.config/agents/cairn.db}` out of the environment, and
+`cairn boot --db <path>` does not export `CAIRN_DB`. sqlite3 opening
+`immutable=1` on a path that does not exist gets an **empty database rather than
+an error**, so the query fails with `no such table`, the section renders
+nothing, and the boot still exits 0. The `CAIRN_DB` export in the render
+environment is what prevents that; this guard is what catches it if the export
+is ever lost.
+
+Anything else on `stderr` is printed and kept rather than refused — the
+installed layer's "renders no section for" line says which slot kinds `install`
+resolves, which is a fact and not a fault.
+
 ## What is pinned, and why
 
 Everything the render can reach is staged into one throwaway fixture root:
