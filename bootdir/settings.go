@@ -7,8 +7,15 @@ import (
 	"github.com/chrispian/cairn/profile"
 )
 
-// RenderSettings returns the harness settings document, exactly as the
-// operator stored it.
+// RenderSettings returns the harness settings document, verbatim after the
+// cascade.
+//
+// Verbatim after the cascade rather than verbatim as stored, because the
+// settings key is a keyed collection: a chain whose profiles each declare part
+// of the document renders the composition of them. A document exactly one
+// profile declared is still byte for byte what the operator wrote — the
+// cascade never re-serializes a key only one profile in the chain declares —
+// and that is what keeps a hand-spelled settings document out of Go's encoder.
 //
 // Nothing here reads the document. Cairn models no permission mode, validates
 // no tool name, and translates nothing into a rule: the settings key is the

@@ -173,33 +173,41 @@ func TestResolveEmptyFieldInheritsRatherThanBlanking(t *testing.T) {
 	}
 }
 
-func TestResolveSpecKeyWinsWhole(t *testing.T) {
+// TestResolveUnkeyedSpecKeyWinsWhole covers the half of the cascade that did
+// not change: a key that is not a keyed collection is taken whole, unread, and
+// the ancestor's value is gone.
+//
+// The three keys are chosen to cover the shapes a merge rule could plausibly
+// be inferred from and must not be: an object (spec.subagent), a scalar, and a
+// list of strings nested inside an opaque object (subagent's "tools"), which
+// is the exact shape spec.skills has and composes by.
+func TestResolveUnkeyedSpecKeyWinsWhole(t *testing.T) {
 	t.Parallel()
 
 	l := fakeLoader{
 		"root": {ID: "root", Spec: spec(t, map[string]string{
-			"skills":   `["alpha","beta"]`,
-			"settings": `{"kept":1,"replaced":2}`,
-			"files":    `{"root.md":"root"}`,
+			"subagent":   `{"description":"root","tools":["Read","Grep"],"kept":1}`,
+			"skills_dir": `"/root/skills"`,
+			"files":      `{"root.md":"root"}`,
 		})},
 		"leaf": {ID: "leaf", Extends: "root", Spec: spec(t, map[string]string{
-			"skills":   `["gamma"]`,
-			"settings": `{"replaced":9}`,
+			"subagent":   `{"tools":["Write"]}`,
+			"skills_dir": `"/leaf/skills"`,
 		})},
 	}
 
 	got := resolveOK(t, l, "leaf")
 
-	// A list is replaced, not unioned: the ancestor's entries are gone.
-	if s := string(got.Spec["skills"]); s != `["gamma"]` {
-		t.Errorf("Spec[skills] = %s, want [\"gamma\"] — the ancestor's list must not be unioned in", s)
+	// The object is replaced, not merged, and the list inside it is replaced,
+	// not unioned. spec.subagent is opaque and stays opaque.
+	if s := string(got.Spec[SpecKeySubagent]); s != `{"tools":["Write"]}` {
+		t.Errorf("Spec[subagent] = %s, want {\"tools\":[\"Write\"]} — an unkeyed object must not be merged in", s)
 	}
-	// An object is replaced, not merged: the ancestor's other keys are gone.
-	if s := string(got.Spec["settings"]); s != `{"replaced":9}` {
-		t.Errorf("Spec[settings] = %s, want {\"replaced\":9} — the ancestor's object must not be merged in", s)
+	if s := string(got.Spec[SpecKeySkillsDir]); s != `"/leaf/skills"` {
+		t.Errorf("Spec[skills_dir] = %s, want the leaf's", s)
 	}
 	// A key the leaf does not declare is inherited whole.
-	if s := string(got.Spec["files"]); s != `{"root.md":"root"}` {
+	if s := string(got.Spec[SpecKeyFiles]); s != `{"root.md":"root"}` {
 		t.Errorf("Spec[files] = %s, want the root's", s)
 	}
 
@@ -209,8 +217,8 @@ func TestResolveSpecKeyWinsWhole(t *testing.T) {
 	if _, ok := l["leaf"].Spec["scribbled"]; ok {
 		t.Error("writing to Resolved.Spec reached the stored profile's Spec")
 	}
-	if s := string(l["root"].Spec["skills"]); s != `["alpha","beta"]` {
-		t.Errorf("the root profile's Spec[skills] changed to %s", s)
+	if s := string(l["root"].Spec[SpecKeySubagent]); s != `{"description":"root","tools":["Read","Grep"],"kept":1}` {
+		t.Errorf("the root profile's Spec[subagent] changed to %s", s)
 	}
 }
 
@@ -221,33 +229,38 @@ func TestResolveUnknownSpecKeyCascadesLikeAKnownOne(t *testing.T) {
 
 	l := fakeLoader{
 		"root": {ID: "root", Spec: spec(t, map[string]string{
-			"skills":       `["alpha"]`,
-			"telemetry":    `{"sink":"root"}`,
+			"skills_dir":   `"/root/skills"`,
+			"telemetry":    `{"sink":"root","kept":true}`,
 			"root_only":    carried,
-			"also_unknown": `[1,2,3]`,
+			"also_unknown": `["a","b"]`,
 		})},
 		"mid": {ID: "mid", Extends: "root"},
 		"leaf": {ID: "leaf", Extends: "mid", Spec: spec(t, map[string]string{
-			"skills":    `["gamma"]`,
-			"telemetry": `{"sink":"leaf"}`,
+			"skills_dir":   `"/leaf/skills"`,
+			"telemetry":    `{"sink":"leaf"}`,
+			"also_unknown": `["c"]`,
 		})},
 	}
 
 	got := resolveOK(t, l, "leaf")
 
-	// The unknown key behaves exactly like the rendered one beside it.
+	// The unknown key behaves exactly like the unkeyed rendered one beside it:
+	// taken whole, never looked inside.
 	if s := string(got.Spec["telemetry"]); s != `{"sink":"leaf"}` {
-		t.Errorf("Spec[telemetry] = %s, want the leaf's", s)
+		t.Errorf("Spec[telemetry] = %s, want the leaf's — an unknown object must not be merged", s)
 	}
-	if s := string(got.Spec["skills"]); s != `["gamma"]` {
-		t.Errorf("Spec[skills] = %s, want the leaf's", s)
+	if s := string(got.Spec[SpecKeySkillsDir]); s != `"/leaf/skills"` {
+		t.Errorf("Spec[skills_dir] = %s, want the leaf's", s)
+	}
+	// A list of strings is the shape spec.skills composes by. An unknown key
+	// wearing it is still replaced, because what is keyed is a table and not a
+	// guess about JSON.
+	if s := string(got.Spec["also_unknown"]); s != `["c"]` {
+		t.Errorf("Spec[also_unknown] = %s, want [\"c\"] — an unknown list must not be unioned", s)
 	}
 	// An unknown key nothing overrides survives the walk byte for byte.
 	if s := string(got.Spec["root_only"]); s != carried {
 		t.Errorf("Spec[root_only] = %s, want %s", s, carried)
-	}
-	if s := string(got.Spec["also_unknown"]); s != `[1,2,3]` {
-		t.Errorf("Spec[also_unknown] = %s, want [1,2,3]", s)
 	}
 	if len(got.Spec) != 4 {
 		t.Errorf("Spec has %d keys (%v), want 4", len(got.Spec), specKeys(got.Spec))

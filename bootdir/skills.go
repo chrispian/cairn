@@ -75,8 +75,12 @@ const installSkillsKey skillsKey = profile.SpecKeyInstall + "." + profile.SpecKe
 // [ErrSkillName], [ErrSkillNotFound] or [ErrSkillContent], each naming the
 // skill and the path it was looked for at.
 //
-// The output is deterministic: skills in the order the manifest declares them,
-// and the files inside each in the lexical order [filepath.WalkDir] walks.
+// The output is deterministic: the skills in the order the resolved manifest
+// carries them, and the files inside each in the lexical order
+// [filepath.WalkDir] walks. That order is the operator's declaration order for
+// a key exactly one profile declares and key order for one the cascade
+// composed — see [profile.Resolve]. Nothing here depends on which: the planted
+// paths are one per skill name.
 // Empty directories inside a skill are not reproduced, because a [File] names
 // a file.
 func RenderSkills(inst *Instance) ([]File, error) {

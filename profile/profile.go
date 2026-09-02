@@ -54,8 +54,11 @@ func (p Provider) String() string { return string(p) }
 // keys, of which Cairn interprets only the ones it renders.
 //
 // Holding the values as [json.RawMessage] is what makes an unknown key
-// harmless. The cascade merges whole keys without looking inside them, and a
-// key nothing renders is written back out exactly as it arrived.
+// harmless. The cascade looks inside a key only when an explicit table names
+// it as a keyed collection; every other key, known or not, is taken whole. A
+// key nothing renders is written back out exactly as it arrived — see
+// [specMergers] for why that promise rules out inferring a merge from the
+// shape of the JSON.
 type Spec map[string]json.RawMessage
 
 // Manifest keys Cairn renders. Every other key in a [Spec] is carried and
@@ -186,8 +189,9 @@ type Resolved struct {
 	// Body is every profile's body concatenated ancestor-first.
 	Body string
 
-	// Spec is the merged manifest: for each top-level key, the value from the
-	// closest profile in the chain that declares it.
+	// Spec is the composed manifest: a keyed collection merged member by
+	// member across the chain, and every other key the value from the closest
+	// profile that declares it. See [Resolve].
 	Spec Spec
 }
 
@@ -278,9 +282,12 @@ func (s Spec) Subagent() (json.RawMessage, bool) {
 	return raw, true
 }
 
-// Settings returns the provider settings document under [SpecKeySettings]
-// exactly as it was stored, and whether the key was declared at all. The bytes
-// are not reformatted: the manifest is what the operator wrote.
+// Settings returns the provider settings document under [SpecKeySettings] as
+// the cascade left it, and whether the key was declared at all. Nothing here
+// reformats the bytes: a document exactly one profile in the chain declared is
+// what the operator wrote, down to its whitespace and key order, and one
+// composed from two profiles is those documents merged at every depth and
+// nothing more.
 //
 // A key set to JSON null reads as undeclared, matching the other accessors and
 // the cascade, where null is how a profile clears a key an ancestor declared.

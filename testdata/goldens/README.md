@@ -9,6 +9,31 @@ alters rendering shows up as a diff there — which is the point.
 `testdata` is the directory name on purpose: the Go toolchain ignores it, so
 none of this reaches a build or a test binary.
 
+## These goldens are not hermetic
+
+**They prove byte-identity on this machine, against one working tree, and they
+prove nothing anywhere else.** `capture.sh` reads `~/dev/projects/agent-setup`
+live — the checkout as it stands, not a pinned revision — `rsync`s its
+`templates/` and `skills/` into the fixture home and seeds the fixture store by
+running its `bin/seed.py` over `profiles/*.md`. `verify.sh` re-runs
+`capture.sh`, so it inherits all of it. `AGENT_SETUP` moves the path; nothing
+moves the dependency.
+
+The consequences are worth naming, because this is the proof the whole
+migration rests on:
+
+- On a machine without `agent-setup`, `verify.sh` cannot run at all — it exits
+  with `no profiles under …`, not with a pass.
+- In CI, likewise. **These goldens are not a CI check** and adding them to one
+  would need the profiles vendored or pinned first.
+- When `agent-setup` moves on, `verify.sh` reports a diff that is about the
+  profiles rather than about cairn. Read the diff before believing it is a
+  regression here.
+
+Everything cairn controls *is* pinned — see the table below. The profiles,
+templates and skills are the one input that lives somewhere else, and the
+goldens are as strong as that checkout is stable.
+
 ## What is captured
 
 Eight boots — `architect`, `conductor`, `director`, `engineer`, `orchestrator`,

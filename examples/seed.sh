@@ -79,9 +79,10 @@ SQL
 # "subagents" names other profiles. Each renders .claude/agents/<id>.md from
 # THAT profile's own spec.subagent — see reviewer below.
 #
-# "templates" is closest-wins like every other key, so a leaf that wants a
-# different shape restates the whole map. Ordering is yours: nothing puts an
-# ancestor's prose first unless the template does.
+# "templates" merges by destination path, so this block names only the entry it
+# changes: base's "CLAUDE.md" stands untouched and is not restated here. That
+# is the cascade in one line. Ordering is yours: nothing puts an ancestor's
+# prose first unless the template does.
 #
 # "trees" copies a directory whole. A single file rides "files" with a
 # static_file source; do NOT reach for a static_dir slot, which concatenates
@@ -107,8 +108,7 @@ VALUES (
     "subagents": ["reviewer"],
     "templates": {
       "AGENTS.md": { "kind": "static_file",
-                     "static_file": { "path": "$TEMPLATES_DIR/engineer.md" } },
-      "CLAUDE.md": "@AGENTS.md\n"
+                     "static_file": { "path": "$TEMPLATES_DIR/engineer.md" } }
     },
     "trees": {
       "docs/engineering": "\$AGENT_DOCS"

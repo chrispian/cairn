@@ -3,10 +3,17 @@
 **Status:** authoritative. Written 2026-08-25 after an audit of the prior
 implementation and of the prior art in `~/dev/hollis-labs`.
 
-This is the only prose in this repository. Earlier documents — the spec under
+This is where design decisions land. Earlier documents — the spec under
 `docs/spec/`, the ADRs, the READMEs, and the doc comments of the prior
 implementation — are superseded and are not in the git history of this repo.
 The prior tree is archived at `~/dev/projects/cairn-prior-20260825/`.
+
+Two other prose files live here and are not superseded: `examples/README.md`
+and `testdata/goldens/README.md`. Neither decides anything — they describe what
+the code does for the operator running it — but both restate rules that are
+settled here, so **a rule changed in this file is changed in them in the same
+commit**. That has already gone wrong once: the cascade rule below was replaced
+and `examples/README.md` went on stating the retired one.
 
 ---
 
@@ -220,18 +227,139 @@ legitimately empty is not a boot that should refuse to start.
 
 ### Cascade
 
-`extends` composes ancestor-first. **Uniform closest-wins for every field,
-including every top-level key of `spec`.** No per-field special cases — no
-union for deny-lists, no merge for slots. A profile author who wants an
-ancestor's value keeps it by restating it. `body` is the one exception: it
-concatenates ancestor-first, because the persona is additive by nature.
+`extends` composes ancestor-first. **Keyed collections merge by key. Everything
+else replaces, closest-wins.** `body` is the exception to both: it concatenates
+ancestor-first, because the persona is additive by nature.
 
-An unknown key in `spec` is carried through the cascade and rendered by the
-provider renderer if it knows it, and ignored otherwise. It is never an error.
+A descendant's member of a keyed collection replaces the ancestor's member **at
+that key** and leaves the rest standing. A role profile that changes one slot
+declares that slot and nothing else.
 
-`"key": null` is how a descendant **clears** an ancestor's key. Presence wins,
-and an explicit null is presence — it wins with an empty value rather than
-falling through to the ancestor.
+This supersedes the prior rule — *uniform closest-wins for every field,
+including every top-level key of `spec`* — which was chosen for readability and
+paid for in restatement: every one of the eight role profiles opened by
+spelling out `base`'s `standing` and `context` slots again, and the four that
+declare templates spelled out its `AGENTS.md` entry too. Five lines each in
+`director.md`, `engineer.md`, `conductor.md` and `orchestrator.md`; four in the
+rest.
+
+The ADR that decided this quotes a larger figure — `director.md` 14 of 20 spec
+lines, `conductor.md` 34 of 42 — and that count is wrong, established when the
+restatements were actually removed. It measured every spec line beyond a
+minimal profile, which sweeps in each profile's own `CLAUDE.md` and `boot.md`
+entries and conductor's 26-line `fleet` slot. Those are not inherited from
+anywhere. The case for composing parts never rested on the size of the number,
+so the decision stands as made; the number does not.
+
+What is lost is real and is not mitigated by prose: a profile can no longer be
+read without walking its chain. The answer is a tool that prints a resolved
+profile, not a smaller rule.
+
+**What is keyed, and by what:**
+
+| `spec` key | Shape | Key |
+|---|---|---|
+| `templates` | map | destination path |
+| `slots` | list of objects | `name` |
+| `files` | map | boot-relative path |
+| `trees` | map | destination path |
+| `skills` | list of ids | the id |
+| `subagents` | list of ids | the id |
+| `install` | object | member name |
+| `install.skills` | list of ids | the id |
+| `settings` | object | every key at every depth |
+| `mcp` | list of objects | the `name` field |
+
+`install` is itself a keyed collection and it is the row easiest to miss: a
+leaf declaring `install: {"skills": [...]}` keeps an ancestor's `install`
+members it did not mention. `skills` is the one member of it with a rule of its
+own — the nested row above — and every other member replaces whole, so an
+install-only key added later behaves predictably without a decision here.
+
+Everything else replaces whole: `provider`, `model`, `skills_dir`, `abstract`,
+`subagent`, every scalar column — and every key `spec` carries that Cairn has
+never heard of. An unknown key is carried through the cascade and rendered by
+the provider renderer if it knows it, and ignored otherwise. It is never an
+error.
+
+That last one is why the rule is a **table and not an inference**. A rule like
+"any list of scalars unions" cannot tell `subagents` from the `tools` inside an
+opaque `subagent` declaration, or from an unknown key's list, and would reach
+inside both — which would end the promise that a key this repository has never
+heard of survives the cascade byte for byte. A key earns a merge by being named
+in the table above, which is `profile.specMergers`' nine top-level entries plus
+the one rule that table nests under `install`. Nothing else does.
+
+The keyed-merge ADR's table also names `access.directories`; this one does not,
+because `spec.access` does not exist yet. It arrives with the neutral access
+declaration, and when it does its `directories` compose as a list of ids under
+an object-keyed `access` — one table entry, no new machinery.
+
+**A deviation worth recording, because a document elsewhere said otherwise.**
+The keyed-merge architecture document's §1.2 table originally had `mcp` as *an
+object keyed by top-level server name*. It is not one. `Spec.MCP()` decodes
+`[]agentlaunch.MCPServerSpec`, and that type carries a `name` JSON field — so
+`mcp` is **a list of objects, keyed by each member's `name` field**, which makes
+it structurally identical to `slots`, and one mechanism composes both. That
+document has since been corrected to key on the `name` field; the table above
+and the manifest example earlier in this section are the statement this
+repository holds to. Nothing declares `mcp` today, so the correction cost
+nothing here but would have been expensive to find later.
+
+**Ordering is deterministic and nothing may depend on it.** A merged collection
+is emitted in key order. Declaration order carries no meaning: a template owns
+document order through its marker positions and addresses a slot by name, and
+every other keyed collection is a set or a map. Sorting is what makes two
+renders of one profile identical; it is not a contract about sequence.
+
+**Clearing:**
+
+- `"key": null` **at the collection** clears the whole collection. Presence
+  wins, and an explicit null is presence — it wins with an empty value rather
+  than falling through to the ancestor.
+- `"key": null` **at a member** removes that member from the merged collection
+  — but only where an ancestor also declared the collection. Where exactly one
+  profile declares the key its bytes are carried unread (see the byte-identity
+  rule below), so a member-level null in it is never interpreted as clearing:
+  it reaches the accessor, which refuses it. `templates` and `files` report a
+  value that is "neither a string nor a source object"; `trees` reports
+  `ErrTreeSource`. Loudly, so nothing is mis-rendered — but a refusal, not a
+  removal, and the difference shows up the moment a second profile joins the
+  chain.
+- `[]` and `{}` mean *"I add nothing"* and no longer clear. Under the prior
+  uniform-replace rule an empty collection cleared; under the merge it composes
+  with the ancestor's and contributes no members. Clearing is null and only
+  null.
+
+**Member-clearing has an honest gap.** It has a natural spelling only where a
+member sits under a key: `templates`, `files`, `trees` and `settings`. The
+list-shaped collections — `slots`, `skills`, `subagents`, `install.skills` —
+identify a member by a field inside it rather than by a key above it, so there
+is nowhere to write the null. **A single member of those cannot be removed.**
+The whole collection still clears with `"key": null` — but one manifest holds
+one value per key, so no profile can both clear a collection and redeclare it.
+Replacing a set therefore takes **three profiles**: the ancestor, an
+intermediate whose only job is the null, and the leaf that declares the new
+set. That is the real cost, stated rather than dressed up as an escape hatch.
+No syntax is invented for the missing case: an honest gap recorded is worth
+more than a spelling nobody asked for.
+
+Two consequences worth stating, because both are edges a merge has and a
+replace did not:
+
+- A **descendant cannot restate a literal null in order to keep it**. Null at a
+  member is the clearing spelling, so `"model": null` written in the closer
+  profile removes the key rather than setting it. This is narrower than "a
+  merged document cannot carry a null": an ancestor's literal null stands as
+  long as the descendant never mentions that key, and `{"model": null, "a": 1}`
+  merged with `{"b": 2}` keeps all three. What has no spelling is the closer
+  profile saying *null, and I mean it*.
+- A key **exactly one profile in the chain declares is carried byte for byte**
+  — spelling, whitespace and key order included. A merge needs two declared
+  values, so one never reaches a merger. This is load-bearing rather than
+  incidental: `spec.settings` is written verbatim into the harness's settings
+  document, and re-serializing a document only `base` declares would rewrite
+  every planted `.claude/settings.json` on whitespace alone.
 
 `$VAR` and `${VAR}` are expanded in **every manifest value that names somewhere
 to read from**: a slot source's static path and HTTP URL, a `trees` source, and
@@ -609,7 +737,8 @@ reasoning instead of by looking.
 2. **Store** — schema, migration, open/create, profile CRUD, binding and scope
    lookup. `sqlitekit.OpenWriter` / `OpenReader`, `txutil.WithImmediate`.
 3. **Profile + cascade** — load by id, walk `extends` ancestor-first, detect
-   cycles, closest-wins merge over columns and `spec` keys, concatenate `body`.
+   cycles, closest-wins over the columns, keyed collections in `spec` merged by
+   key and every other `spec` key replaced whole, concatenate `body`.
    `Resolve` carries the `abstract` flag rather than acting on it — `install`
    legitimately resolves an abstract profile. `cairn boot` is what refuses one.
 4. **Render** — `[]bootdir.File` from a resolved profile: templates with their

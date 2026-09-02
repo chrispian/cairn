@@ -80,9 +80,10 @@ type Subagent struct {
 // the store and walking its extends chain, and a renderer does no I/O.
 //
 // A profile naming no subagents renders nothing and reports no error. The
-// output is deterministic: definitions in the order the manifest names them,
-// and within each, [SubagentNameKey] followed by the declaration's own key
-// order.
+// output is deterministic: definitions in the order the resolved spec.subagents
+// carries them — the order the manifest names them where one profile declares
+// the key, key order where the cascade composed it — and within each,
+// [SubagentNameKey] followed by the declaration's own key order.
 func renderSubagents(inst *Instance) ([]File, error) {
 	if inst == nil || inst.Profile == nil {
 		return nil, ErrNoProfile

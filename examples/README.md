@@ -36,9 +36,11 @@ the profile-authoring documentation.
 
 Three things it demonstrates that are easy to get wrong:
 
-- **`extends` is uniform closest-wins.** A child that restates a key replaces
-  the ancestor's value entirely; there is no union, no merge, no per-field
-  special case. `body` is the sole exception and concatenates ancestor-first.
+- **`extends` merges keyed collections by key and replaces everything else.**
+  A child declaring one slot, one template or one skill keeps the ancestor's
+  rest — it does not restate them. Every other key is taken whole from the
+  nearest profile that declares it, including every key Cairn has never heard
+  of. `body` is the exception to both and concatenates ancestor-first.
 - **`spec` is JSON, so a slot's kind key is `"kind"`.** Every boot profile in
   the wider portfolio is YAML and writes `type:`. Cairn will tell you.
 - **`"key": null` clears an ancestor's key.** Presence wins, and an explicit
