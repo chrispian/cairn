@@ -253,7 +253,8 @@ so the decision stands as made; the number does not.
 
 What is lost is real and is not mitigated by prose: a profile can no longer be
 read without walking its chain. The answer is a tool that prints a resolved
-profile, not a smaller rule.
+profile, not a smaller rule — `cairn show`, in §7, which lands with this rule
+rather than after it.
 
 **What is keyed, and by what:**
 
@@ -708,6 +709,7 @@ installed layer already configured an MCP server.
 cairn boot <binding|profile> [--scope <path>]       materialize a boot dir, print its path
 cairn install <binding|profile>                     render the installed layer
 cairn install <binding|profile> --check             re-render, diff against disk, report drift
+cairn show <binding|profile> [--scope <path>]       print what the profile resolves to
 ```
 
 `install` takes the same argument as `boot`, and there is no default. A
@@ -719,6 +721,23 @@ normally rendered from the abstract root of the cascade.
 `cairn install` is human-executed, permanently. Every agent working on Cairn
 runs under `~/.claude`; an agent running `install` rewrites its own live
 configuration mid-session.
+
+`show` resolves and prints. It renders nothing — no boot directory, no
+installed layer, no temporary file; opening the database creates one if it is
+absent, as every command does. It is the mitigation §3 owes the operator: a
+value the cascade composed from three profiles reads exactly like a value one
+profile wrote, so each manifest key is printed beside the profiles in the chain
+that declare it.
+Per key, not per member — naming the profile behind one merged slot is
+provenance the cascade does not keep, and adding it is a change to `Resolve`
+rather than to its caller. Like `install` and unlike `boot`, `show` accepts an
+`abstract` profile: the abstract root is the profile most worth reading.
+`--scope` reports what `boot` would work in rather than changing anything,
+because scope is an instance value and no part of the resolved manifest depends
+on it; a scope that does not resolve is reported on stderr rather than refused,
+since the containment guard that refusal exists for guards a write `show` never
+makes. There is no `--provider` yet: `spec.settings` is one document rather
+than one per provider, so there is nothing for it to select.
 
 Profile authoring is out of MVP scope — the operator writes rows directly, or
 via a later `cairn profile import/export`. That command is a convenience, not a

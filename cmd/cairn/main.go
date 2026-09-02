@@ -31,6 +31,7 @@ const usage = `cairn assembles files and writes them into a directory.
 usage:
   cairn boot <binding|profile> [flags]      materialize a boot directory, print its path
   cairn install <binding|profile> [flags]   render the installed layer
+  cairn show <binding|profile> [flags]      print what the profile resolves to
 
 flags for boot:
   --scope <path|alias>   the directory the instance works in; overrides the binding's
@@ -41,11 +42,19 @@ flags for install:
   --check                re-render, diff against disk, report drift, write nothing
   --root <path>          where the installed layer goes; defaults to the home directory
 
-flags for both:
+flags for show:
+  --scope <path|alias>   the scope to report, as boot would resolve it; overrides the binding's
+
+flags for all three:
   --db <path>            the database; defaults to $CAIRN_DB, else $XDG_CONFIG_HOME/agents/cairn.db
 
 cairn install is human-executed. Every agent working under ~/.claude that runs
 it rewrites its own live configuration mid-session.
+
+cairn show renders nothing — no boot directory, no installed layer. An extends
+chain composes keyed collections member by member, so what a profile resolves
+to is held in no one row, and this is where it is read. Opening the database
+still creates one if it is absent, as every command does.
 `
 
 func main() {
@@ -76,6 +85,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runBoot(ctx, args[1:], stdout, stderr)
 	case "install":
 		return runInstall(ctx, args[1:], stdout, stderr)
+	case "show":
+		return runShow(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		_, _ = fmt.Fprint(stdout, usage)
 		return nil
