@@ -95,10 +95,18 @@ for the harness's own `@AGENTS.md` import — which a template has to be able to
 pass through untouched, since that is how `CLAUDE.md` points at the file beside
 it.
 
-A marker Cairn cannot act on — an unknown verb, a missing name, a value that is
-not one of the six — is a **refusal**, because leaving it would plant the
-marker's own text where an agent reads it. Everything outside `cairn:` is left
-alone.
+A marker Cairn cannot parse is a **refusal**, and nothing is written: a verb
+that is not `slot` or `value`, a body that is not exactly a verb and one name —
+no name written in it at all, or more than one — and a `cairn:value` naming
+something outside the six. Leaving one in place would plant the marker's own
+text where an agent reads it. Everything outside `cairn:` is left alone.
+
+A slot *name* is not checked against the manifest, so a marker naming a slot
+that was never declared is a different case and is not a refusal: it substitutes
+nothing. An undeclared slot may be one you are about to add; an unknown value
+can only be a typo. A `cairn:slot` whose slot *was* declared and then resolved
+empty or failed substitutes nothing too. `cairn boot` reports both on stderr,
+so the operator can tell a missing block from one they removed.
 
 **Slots are where the leverage is.** They resolve at materialization, so they
 carry live state rather than a paragraph that went stale a month ago. The seeded
