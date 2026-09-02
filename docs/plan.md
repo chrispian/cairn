@@ -8,13 +8,6 @@ This is where design decisions land. Earlier documents — the spec under
 implementation — are superseded and are not in the git history of this repo.
 The prior tree is archived at `~/dev/projects/cairn-prior-20260825/`.
 
-Two other prose files live here and are not superseded: `examples/README.md`
-and `testdata/goldens/README.md`. Neither decides anything — they describe what
-the code does for the operator running it — but both restate rules that are
-settled here, so **a rule changed in this file is changed in them in the same
-commit**. That has already gone wrong once: the cascade rule below was replaced
-and `examples/README.md` went on stating the retired one.
-
 ---
 
 ## 1. What Cairn is
