@@ -1,0 +1,13 @@
+@OUT@/install/base/.claude/AGENTS.md
+@OUT@/install/base/.claude/CLAUDE.md
+@OUT@/install/base/.claude/settings.json
+@OUT@/install/base/.claude/skills/capture-decision/SKILL.md
+@OUT@/install/base/.claude/skills/capture-followup/SKILL.md
+@OUT@/install/base/.claude/skills/capture-investigation/SKILL.md
+@OUT@/install/base/.claude/skills/capture-limitation/SKILL.md
+@OUT@/install/base/.claude/skills/commit/SKILL.md
+@OUT@/install/base/.claude/skills/end-of-session/SKILL.md
+@OUT@/install/base/.claude/skills/pull-request/SKILL.md
+@OUT@/install/base/.claude/skills/push/SKILL.md
+@OUT@/install/base/.claude/skills/release/SKILL.md
+@OUT@/install/base/.claude/skills/tangent/SKILL.md
