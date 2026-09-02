@@ -553,10 +553,12 @@ func instanceValues(values map[string]string) map[string]string {
 	return out
 }
 
-// reportUnfilledMarkers prints every slot marker that stood for nothing: one
-// naming a slot the manifest never declared, and one whose slot resolved to
-// nothing. Both leave a template shorter than it reads, and neither is visible
-// in the file that results.
+// reportUnfilledMarkers prints every marker whose slot was declared and then
+// filled nothing — it failed to resolve, or it resolved empty. It leaves the
+// template shorter than it reads, and nothing in the resulting file says so.
+//
+// A marker naming a slot no profile declared is not reported. See
+// [github.com/chrispian/cairn/bootdir.Unfilled] for why the two are told apart.
 //
 // It is a report and not a refusal, matching the slot rule it follows from: a
 // section that is not there is degraded context and the agent asks its tools.

@@ -389,13 +389,17 @@ a hardcoded `@AGENTS.md` aimed at a file that is not rendered resolves to
 nothing, silently, with no diagnostic from the harness at all. Both are
 templates now, and a pointer a profile declares is one a profile can keep true.
 
-**A marker that filled nothing is omitted, and reported on stderr.** That covers
-both a slot that resolved to nothing and a slot the manifest never declared. The
-report exists so an operator can diagnose a missing block, not so Cairn can
-judge the result. A marker in Cairn's own namespace that Cairn cannot act on —
-an unknown verb, a missing name, a value that is not one of the six — is a
-**refusal**, because leaving it would plant the marker's own text in a file an
-agent reads.
+**A marker whose slot was declared and then filled nothing is omitted, and
+reported on stderr** — whether the slot failed to resolve or resolved empty. A
+marker naming a slot the manifest never declared is omitted too, and says
+nothing: the warning exists to debug a block that was supposed to fill, and one
+template can carry every marker any profile might fill, so a line per marker a
+profile does not use would bury the one line that matters. The report exists so
+an operator can diagnose a missing block, not so Cairn can judge the result. A
+marker in Cairn's own namespace that Cairn cannot act on — an unknown verb, a
+body that is not exactly a verb and one name, a value that is not one of the
+six — is a **refusal**, because leaving it would plant the marker's own text in
+a file an agent reads.
 
 Substitution does not look at where in a document a marker sits: one inside a
 fenced code block is substituted like any other, so a template documenting this

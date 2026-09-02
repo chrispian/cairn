@@ -102,11 +102,15 @@ something outside the six. Leaving one in place would plant the marker's own
 text where an agent reads it. Everything outside `cairn:` is left alone.
 
 A slot *name* is not checked against the manifest, so a marker naming a slot
-that was never declared is a different case and is not a refusal: it substitutes
-nothing. An undeclared slot may be one you are about to add; an unknown value
-can only be a typo. A `cairn:slot` whose slot *was* declared and then resolved
-empty or failed substitutes nothing too. `cairn boot` reports both on stderr,
-so the operator can tell a missing block from one they removed.
+that was never declared is a different case and is not a refusal: it renders
+nothing and says nothing. An undeclared slot may be one you are about to add; an
+unknown value can only be a typo. A `cairn:slot` whose slot *was* declared and
+then resolved empty or failed renders nothing too — but that one `cairn boot`
+reports on stderr, so the operator can tell a missing block from one they
+removed. The warning exists to debug a slot that was *supposed* to fill, and one
+shared template can carry every marker any profile might fill: a line for every
+marker a profile does not use would be noise deep enough to bury the one line
+that matters.
 
 **Slots are where the leverage is.** They resolve at materialization, so they
 carry live state rather than a paragraph that went stale a month ago. The seeded
@@ -132,7 +136,8 @@ does one that resolves empty. Cairn writes no sentence of its own into an
 agent's context, and a section that says "unavailable" is one nobody declared
 and nobody can correct. An agent that needs the data asks the tool, which is
 current where a planted file is a snapshot. The failure is not lost: it goes to
-**stderr**, where the operator reads, and so does a marker that filled nothing.
+**stderr**, where the operator reads, and so does a marker whose slot was
+declared and filled nothing.
 
 **Put the heading on the slot, not in the template.** `"section": "## Memory"`
 comes back with the content or not at all. Write `## Memory` in the template

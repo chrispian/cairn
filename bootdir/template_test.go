@@ -150,22 +150,50 @@ func TestMarkersAreOneLine(t *testing.T) {
 	}
 }
 
-// TestUnfilledReportsOnlySlots covers what the operator hears about. A slot that
-// filled nothing left the document shorter than it reads and is worth saying;
-// an empty value is a fact about the instance — a boot with no scope — and is
-// not.
+// TestUnfilledReportsOnlySlots covers what the operator hears about. A declared
+// slot that filled nothing left the document shorter than it reads and is worth
+// saying; an empty value is a fact about the instance — a boot with no scope —
+// and is not.
 func TestUnfilledReportsOnlySlots(t *testing.T) {
-	const template = "<!-- cairn:slot present -->\n<!-- cairn:slot absent -->\n<!-- cairn:value scope -->\n"
+	const template = "<!-- cairn:slot filled -->\n<!-- cairn:slot empty -->\n<!-- cairn:value scope -->\n"
 
-	unfilled, err := Unfilled(template, map[string]string{"present": "## Here\n\ncontent"})
+	// "scope" is declared as a slot as well as being a value name. Without it
+	// the value marker names nothing in sections, reads as undeclared under the
+	// two-value lookup, and stays silent whether or not the verb check above is
+	// there — which would leave this test's own claim pinned by nothing.
+	unfilled, err := Unfilled(template, map[string]string{
+		"filled": "## Here\n\ncontent",
+		"empty":  "",
+		"scope":  "",
+	})
 	if err != nil {
 		t.Fatalf("Unfilled(): %v", err)
 	}
-	if len(unfilled) != 1 || unfilled[0].Name != "absent" {
-		t.Fatalf("Unfilled() = %v, want only the slot that filled nothing", unfilled)
+	if len(unfilled) != 1 || unfilled[0].Name != "empty" {
+		t.Fatalf("Unfilled() = %v, want only the declared slot that filled nothing", unfilled)
 	}
-	if unfilled[0].Text != "<!-- cairn:slot absent -->" {
+	if unfilled[0].Text != "<!-- cairn:slot empty -->" {
 		t.Errorf("the report does not quote the marker: %q", unfilled[0].Text)
+	}
+}
+
+// TestUnfilledIsSilentAboutASlotNobodyDeclared is the property that lets one
+// shared template carry every marker any profile might fill.
+//
+// A name absent from sections names a slot this manifest never declared, which
+// is not a fault: the profile simply does not use that block. Reporting it would
+// print a line per unused marker and bury the case the warning exists for — a
+// slot that was supposed to fill and did not. Distinguishing the two rests
+// entirely on the two-value lookup, since a single-value one reads "" for both.
+func TestUnfilledIsSilentAboutASlotNobodyDeclared(t *testing.T) {
+	const template = "<!-- cairn:slot declared -->\n<!-- cairn:slot undeclared -->\n"
+
+	unfilled, err := Unfilled(template, map[string]string{"declared": ""})
+	if err != nil {
+		t.Fatalf("Unfilled(): %v", err)
+	}
+	if len(unfilled) != 1 || unfilled[0].Name != "declared" {
+		t.Fatalf("Unfilled() = %v, want only the declared slot", unfilled)
 	}
 }
 

@@ -122,10 +122,10 @@ func parseMarker(text, body string) (Marker, error) {
 // into the template is exactly where it would have been lost — see
 // [github.com/chrispian/cairn/slots.Sections].
 //
-// A marker naming a slot the manifest never declared substitutes nothing, and
-// the caller reports it. It is not an error here because it is the same
-// omission as a slot that resolved to nothing, and the file is the same file
-// either way.
+// A marker naming a slot the manifest never declared substitutes nothing too.
+// It is not an error here because the file is the same file either way, and
+// substitution has no reason to tell the two apart. The caller does have one,
+// and does tell them apart — see [Unfilled].
 //
 // A value marker becomes that value, which may legitimately be empty — a boot
 // with no declared scope substitutes nothing and the template reads as though
@@ -149,9 +149,28 @@ func Substitute(text string, sections, values map[string]string) (string, error)
 	return text, nil
 }
 
-// Unfilled returns the markers in text that stood for nothing: a slot the
-// manifest did not declare, and a slot that resolved to nothing. Both are
-// reported so an operator can tell a missing block from one they removed.
+// Unfilled returns the markers in text whose slot was declared and then filled
+// nothing — it failed to resolve, or resolved empty. An operator hears about
+// those because a block they meant to have is missing from the file.
+//
+// A marker naming a slot that is absent from sections is skipped in silence.
+// The key set of sections is the declared set —
+// [github.com/chrispian/cairn/slots.Sections] writes a key for every slot the
+// manifest declared, the empty string included for the ones that produced
+// nothing — so an absent key means nobody declared that slot, and that is not a
+// fault to report. One template can carry every marker any profile might fill,
+// and warning on each marker a profile does not use would bury the one case
+// this exists to surface.
+//
+// The lookup is two-valued for exactly that reason. A single-value lookup
+// returns "" for both cases and cannot tell them apart.
+//
+// The exception is an assembly run with [github.com/chrispian/cairn/slots.Options]
+// Deterministic set, which drops the cmd and http slots before they resolve: their
+// names are absent from sections though the manifest declared them. Nothing hands
+// such a map here — the installed layer reports the slots it skipped itself — and
+// anything that starts to would read "undeclared" off a slot that was merely not
+// run.
 //
 // Values are not reported. An empty value is a fact about the instance — a boot
 // with no scope — rather than something that went wrong.
@@ -165,7 +184,8 @@ func Unfilled(text string, sections map[string]string) ([]Marker, error) {
 		if marker.Verb != MarkerVerbSlot {
 			continue
 		}
-		if sections[marker.Name] == "" {
+		section, declared := sections[marker.Name]
+		if declared && section == "" {
 			out = append(out, marker)
 		}
 	}

@@ -278,6 +278,43 @@ func TestSectionsDropWhatProducedNothing(t *testing.T) {
 	}
 }
 
+// TestSectionsKeysAreTheDeclaredSlots pins the invariant a caller outside this
+// package now reads meaning into: every declared slot gets a key, including the
+// ones that produced nothing.
+//
+// bootdir.Unfilled distinguishes a slot the manifest declared and that then
+// filled nothing — worth warning about — from a marker naming a slot nobody
+// declared, which is not, and it can only do so because an absent key means
+// undeclared and nothing else. Drop a key here for a slot that produced nothing
+// and that warning goes silent two stages later with nothing to point at it.
+// TestSectionsDropWhatProducedNothing asserts over the keys it finds and so
+// would pass on an empty map; this asserts the keys are there.
+func TestSectionsKeysAreTheDeclaredSlots(t *testing.T) {
+	res := &agentcontext.ContextResult{Slots: []agentcontext.SlotResult{
+		{Name: "filled", Section: "## Filled", Content: "content"},
+		{Name: "failed", Section: "## Failed", Content: "partial", Err: errors.New("unreachable")},
+		{Name: "empty", Section: "## Empty", Content: ""},
+		{Name: "blank", Section: "## Blank", Content: "  \n\t"},
+		{Name: "sectionless", Content: "bare"},
+	}}
+
+	got, err := slots.Sections(res)
+	if err != nil {
+		t.Fatalf("slots.Sections(): %v", err)
+	}
+	for _, name := range []string{"filled", "failed", "empty", "blank", "sectionless"} {
+		if _, declared := got[name]; !declared {
+			t.Errorf("slots.Sections() has no key for the declared slot %q: %v", name, got)
+		}
+	}
+	if _, declared := got["never-declared"]; declared {
+		t.Error("slots.Sections() invented a key for a slot the manifest did not declare")
+	}
+	if len(got) != 5 {
+		t.Errorf("slots.Sections() returned %d keys for 5 declared slots: %v", len(got), got)
+	}
+}
+
 // TestSectionsRefuseTwoSlotsOfOneName covers the ambiguity a template makes
 // reachable. A marker addresses a slot by name, so a repeated name names two
 // sections and cairn cannot say which the marker meant.
