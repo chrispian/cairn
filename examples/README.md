@@ -63,18 +63,6 @@ Pass `--json` and stdout is one JSON object describing the boot instead of the
 bare path — the scope, the settings file to promote, and how the harness wants
 to be opened. That is what a launcher reads; see §5.
 
-`boot.sh` is the wrapper that turns the boot into a session:
-
-```bash
-./examples/boot.sh eng                     # boot, then launch claude in it
-./examples/boot.sh eng --scope ~/dev/nanite  # override the binding's scope
-PRINT_ONLY=1 ./examples/boot.sh eng        # just the path
-```
-
-It reads `--json` and needs `jq`. It used to pull the scope out of the rendered
-`AGENTS.md` with `sed`, which made a launcher's access grant depend on a
-marker's position in a document written to be re-authored.
-
 What lands:
 
 ```
@@ -343,15 +331,15 @@ It is the one key cairn contributes to that document. Everything else under
 `spec.settings` is still the operator's own, unread — see the section below for
 the tier that decides whether the harness honours any of it.
 
-### The settings tier, and why `boot.sh` passes `--settings`
+### The settings tier, and why a launcher passes `--settings`
 
 A `settings.json` that merely sits in the boot directory is read as
 **`projectSettings`** — the untrusted tier, because a repo can control it.
 Verbatim from Claude Code 2.1.246:
 
 ```
-settings defaultMode "auto" ignored — only policy/user/flag settings may grant
-auto mode (projectSettings and localSettings are repo-controllable)
+settings defaultMode "auto" ignored — only policy/user/flag settings may
+grant auto mode (projectSettings and localSettings are repo-controllable)
 ```
 
 So a profile declaring `defaultMode: auto` validates, renders, plants — and is
@@ -359,7 +347,8 @@ then **silently downgraded** at launch with a warning. The same rule governs
 `autoMode` classifier rules.
 
 Passing `--settings <boot-dir>/.claude/settings.json` promotes the file to
-`flagSettings`, which is trusted. `boot.sh` does this.
+`flagSettings`, which is trusted. That is what `settings_path` in the `--json`
+report is for.
 
 This is deliberately the launcher's job. Cairn writes the file and describes
 it; whoever owns the invocation decides what tier it lands in. Cairn taking it
@@ -374,7 +363,7 @@ launcher that passes `--settings` — which is every launcher, because
 `--settings` is what keeps `defaultMode` from being downgraded in the first
 place.
 
-`boot.sh` therefore passes `--settings` and nothing else. `cairn boot --json`
+A launcher therefore passes `--settings` and nothing else. `cairn boot --json`
 still reports `project_dir_arg`, because a provider that grants directories on
 the command line rather than in a config file will need it — Codex does — and
 that is a fact about the provider for a launcher to act on, not a flag Cairn
@@ -441,6 +430,13 @@ moved. With it, stdout is one JSON object and nothing else, so
 }
 ```
 
+It exists because the alternative was scraping. An earlier launcher pulled the
+scope out of the rendered `AGENTS.md` with `sed`, which made a launcher's
+access grant depend on a marker's position in a document written to be
+re-authored. That worked, and it worked by luck: one template edit moving the
+line would have returned an empty scope with no error, which is a launcher
+granting nothing and saying so nowhere.
+
 Six keys, flat, `snake_case`, and **every one of them is emitted on every
 boot** — the key set is the contract, and a key that came and went would make a
 consumer handle two shapes for one meaning.
@@ -462,8 +458,8 @@ null and each says something different:
 **`scope` and `settings_path` are not equivalent, and only one implication
 holds.** The scope is itself one of the granted directories, and one directory
 to grant is enough on its own to render the settings document — so a non-null
-`scope` guarantees a non-null `settings_path`, which is the invariant
-`boot.sh` rests on when it drops `--add-dir`. The reverse is false: a profile
+`scope` guarantees a non-null `settings_path`, which is the invariant a
+launcher rests on when it drops `--add-dir`. The reverse is false: a profile
 that grants a directory it is not scoped to renders the document with no scope
 at all. Read the key; do not infer it.
 
@@ -489,10 +485,36 @@ and with the placeholder **left standing**. Both halves are deliberate:
 
 There is no `version` field, and the rule that replaces it is: **new keys are
 free; renaming or removing one is breaking and must update every consumer in
-the same change.** There is one consumer today — `examples/boot.sh` — and
-Tachyon is the one expected next; both live in this portfolio, which is what
-makes the rule enforceable at all. A version number would not have stopped a
-rename; the sentence might.
+the same change.** That does not rest on how many consumers there are to
+break, and it holds at none, because the cost of a rename lands on whoever
+adopts the contract next and the two directions do not cost the same. Keeping
+a key that has already been published costs a line in a struct. Renaming one
+hands a consumer still reading the old name a `null` where a path used to be —
+not a parse error, but a session opened without `--settings`: no access grant,
+no trusted tier, and nothing reporting either. A version number would not have
+stopped a rename; the sentence might.
+
+Minimal shell, at a prompt. It needs `jq` — a JSON parser for a document with
+named keys, in place of a regular expression over prose:
+
+```bash
+BOOT="$(cairn boot eng --json)"   # stdout is the object, stderr still yours
+BOOT_DIR="$(jq -r '.boot_dir // empty' <<<"$BOOT")"
+SETTINGS="$(jq -r '.settings_path // empty' <<<"$BOOT")"
+[ -n "$BOOT_DIR" ] || { echo "cairn reported no boot directory" >&2; exit 70; }
+
+set --
+[ -n "$SETTINGS" ] && set -- "$@" --settings "$SETTINGS"
+cd "$BOOT_DIR" && exec claude "$@"
+```
+
+**`// empty` on every read, and it is not decoration.** `jq -r` prints the four
+characters `null` for a null value, so a read without it hands back `null` as
+though it were a path — `--settings null`, which is exactly the argv the null
+rule above exists to prevent, arriving through the one reader that turns the
+null back into a string. Building the arguments with `set --` rather than
+interpolating a string is the other half: a settings path with a space in it
+stays one argument.
 
 Minimal Go, engine-side:
 
@@ -546,8 +568,8 @@ planting contract Nanite does. **Nothing calls it**, including Cairn itself,
 which uses its own `PlantFiles` because `plant.Spec` carries no file modes and
 a skill's executable bit is load-bearing.
 
-For a launcher that shells out — Tachyon, `boot.sh`, you at a prompt — it is
-irrelevant: it is a Go interface, and the process boundary is the seam. It only
-matters if something imports Cairn as a library and wants to plant *through*
-the contract it already speaks. It costs ~40 lines and nothing at runtime, so
-it stays until something either uses it or clearly never will.
+For a launcher that shells out — Tachyon, a shell script, you at a prompt — it
+is irrelevant: it is a Go interface, and the process boundary is the seam. It
+only matters if something imports Cairn as a library and wants to plant
+*through* the contract it already speaks. It costs ~40 lines and nothing at
+runtime, so it stays until something either uses it or clearly never will.

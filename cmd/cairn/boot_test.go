@@ -168,13 +168,13 @@ func TestBootEndToEnd(t *testing.T) {
 	}
 }
 
-// TestBootJSONDescribesTheBootForALauncher is the contract examples/boot.sh and
-// Tachyon read, asserted as a document rather than as fields on a struct: a
-// launcher unmarshals bytes, so bytes are what this checks.
+// TestBootJSONDescribesTheBootForALauncher asserts the contract a launcher
+// reads, as a document rather than as fields on a struct: a launcher
+// unmarshals bytes, so bytes are what this checks.
 //
-// It replaces a scrape. The launcher used to pull the scope out of the rendered
-// AGENTS.md with sed, which made a launcher's access grant depend on a marker's
-// position in a document written to be re-authored.
+// It replaces a scrape. The reference launcher used to pull the scope out of
+// the rendered AGENTS.md with sed, which made a launcher's access grant depend
+// on a marker's position in a document written to be re-authored.
 func TestBootJSONDescribesTheBootForALauncher(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
@@ -410,9 +410,9 @@ func TestBootWithoutJSONPrintsTheBarePath(t *testing.T) {
 // Then the same profile with one directory to grant, which is the case that
 // keeps the two nulls from being one fact. They are not equivalent and only
 // one implication holds: a scope is itself a granted directory, so a non-null
-// scope guarantees a settings document — the invariant examples/boot.sh rests
-// on — while a profile granting a directory it is not scoped to renders one
-// with no scope at all.
+// scope guarantees a settings document — the invariant that lets a launcher
+// pass --settings and drop --add-dir — while a profile granting a directory it
+// is not scoped to renders one with no scope at all.
 func TestBootJSONReportsAnAbsentValueAsNull(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()

@@ -15,8 +15,8 @@ import (
 // open the directory cairn just wrote, so that nothing has to read the files
 // inside it to find out.
 //
-// It exists because the alternative was scraping. `examples/boot.sh` used to
-// pull the scope out of the rendered AGENTS.md with sed, which meant a
+// It exists because the alternative was scraping. The reference launcher used
+// to pull the scope out of the rendered AGENTS.md with sed, which meant a
 // launcher's access grant depended on a marker's rendered position in a
 // document whose whole purpose is to be re-authored. The scrape worked; it
 // survived by luck, and a template edit that moved the line would have returned
@@ -24,8 +24,9 @@ import (
 //
 // # The contract
 //
-// Flat and snake_case. The first consumer is a shell script reading one key at
-// a time, and nesting buys nothing at seven.
+// Flat and snake_case. What it has to be cheapest for is a consumer reading
+// one key at a time out of a shell — `jq -r '.settings_path'` — and nesting
+// buys nothing at seven.
 //
 // Every key is emitted on every boot. The key set is the contract: a key that
 // came and went would make a consumer handle two shapes for one meaning, and it
@@ -49,12 +50,16 @@ import (
 //
 // There is no version field, and the reason it is absent is the rule that
 // replaces it: **new keys are free; renaming or removing one is breaking and
-// must update every consumer in the same change.** There is one consumer today
-// — examples/boot.sh — and Tachyon is the one expected next; both are in this
-// portfolio, which is what makes the rule enforceable at all. What prevents
-// silent breakage is not a number a consumer would have to check but a sentence
-// where someone about to rename a field will read it. A version integer would
-// not have stopped the rename.
+// must update every consumer in the same change.** The rule does not rest on
+// how many consumers there are to break, and it holds at none, because the
+// cost of a rename lands on whoever adopts the contract next and the two
+// directions do not cost the same. Keeping a key that has already been
+// published costs a line in this struct. Renaming one hands a consumer still
+// reading the old name a null where a path used to be, which is not a parse
+// error but a session opened without --settings: no access grant, no trusted
+// tier, and nothing reporting either. What prevents that is not a number a
+// consumer would have to check but a sentence where someone about to rename a
+// field will read it. A version integer would not have stopped the rename.
 type bootReport struct {
 	// BootDir is the directory that was written, absolute. It is what stdout
 	// carries without --json, and it is repeated here so the object stands on
