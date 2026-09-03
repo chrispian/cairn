@@ -289,18 +289,124 @@ func TestSubstituteToleratesTheSpellingsAnOperatorWrites(t *testing.T) {
 	}
 }
 
+// TestSubstituteRendersNothingForAValueCairnCannotFill pins what replaced a
+// refusal: a cairn:value naming something outside [ValueNames] substitutes the
+// empty string rather than failing the whole document.
+//
+// The two spellings below are the pair most likely to be guessed wrong later,
+// so both are pinned. Alone on its line, the marker takes the line with it,
+// which is the rule every marker that substitutes nothing follows. Sharing its
+// line with content, the marker goes and nothing else does — the label and the
+// space after the colon are the template's bytes, not cairn's.
+func TestSubstituteRendersNothingForAValueCairnCannotFill(t *testing.T) {
+	for name, tc := range map[string]struct{ template, want string }{
+		"alone on its line":       {"a\n<!-- cairn:value tenant -->\nb\n", "a\nb\n"},
+		"sharing it with a label": {"a\n- tenant: <!-- cairn:value tenant -->\nb\n", "a\n- tenant: \nb\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Substitute(tc.template, nil, map[string]string{"profile": "eng"})
+			if err != nil {
+				t.Fatalf("Substitute(): %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Substitute() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSubstituteFillsAValueOnlyFromValueNames is the guarantee that replaced
+// the parser's refusal, and the one this package cannot afford to lose.
+//
+// Substitution reads a value marker's replacement from [ValueNames] and not
+// from the map it was handed. Written the other way — replacement :=
+// values[name] — the guarantee would rest entirely on every caller keeping its
+// map narrow, and Substitute is exported to any caller at all. The refusal used
+// to make that irrelevant: nothing outside the six parsed, whatever map came
+// with it. This test is the refusal's replacement, so it hands over the most
+// hostile map there is and asserts none of it renders.
+//
+// "mcp" and "settings" are the two that matter. They are manifest keys, one of
+// them is where an MCP server's API keys live, and a template is a document
+// written to be read into a model's context — see secrets_test.go.
+func TestSubstituteFillsAValueOnlyFromValueNames(t *testing.T) {
+	const secret = "sk-live-do-not-render-me"
+	hostile := map[string]string{
+		"mcp":      secret,
+		"settings": secret,
+		"tenant":   "a value nobody declared",
+		"home":     "/Users/someone",
+		"boot_dir": "/tmp/boot",
+		"profile":  "engineer",
+	}
+
+	for name, replacement := range hostile {
+		if fills(name) {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			got, err := Substitute("x: <!-- cairn:value "+name+" -->\n", nil, hostile)
+			if err != nil {
+				t.Fatalf("Substitute(): %v", err)
+			}
+			if got != "x: \n" {
+				t.Errorf("Substitute() = %q, want the marker to have read nothing", got)
+			}
+			if strings.Contains(got, replacement) {
+				t.Errorf("Substitute() rendered a value cairn does not fill: %q", got)
+			}
+		})
+	}
+	// The same map, and the one name in it cairn does fill, so the assertions
+	// above are not passing because nothing renders at all.
+	got, err := Substitute("x: <!-- cairn:value profile -->\n", nil, hostile)
+	if err != nil {
+		t.Fatalf("Substitute(): %v", err)
+	}
+	if got != "x: engineer\n" {
+		t.Errorf("Substitute() = %q, want the declared value to have rendered", got)
+	}
+}
+
+// TestSubstituteTreatsAKnownEmptyValueTheSameWay is the other half of that
+// convergence, and the reason the case above needs no code of its own. A value
+// cairn knows and did not fill renders exactly as one it has never heard of,
+// line-taking included.
+func TestSubstituteTreatsAKnownEmptyValueTheSameWay(t *testing.T) {
+	const template = "a\n<!-- cairn:value scope -->\nb\n"
+
+	for name, values := range map[string]map[string]string{
+		"declared and empty": {"scope": ""},
+		"not in the map":     {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Substitute(template, nil, values)
+			if err != nil {
+				t.Fatalf("Substitute(): %v", err)
+			}
+			if want := "a\nb\n"; got != want {
+				t.Errorf("Substitute() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // TestSubstituteRefusesAMarkerItCannotActOn covers every malformed form.
 //
 // A marker in cairn's own namespace that cairn does not understand is refused
 // rather than left in place. Leaving it would plant the marker's own text in a
 // file an agent reads, which is the one outcome worse than failing.
+//
+// What is left here is a marker with no meaning at all: a verb cairn has not
+// got, and a body that is not a verb and one name. A name cairn cannot fill is
+// not on this list — it means one thing, and the file says it by rendering
+// nothing. See TestSubstituteRendersNothingForAValueCairnCannotFill.
 func TestSubstituteRefusesAMarkerItCannotActOn(t *testing.T) {
 	for name, marker := range map[string]string{
 		"no verb and no name":  "<!-- cairn: -->",
 		"a verb and no name":   "<!-- cairn:slot -->",
 		"a verb cairn has not": "<!-- cairn:section repo -->",
 		"three words":          "<!-- cairn:slot repo extra -->",
-		"a value that is not":  "<!-- cairn:value tenant -->",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Substitute(marker, nil, nil); !errors.Is(err, ErrMarker) {
@@ -347,17 +453,18 @@ func TestMarkersAreOneLine(t *testing.T) {
 	}
 }
 
-// TestUnfilledReportsOnlySlots covers what the operator hears about. A declared
-// slot that filled nothing left the document shorter than it reads and is worth
-// saying; an empty value is a fact about the instance — a boot with no scope —
-// and is not.
-func TestUnfilledReportsOnlySlots(t *testing.T) {
+// TestUnfilledIsSilentAboutAValueCairnKnows covers what the operator hears
+// about. A declared slot that filled nothing left the document shorter than it
+// reads and is worth saying; a value cairn knows and did not fill is a fact
+// about the instance — a boot with no scope — and is not.
+func TestUnfilledIsSilentAboutAValueCairnKnows(t *testing.T) {
 	const template = "<!-- cairn:slot filled -->\n<!-- cairn:slot empty -->\n<!-- cairn:value scope -->\n"
 
 	// "scope" is declared as a slot as well as being a value name. Without it
 	// the value marker names nothing in sections, reads as undeclared under the
-	// two-value lookup, and stays silent whether or not the verb check above is
-	// there — which would leave this test's own claim pinned by nothing.
+	// two-value lookup, and stays silent whether or not the verb switch above
+	// sends it anywhere — which would leave this test's own claim pinned by
+	// nothing.
 	unfilled, err := Unfilled(template, map[string]string{
 		"filled": "## Here\n\ncontent",
 		"empty":  "",
@@ -394,9 +501,35 @@ func TestUnfilledIsSilentAboutASlotNobodyDeclared(t *testing.T) {
 	}
 }
 
-// TestValueNamesIsClosedAndSorted pins the set a marker may name. It is closed
-// so that an unknown value can be refused rather than silently substituting
-// nothing, and sorted so a diagnostic lists it the same way twice.
+// TestUnfilledReportsAValueCairnCannotFill is the value rule, which runs the
+// opposite way to the slot rule beside it and for the same reason.
+//
+// A slot name absent from the manifest is a block this profile does not use, so
+// it is silent. A value name outside [ValueNames] is one no profile will ever
+// fill — cairn owns that set and it is the same for every profile — so it is
+// reported. The marker renders nothing either way; only the line on stderr
+// tells the two apart.
+func TestUnfilledReportsAValueCairnCannotFill(t *testing.T) {
+	const template = "<!-- cairn:value profile -->\n<!-- cairn:value tenant -->\n<!-- cairn:slot undeclared -->\n"
+
+	unfilled, err := Unfilled(template, nil)
+	if err != nil {
+		t.Fatalf("Unfilled(): %v", err)
+	}
+	if len(unfilled) != 1 || unfilled[0].Name != "tenant" {
+		t.Fatalf("Unfilled() = %v, want only the value cairn cannot fill", unfilled)
+	}
+	if unfilled[0].Verb != MarkerVerbValue {
+		t.Errorf("the marker's verb is %q, and the caller words its line from that", unfilled[0].Verb)
+	}
+	if unfilled[0].Text != "<!-- cairn:value tenant -->" {
+		t.Errorf("the report does not quote the marker: %q", unfilled[0].Text)
+	}
+}
+
+// TestValueNamesIsClosedAndSorted pins the set cairn populates. It is closed
+// because it is the set a report tells a fillable name from, and sorted so a
+// diagnostic lists it the same way twice.
 func TestValueNamesIsClosedAndSorted(t *testing.T) {
 	names := ValueNames()
 	if !slices.IsSorted(names) {
@@ -406,8 +539,8 @@ func TestValueNamesIsClosedAndSorted(t *testing.T) {
 	if !slices.Equal(names, want) {
 		t.Errorf("ValueNames() = %v, want %v", names, want)
 	}
-	// A fresh slice, so a caller cannot shrink the set an unknown name is
-	// checked against.
+	// A fresh slice, so a caller cannot shrink the set a name is reported
+	// against.
 	names[0] = "rewritten"
 	if ValueNames()[0] == "rewritten" {
 		t.Error("ValueNames() returns a slice a caller can rewrite")

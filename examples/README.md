@@ -98,21 +98,29 @@ pass through untouched, since that is how `CLAUDE.md` points at the file beside
 it.
 
 A marker Cairn cannot parse is a **refusal**, and nothing is written: a verb
-that is not `slot` or `value`, a body that is not exactly a verb and one name —
-no name written in it at all, or more than one — and a `cairn:value` naming
-something outside the six. Leaving one in place would plant the marker's own
-text where an agent reads it. Everything outside `cairn:` is left alone.
+that is not `slot` or `value`, and a body that is not exactly a verb and one
+name — no name written in it at all, or more than one. Leaving one in place
+would plant the marker's own text where an agent reads it. Everything outside
+`cairn:` is left alone.
 
-A slot *name* is not checked against the manifest, so a marker naming a slot
-that was never declared is a different case and is not a refusal: it renders
-nothing and says nothing. An undeclared slot may be one you are about to add; an
-unknown value can only be a typo. A `cairn:slot` whose slot *was* declared and
-then resolved empty or failed renders nothing too — but that one `cairn boot`
-reports on stderr, so the operator can tell a missing block from one they
-removed. The warning exists to debug a slot that was *supposed* to fill, and one
-shared template can carry every marker any profile might fill: a line for every
-marker a profile does not use would be noise deep enough to bury the one line
-that matters.
+Neither *name* is checked before rendering, so a marker naming a slot that was
+never declared, or a `cairn:value` outside the six, is not a refusal: it renders
+nothing. What Cairn *says* about the two differs, because the two sets belong to
+different people. The slot set is yours, so a marker for a block this profile
+does not declare is ordinary and Cairn says nothing about it. The six values are
+Cairn's, so a name outside them is one nothing will ever fill: **`boot` and
+`install` both name it on stderr**, with the six beside it. `install --check`
+names it too, and needs to: a template emptied by a marker Cairn cannot fill
+renders no file at all, and into a root that never held that file there is
+nothing on disk for the check to call an orphan, so it reports "In sync" over a
+pointer that now includes nothing. (Empty a template that *was* installed and
+the check does catch it — the file becomes an orphan and the check fails.) A
+`cairn:slot` whose slot *was* declared and then resolved
+empty or failed renders nothing too, and is reported the same way, so you can
+tell a missing block from one you removed. The warning exists to debug a marker
+that was *supposed* to fill, and one shared template can carry every marker any
+profile might fill: a line for every marker a profile does not use would be
+noise deep enough to bury the one line that matters.
 
 **Slots are where the leverage is.** They resolve at materialization, so they
 carry live state rather than a paragraph that went stale a month ago. The seeded

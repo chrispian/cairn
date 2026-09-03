@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chrispian/cairn/bootdir"
 	"github.com/chrispian/cairn/profile"
 	"github.com/chrispian/cairn/scope"
 	"github.com/chrispian/cairn/slots"
@@ -381,6 +382,91 @@ func TestAFailedSlotNamesWhatTheOperatorWrote(t *testing.T) {
 	}
 }
 
+// TestAValueCairnCannotFillIsRenderedAwayAndReported is the end of the marker
+// rule an operator meets: a cairn:value naming something outside the six is not
+// a refusal any more. The boot directory is written, the marker's place is
+// empty, and the operator hears about it on stderr.
+//
+// Refusing was the old behaviour and it does not survive one template serving
+// every profile: a single word in a shared document decided whether anything
+// was written at all. What replaces it has to hold three things at once, which
+// is why they are asserted off the file rather than off the reporter — the
+// unknown value leaves its line's other content alone, the known value that is
+// empty for this instance renders the same way and is *not* reported, and the
+// line naming the unknown one carries both the destination and the set it
+// missed.
+//
+// The reviewer profile is booted rather than the engineer because it declares
+// no scope, which is what makes "scope" a known value with nothing in it.
+func TestAValueCairnCannotFillIsRenderedAwayAndReported(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	reviewer, err := st.Profile(ctx, "reviewer")
+	if err != nil {
+		t.Fatalf("load the profile: %v", err)
+	}
+	reviewer.Spec["templates"] = json.RawMessage(`{
+		"AGENTS.md": "# <!-- cairn:value profile -->\n\n- tenant: <!-- cairn:value tenant -->\n- scope: <!-- cairn:value scope -->\n"
+	}`)
+	if err := st.PutProfile(ctx, *reviewer); err != nil {
+		t.Fatalf("put the profile: %v", err)
+	}
+	_ = st.Close()
+
+	var stdout, stderr bytes.Buffer
+	if err := run(ctx, []string{
+		"boot", "reviewer", "--db", dbPath,
+		"--boot-root", filepath.Join(home, "runtime"), "--session", "s1",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("boot: %v\nstderr: %s", err, stderr.String())
+	}
+
+	// Both markers rendered nothing and neither took its line: each shares one
+	// with a label, and the trailing space after the colon is the template's.
+	agents := read(t, strings.TrimSpace(stdout.String()), "AGENTS.md")
+	if want := "# reviewer\n\n- tenant: \n- scope: \n"; agents != want {
+		t.Errorf("AGENTS.md is\n%q\nwant\n%q", agents, want)
+	}
+	if strings.Contains(agents, "cairn:") {
+		t.Errorf("AGENTS.md carries a marker's own text:\n%s", agents)
+	}
+
+	report := stderr.String()
+	for _, want := range []string{
+		`value "tenant"`, // the name that missed the set
+		"AGENTS.md",      // the file it missed it in
+		`the values cairn fills are "binding", "model", "profile", "provider", "scope", "session"`,
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("the report does not carry %q:\n%s", want, report)
+		}
+	}
+	// The instance has no scope, and that is a fact about the instance rather
+	// than a fault. Reporting it would put a line on stderr for every boot of
+	// every unscoped profile.
+	//
+	// The test is on the diagnostic line and not on the word, because the line
+	// naming the set carries every value name including this one. That line is
+	// a listing; a line reading `value "scope"` would be a finding.
+	if strings.Contains(report, `value "scope"`) {
+		t.Errorf("the report names a value cairn knows and did not fill:\n%s", report)
+	}
+	if got := strings.Count(report, "cairn: AGENTS.md: value"); got != 1 {
+		t.Errorf("the report carries %d value lines for one unfillable name, want 1:\n%s", got, report)
+	}
+}
+
 // TestBootRefusals covers the three ways a boot is refused: an abstract
 // profile, a target that names nothing, and a boot directory that would land
 // inside the scope.
@@ -554,6 +640,196 @@ func TestInstall(t *testing.T) {
 	})
 }
 
+// TestInstallReportsAValueCairnCannotFill is the regression the value rule
+// introduced and this closes: `cairn install` never reported an unfilled marker
+// at all, because the parser's refusal used to cover it.
+//
+// The failure it leaves is the one docs/plan.md made the pointer a template to
+// avoid. A template that is nothing but a marker cairn cannot fill renders no
+// bytes, and a template rendering no bytes writes no file — so `.claude/CLAUDE.md`
+// lands holding an include of a `.claude/AGENTS.md` that is not there, and the
+// harness resolves the include to nothing without a word.
+//
+// The root here has never held the instruction file, which is the case a check
+// cannot cover. A check claims the paths its renderers can produce, so a file
+// that stopped rendering into a root that already had it is an orphan and the
+// check exits non-zero — that path is covered by TestInstall's drift subtests.
+// Into a fresh root there is nothing to orphan, and the check says "In sync"
+// with the pointer already dangling. Hence the stderr line, on the check as
+// well as the write.
+//
+// A one-character typo is the whole setup, which is the point: this is not an
+// exotic input.
+func TestInstallReportsAValueCairnCannotFill(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	base, err := st.Profile(ctx, "base")
+	if err != nil {
+		t.Fatalf("load the profile: %v", err)
+	}
+	base.Spec["templates"] = json.RawMessage(`{
+		"AGENTS.md": "<!-- cairn:value sesion -->\n",
+		"CLAUDE.md": "@AGENTS.md\n"
+	}`)
+	if err := st.PutProfile(ctx, *base); err != nil {
+		t.Fatalf("put the profile: %v", err)
+	}
+	_ = st.Close()
+
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"install", "base", "--db", dbPath, "--root", root},
+		{"install", "base", "--db", dbPath, "--root", root, "--check"},
+	} {
+		mode := "write"
+		if args[len(args)-1] == "--check" {
+			mode = "check"
+		}
+		t.Run(mode, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := run(ctx, args, &stdout, &stderr); err != nil {
+				t.Fatalf("install: %v\nstderr: %s", err, stderr.String())
+			}
+			report := stderr.String()
+			// The path the operator will look for the file at, not the
+			// manifest's key for it. ".claude/" is the whole difference and
+			// the whole point.
+			if !strings.Contains(report, `.claude/AGENTS.md: value "sesion"`) {
+				t.Errorf("the report does not name the typo and the file it is in:\n%s", report)
+			}
+			if strings.Contains(report, `: AGENTS.md: value`) {
+				t.Errorf("the report names the manifest's key, not the installed path:\n%s", report)
+			}
+		})
+	}
+	// The file really is missing — the report is not describing a hazard that
+	// did not happen.
+	if _, err := os.Stat(filepath.Join(root, ".claude", "AGENTS.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the instruction file was written after all, so this test proves nothing: %v", err)
+	}
+	if got := read(t, root, ".claude/CLAUDE.md"); got != "@AGENTS.md\n" {
+		t.Errorf(".claude/CLAUDE.md = %q, want the include that now points at nothing", got)
+	}
+}
+
+// TestAMarkerThatWillNotParseNamesWhatTheOperatorEdits is the other half of the
+// two names a report carries, and it is a fence rather than a feature.
+//
+// The unfilled-value line names the path the file lands at, because that is the
+// file an operator goes looking for and does not find. A refusal must not: the
+// render never ran, so ".claude/AGENTS.md" is an output path that this run will
+// never produce, and sending someone to edit a file that does not exist is
+// worse than telling them nothing. What they edit is spec.templates.
+//
+// It is asserted for both commands because only one of them can regress. In a
+// boot directory the manifest key and the written path are the same string, so
+// boot cannot tell the two apart and would not notice if the reporter started
+// using the wrong one.
+func TestAMarkerThatWillNotParseNamesWhatTheOperatorEdits(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	base, err := st.Profile(ctx, "base")
+	if err != nil {
+		t.Fatalf("load the profile: %v", err)
+	}
+	base.Spec["templates"] = json.RawMessage(`{
+		"AGENTS.md": "<!-- cairn:section repo -->\n",
+		"CLAUDE.md": "@AGENTS.md\n"
+	}`)
+	if err := st.PutProfile(ctx, *base); err != nil {
+		t.Fatalf("put the profile: %v", err)
+	}
+	_ = st.Close()
+
+	for name, args := range map[string][]string{
+		"install": {"install", "base", "--db", dbPath, "--root", t.TempDir()},
+		"boot":    {"boot", "base2", "--db", dbPath, "--boot-root", filepath.Join(home, "rt"), "--session", "s1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run(ctx, args, &stdout, &stderr)
+			if err == nil {
+				t.Fatalf("%s accepted a marker it cannot act on\nstderr: %s", name, stderr.String())
+			}
+			if !strings.Contains(err.Error(), `spec.templates "AGENTS.md"`) {
+				t.Errorf("the refusal does not name the manifest key: %v", err)
+			}
+			if strings.Contains(err.Error(), ".claude/AGENTS.md") {
+				t.Errorf("the refusal sends the operator to a path this run never wrote: %v", err)
+			}
+			// Still the diagnostic the marker earned, quoted.
+			if !strings.Contains(err.Error(), "<!-- cairn:section repo -->") {
+				t.Errorf("the refusal does not quote the marker: %v", err)
+			}
+		})
+	}
+}
+
+// TestInstanceValuesCarriesOnlyTheNamesCairnFills pins the composition root's
+// half of the two-mechanism defence.
+//
+// A value marker can only render what this map holds, and this map is built
+// from [bootdir.ValueNames] rather than from what a caller passed. Wiring a new
+// value is exactly the edit that would put a manifest key in here by mistake —
+// "mcp" alongside "model", say, while someone is adding the seventh value — and
+// spec.mcp is where an MCP server's API keys live.
+//
+// Substitution refuses to read a name outside the set as well, so this is the
+// second lock and not the only one. It is asserted anyway: it is one function,
+// it is where the mistake would be made, and a defence nobody tests is a
+// defence that quietly stops being one.
+func TestInstanceValuesCarriesOnlyTheNamesCairnFills(t *testing.T) {
+	const secret = "sk-live-do-not-render-me"
+
+	got := instanceValues(map[string]string{
+		"profile":  "engineer",
+		"mcp":      secret,
+		"settings": secret,
+	})
+
+	for _, name := range []string{"mcp", "settings"} {
+		if _, carried := got[name]; carried {
+			t.Errorf("instanceValues() carries %q, which a template could then name", name)
+		}
+	}
+	if got["profile"] != "engineer" {
+		t.Errorf("instanceValues()[\"profile\"] = %q, want the value it was handed", got["profile"])
+	}
+	// A key for every name cairn fills, and nothing else at all. The count is
+	// the assertion that catches a key added without a name to go with it.
+	for _, name := range bootdir.ValueNames() {
+		if _, ok := got[name]; !ok {
+			t.Errorf("instanceValues() has no key for %q, which cairn declares it fills", name)
+		}
+	}
+	if len(got) != len(bootdir.ValueNames()) {
+		t.Errorf("instanceValues() returned %d keys, want the %d in bootdir.ValueNames()",
+			len(got), len(bootdir.ValueNames()))
+	}
+}
+
 // seed writes the two profiles and the binding the tests above boot.
 func seed(t *testing.T, ctx context.Context, dbPath, skillsDir, scopeDir string) {
 	t.Helper()
@@ -669,8 +945,13 @@ func seed(t *testing.T, ctx context.Context, dbPath, skillsDir, scopeDir string)
 			}`),
 		},
 	}
+	// A concrete profile that adds nothing of its own. `cairn boot` refuses an
+	// abstract profile before it reads a template, so a test about templates
+	// needs one the cascade will actually boot.
+	base2 := profile.Profile{ID: "base2", Extends: "base", Name: "Base, bootable"}
+
 	profiles := []profile.Profile{
-		base, engineer, broken, reviewer, abstractSub, undeclaredSub,
+		base, base2, engineer, broken, reviewer, abstractSub, undeclaredSub,
 		namesSubagent("template"), namesSubagent("plain"), namesSubagent("nosuchprofile"),
 	}
 	for _, p := range profiles {

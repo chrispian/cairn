@@ -17,8 +17,7 @@ const MarkerVerbSlot = "slot"
 const MarkerVerbValue = "value"
 
 // ErrMarker reports a marker cairn cannot act on: it names no verb or no
-// target, it names a verb that is not [MarkerVerbSlot] or [MarkerVerbValue],
-// or it names a value that is not one this instance carries.
+// target, or it names a verb that is not [MarkerVerbSlot] or [MarkerVerbValue].
 //
 // A malformed marker is refused rather than left in place. The cairn: prefix is
 // this package's namespace, so a marker inside it that cairn does not
@@ -55,11 +54,33 @@ type Marker struct {
 	Text string
 }
 
-// ValueNames returns the instance values a template may substitute, sorted.
+// ValueNames returns the instance values cairn populates, sorted. It is both the
+// set cairn can fill and the set [Substitute] will fill from — a value marker
+// naming anything else reads the empty string whatever the caller's map holds.
 //
-// The set is closed and cairn knows every member, which is why a marker naming
-// something else is refused rather than omitted: an undeclared slot might be
-// one an operator means to add, and an unknown value can only be a typo.
+// It is not a gate on what a template may name. A marker naming something
+// outside it renders nothing and is reported, where it was once refused. The
+// old argument was that cairn knows every member, so a name outside the set can
+// only be a typo. That much is still true — the set is global, identical for
+// every profile, and does not vary with what an instance carries. What does not
+// follow is the refusal. Two things argue against it, and neither is about
+// typos:
+//
+// A typo should degrade rather than fail. Refusing lets one word in one
+// document decide whether a boot directory is written at all, and the document
+// it is most likely to be in is the one every profile shares. Nothing else that
+// stood for nothing behaves that way: a slot that failed, one that resolved
+// empty, one no manifest declared — each leaves a gap in the file and the boot
+// carries on. A misspelled value is the same kind of mistake and now gets the
+// same treatment, with a line on stderr because unlike an undeclared slot it
+// can never be deliberate.
+//
+// And a template outlives this list. One written against a cairn that fills a
+// seventh value has to render under a cairn that does not, or the set can never
+// grow without every older template becoming unbootable. Rendering nothing for
+// a name this build has not got is what makes that possible.
+//
+// Sorted so that a diagnostic naming the set names it the same way twice.
 //
 // Deliberately absent: the boot directory's own path and the operator's home.
 // Both are absolute paths into one machine rather than facts about a profile,
@@ -67,6 +88,17 @@ type Marker struct {
 // reads it already knows.
 func ValueNames() []string {
 	return []string{"binding", "model", "profile", "provider", "scope", "session"}
+}
+
+// fills reports whether name is one cairn populates.
+//
+// It is one predicate with two callers on purpose. [substituteLine] asks it
+// what to render and [Unfilled] asks it what to report, so the file and the
+// diagnostic about the file cannot disagree about which names cairn fills. They
+// used to be able to: substitution read the caller's map and the report read
+// this list, and they agreed only for as long as a caller kept the two in step.
+func fills(name string) bool {
+	return slices.Contains(ValueNames(), name)
 }
 
 // Markers returns every marker in text, in the order they appear.
@@ -89,6 +121,11 @@ func Markers(text string) ([]Marker, error) {
 
 // parseMarker reads one marker's body — the text between "cairn:" and the
 // comment close — into a [Marker].
+//
+// The verb is checked and neither name is. A verb cairn has not got could mean
+// anything, so there is nothing to render for it; a name cairn cannot fill
+// means one thing, which the file says by leaving the marker's place empty and
+// [Unfilled] says out loud.
 func parseMarker(text, body string) (Marker, error) {
 	fields := strings.Fields(body)
 	if len(fields) != 2 {
@@ -98,13 +135,7 @@ func parseMarker(text, body string) (Marker, error) {
 	}
 	verb, name := fields[0], fields[1]
 	switch verb {
-	case MarkerVerbSlot:
-		return Marker{Verb: verb, Name: name, Text: text}, nil
-	case MarkerVerbValue:
-		if !slices.Contains(ValueNames(), name) {
-			return Marker{}, fmt.Errorf("%w: %s names no value this instance carries; the values are %s",
-				ErrMarker, text, quotedNames(ValueNames()))
-		}
+	case MarkerVerbSlot, MarkerVerbValue:
 		return Marker{Verb: verb, Name: name, Text: text}, nil
 	default:
 		return Marker{}, fmt.Errorf("%w: %s declares the verb %q; the verbs are %q and %q",
@@ -129,7 +160,16 @@ func parseMarker(text, body string) (Marker, error) {
 //
 // A value marker becomes that value, which may legitimately be empty — a boot
 // with no declared scope substitutes nothing and the template reads as though
-// the marker were not there.
+// the marker were not there. A name outside [ValueNames] renders the empty
+// string too, so the two look identical in the file, and the caller is the one
+// that tells them apart — see [Unfilled].
+//
+// The unknown name is read from [ValueNames] and not from values, which is what
+// makes that a property rather than a coincidence. values is a map an arbitrary
+// caller supplies, so a lookup that trusted it would render whatever key that
+// caller put there — spec.mcp's env under the key "mcp", to name the one that
+// matters. Substitution fills a value marker only from the names cairn declares
+// it fills, and nothing a caller adds to the map can widen that.
 //
 // A line that held nothing but markers and whitespace, every one of which
 // substituted the empty string, is removed entirely — its newline with it. The
@@ -197,9 +237,14 @@ func substituteLine(line string, locs [][]int, markers []Marker, sections, value
 	filled := false
 	prev := 0
 	for i, loc := range locs {
-		replacement := values[markers[i].Name]
-		if markers[i].Verb == MarkerVerbSlot {
+		replacement := ""
+		switch markers[i].Verb {
+		case MarkerVerbSlot:
 			replacement = sections[markers[i].Name]
+		case MarkerVerbValue:
+			if fills(markers[i].Name) {
+				replacement = values[markers[i].Name]
+			}
 		}
 		if replacement != "" {
 			filled = true
@@ -217,9 +262,11 @@ func substituteLine(line string, locs [][]int, markers []Marker, sections, value
 	return rendered, false
 }
 
-// Unfilled returns the markers in text whose slot was declared and then filled
-// nothing — it failed to resolve, or resolved empty. An operator hears about
-// those because a block they meant to have is missing from the file.
+// Unfilled returns the markers in text an operator hears about: a slot that was
+// declared and then filled nothing — it failed to resolve, or resolved empty —
+// and a value naming something outside [ValueNames]. The slot leaves a block
+// missing from the file and the value leaves a gap where an inline fact should
+// be, and in both cases nothing in the file says so.
 //
 // A marker naming a slot that is absent from sections is skipped in silence.
 // The key set of sections is the declared set —
@@ -240,8 +287,14 @@ func substituteLine(line string, locs [][]int, markers []Marker, sections, value
 // anything that starts to would read "undeclared" off a slot that was merely not
 // run.
 //
-// Values are not reported. An empty value is a fact about the instance — a boot
-// with no scope — rather than something that went wrong.
+// The value rule runs the other way round, and for the same reason the slot rule
+// exists. The manifest owns the slot set, so a name absent from it is a block
+// this profile does not use — ordinary, and silent. Cairn owns the value set and
+// it is the same set for every profile, so a name outside it is one no profile
+// will ever fill: worth the line. A value cairn does know and filled with
+// nothing stays silent, because an empty value is a fact about the instance — a
+// boot with no scope — rather than something that went wrong. That is why the
+// test is on the name and never on the value.
 func Unfilled(text string, sections map[string]string) ([]Marker, error) {
 	markers, err := Markers(text)
 	if err != nil {
@@ -249,12 +302,15 @@ func Unfilled(text string, sections map[string]string) ([]Marker, error) {
 	}
 	var out []Marker
 	for _, marker := range markers {
-		if marker.Verb != MarkerVerbSlot {
-			continue
-		}
-		section, declared := sections[marker.Name]
-		if declared && section == "" {
-			out = append(out, marker)
+		switch marker.Verb {
+		case MarkerVerbSlot:
+			if section, declared := sections[marker.Name]; declared && section == "" {
+				out = append(out, marker)
+			}
+		case MarkerVerbValue:
+			if !fills(marker.Name) {
+				out = append(out, marker)
+			}
 		}
 	}
 	return out, nil

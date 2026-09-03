@@ -101,6 +101,12 @@ type Instance struct {
 	// Values are the instance values a template may substitute, keyed by the
 	// names in [ValueNames]. A name in that list and absent here substitutes
 	// nothing, which is what an undeclared scope looks like.
+	//
+	// A key outside that list is not a way to reach a template. Substitution
+	// fills a value marker only from the names [ValueNames] declares, so
+	// putting spec.mcp under the key "mcp" here renders nothing rather than
+	// rendering the servers' env into the file an agent reads. The key set is
+	// a boundary, not a convention — see [Substitute].
 	Values map[string]string
 
 	// Files is the manifest's arbitrary files, keyed by boot-directory-relative

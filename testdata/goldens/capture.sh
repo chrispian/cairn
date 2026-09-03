@@ -259,11 +259,13 @@ done
 
 # --- refuse a degraded capture ---------------------------------------------
 #
-# A golden that records a slot which failed to resolve, or a declared slot that
-# filled nothing, is a golden of a broken render — and the damage is that it
-# reads exactly like a golden of a working one. A section that is missing
-# because its slot failed is indistinguishable, in a captured tree, from a
-# section the profile never declared.
+# A golden that records a slot which failed to resolve, a declared slot that
+# filled nothing, or a value cairn cannot fill, is a golden of a broken render —
+# and the damage is that it reads exactly like a golden of a working one. A
+# section that is missing because its slot failed is indistinguishable, in a
+# captured tree, from a section the profile never declared, and a line whose
+# value marker was misspelled is indistinguishable from one whose value was
+# legitimately empty.
 #
 # The conductor's `fleet` slot is the case that motivated this. It is a cmd slot
 # reading ${CAIRN_DB:-$HOME/.config/agents/cairn.db} out of the environment,
@@ -273,17 +275,19 @@ done
 # exits 0. The export above is what prevents it; this is what catches it if the
 # export is ever lost.
 #
-# Both patterns are cmd/cairn/main.go's own: reportSlotFailures and
+# All three patterns are cmd/cairn/main.go's own: reportSlotFailures and
 # reportUnfilledMarkers. Anything else on stderr is printed and does not fail —
 # the installed layer's "renders no section for" line is a fact about which
-# kinds install resolves, not a fault.
-degraded=$(grep -lE 'slot "[^"]*" did not resolve|slot "[^"]*" filled nothing' \
+# kinds install resolves, not a fault, and neither is the line naming the values
+# cairn fills, which only ever follows one of the patterns above.
+degraded=$(grep -lE 'slot "[^"]*" did not resolve|slot "[^"]*" filled nothing|value "[^"]*" is not one cairn fills' \
 	"$OUT"/stderr/*.txt 2>/dev/null || true)
 if [ -n "$degraded" ]; then
 	echo "capture.sh: refusing to capture a degraded render" >&2
 	for f in $degraded; do
 		echo "  $(basename "$f" .txt):" >&2
-		grep -E 'did not resolve|filled nothing' "$f" | sed 's/^/    /' >&2
+		grep -E 'did not resolve|filled nothing|is not one cairn fills|the values cairn fills are' \
+			"$f" | sed 's/^/    /' >&2
 	done
 	echo "" >&2
 	echo "A golden recording a failed or unfilled slot looks like a golden of a" >&2

@@ -230,6 +230,29 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		}),
 	}
 
+	// Reported before the render, and reported for a check as well as a write.
+	// A marker that stood for nothing can empty a template to the point where
+	// no file is written at all, and this layer's pointer document is a
+	// declared include of the instruction file beside it: lose the instruction
+	// file and the pointer resolves to nothing, silently, which is the exact
+	// outcome making the pointer a template was meant to prevent.
+	//
+	// A check catches that on a root that already carries the file. It claims
+	// the paths its renderers can produce rather than the ones one render did
+	// — plan §7 — so an instruction file that stopped rendering is an orphan,
+	// and the check exits non-zero naming it. What it cannot catch is the
+	// first install into a root that never held the file: nothing on disk to
+	// orphan, nothing rendered to diff, "In sync". That is the case this line
+	// is for, and it is reported for a check as well as a write because a
+	// check is where an operator goes to ask whether the layer is right.
+	renderers, layout, err := install.PlanterFor(resolved.Provider)
+	if err != nil {
+		return err
+	}
+	if err := reportUnfilledMarkers(stderr, installedTemplates(templates, renderers, layout), sections); err != nil {
+		return fmt.Errorf("profile %q: %w", resolved.ID, err)
+	}
+
 	if *check {
 		report, err := install.Check(lay)
 		if err != nil {
@@ -461,7 +484,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// Reported before the write rather than after it, so that an operator
 	// reading stderr sees the missing block named beside the slot failure that
 	// explains it.
-	if err := reportUnfilledMarkers(stderr, templates, sections); err != nil {
+	if err := reportUnfilledMarkers(stderr, bootTemplates(templates), sections); err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
 	files, err := bootdir.Render(inst)
@@ -552,10 +575,18 @@ func pathLike(raw string) bool {
 		filepath.IsAbs(raw)
 }
 
-// instanceValues returns the values a template may substitute, checked against
-// [bootdir.ValueNames] so that a value added here and not there — or the
-// reverse — fails at the composition root rather than as a marker that
-// substitutes nothing.
+// instanceValues returns the values a template may substitute: a key for each
+// name in [bootdir.ValueNames] and no others, so that a value wired here under
+// a name cairn does not fill is dropped at the composition root rather than
+// carried into a render.
+//
+// It is the second of two mechanisms and not the only one. Substitution fills a
+// value marker only from [bootdir.ValueNames] too, so a key that got past here
+// would still render nothing — see [github.com/chrispian/cairn/bootdir.Substitute].
+// This narrowing stays because it is the cheaper place to be right: the map
+// this builds is handed to a library that renders whatever it is given for
+// every artifact, not only templates, and the manifest values it would be
+// carrying are the ones spec.mcp keeps API keys in.
 func instanceValues(values map[string]string) map[string]string {
 	out := make(map[string]string, len(values))
 	for _, name := range bootdir.ValueNames() {
@@ -564,36 +595,143 @@ func instanceValues(values map[string]string) map[string]string {
 	return out
 }
 
-// reportUnfilledMarkers prints every marker whose slot was declared and then
-// filled nothing — it failed to resolve, or it resolved empty. It leaves the
-// template shorter than it reads, and nothing in the resulting file says so.
+// reportUnfilledMarkers prints every marker that stood for nothing an operator
+// would want to hear about: a slot that was declared and then filled nothing —
+// it failed to resolve, or it resolved empty — and a value cairn cannot fill for
+// any profile. Either leaves the template shorter than it reads, and nothing in
+// the resulting file says so.
 //
-// A marker naming a slot no profile declared is not reported. See
-// [github.com/chrispian/cairn/bootdir.Unfilled] for why the two are told apart.
+// A marker naming a slot no profile declared is not reported, and neither is a
+// value cairn knows that is empty for this instance. See
+// [github.com/chrispian/cairn/bootdir.Unfilled] for why each is told from the
+// case beside it.
 //
 // It is a report and not a refusal, matching the slot rule it follows from: a
 // section that is not there is degraded context and the agent asks its tools.
 // The operator hears about it because they are the only one who can fix it.
 //
-// The destinations are walked in sorted order so that two boots of one profile
-// report in the same order.
-func reportUnfilledMarkers(stderr io.Writer, templates, sections map[string]string) error {
-	dests := make([]string, 0, len(templates))
-	for dest := range templates {
-		dests = append(dests, dest)
-	}
-	sort.Strings(dests)
-	for _, dest := range dests {
-		unfilled, err := bootdir.Unfilled(templates[dest], sections)
+// The set of values is named once at the end rather than on every line. A
+// template that misspells one value usually carries the marker more than once,
+// and a hundred and fifty characters of set repeated behind each occurrence is
+// the noise this function stays quiet about undeclared slots to avoid.
+//
+// One line per name per destination, for the same reason. Neither line says
+// where in the file the marker was, so a second line for the same name in the
+// same file carries nothing the first did not.
+//
+// Each template carries two names because a diagnostic and a refusal are read
+// for different reasons. A marker that stood for nothing names the path the
+// file lands at, which is what an operator looks for and fails to find. A
+// marker that would not parse names the manifest key, which is what they open
+// to fix it — the path is an output that this run will never produce, and
+// naming a file an operator cannot find is worse than not naming one. In a boot
+// directory the two are the same string; in the installed layer they are not.
+//
+// The slice is sorted here, so a caller may hand one over in any order and two
+// boots of one profile still report in the same one.
+func reportUnfilledMarkers(stderr io.Writer, templates []reportedTemplate, sections map[string]string) error {
+	sort.Slice(templates, func(i, j int) bool { return templates[i].path < templates[j].path })
+	unfillable := false
+	for _, tmpl := range templates {
+		dest := tmpl.path
+		unfilled, err := bootdir.Unfilled(tmpl.text, sections)
 		if err != nil {
-			return fmt.Errorf("%s: %w", dest, err)
+			return fmt.Errorf("spec.%s %q: %w", profile.SpecKeyTemplates, tmpl.key, err)
 		}
+		said := make(map[reportedMarker]bool, len(unfilled))
 		for _, marker := range unfilled {
-			_, _ = fmt.Fprintf(stderr, "cairn: %s: slot %q filled nothing, so %s renders no section\n",
-				dest, marker.Name, dest)
+			key := reportedMarker{verb: marker.Verb, name: marker.Name}
+			if said[key] {
+				continue
+			}
+			said[key] = true
+			switch marker.Verb {
+			case bootdir.MarkerVerbSlot:
+				_, _ = fmt.Fprintf(stderr, "cairn: %s: slot %q filled nothing, so %s renders no section\n",
+					dest, marker.Name, dest)
+			case bootdir.MarkerVerbValue:
+				unfillable = true
+				_, _ = fmt.Fprintf(stderr, "cairn: %s: value %q is not one cairn fills, so %s renders nothing where it stands\n",
+					dest, marker.Name, dest)
+			}
 		}
+	}
+	if unfillable {
+		_, _ = fmt.Fprintf(stderr, "cairn: the values cairn fills are %s\n", quotedValueNames())
 	}
 	return nil
+}
+
+// reportedMarker is one reported marker's identity, for telling a repeat from a
+// new finding. It is the verb and the name and deliberately not the marker's
+// text, so two spellings of one marker are one finding.
+type reportedMarker struct {
+	verb string
+	name string
+}
+
+// quotedValueNames renders the value set for a diagnostic, quoted the way every
+// other set-naming diagnostic cairn prints renders one.
+//
+// It builds its own slice rather than rewriting the one it was given.
+// [bootdir.ValueNames] does return a fresh slice every call, but that is a
+// promise made in another package and invisible here, and this function has no
+// reason to need it.
+func quotedValueNames() string {
+	names := bootdir.ValueNames()
+	quoted := make([]string, 0, len(names))
+	for _, name := range names {
+		quoted = append(quoted, fmt.Sprintf("%q", name))
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// reportedTemplate is one template a report walks: the manifest key it was
+// declared under, the path the file lands at, and its text.
+type reportedTemplate struct {
+	key  string
+	path string
+	text string
+}
+
+// bootTemplates lists a boot directory's templates for a report. A boot
+// directory writes each template at the destination it was declared under, so
+// the key and the path are one string and there is nothing to map.
+func bootTemplates(templates map[string]string) []reportedTemplate {
+	out := make([]reportedTemplate, 0, len(templates))
+	for dest, text := range templates {
+		out = append(out, reportedTemplate{key: dest, path: dest, text: text})
+	}
+	return out
+}
+
+// installedTemplates lists the installed layer's templates for a report, paired
+// with the path this layer writes each at and dropping every destination it
+// does not render.
+//
+// The installed layer renders two of the manifest's destinations and writes
+// them beneath a provider directory of its own, so a report naming the
+// manifest's own key would send an operator looking for "AGENTS.md" when the
+// file is at ".claude/AGENTS.md", and one walking every destination would name
+// files this layer never writes at all. The registration list decides which
+// destinations are in play and the layout decides where each one lands, which
+// is the same pair [github.com/chrispian/cairn/install.Render] renders from.
+func installedTemplates(templates map[string]string, renderers []install.Renderer, layout bootdir.Layout) []reportedTemplate {
+	paths := map[string]bootdir.Artifact{
+		bootdir.AgentsFileName:  layout.Agents,
+		bootdir.PointerFileName: layout.Pointer,
+	}
+	out := make([]reportedTemplate, 0, len(paths))
+	for _, r := range renderers {
+		artifact, rendered := paths[r.Artifact]
+		if !rendered || !artifact.Declared() {
+			continue
+		}
+		if text, declared := templates[r.Artifact]; declared {
+			out = append(out, reportedTemplate{key: r.Artifact, path: artifact.RelPath, text: text})
+		}
+	}
+	return out
 }
 
 // reportSlotFailures prints every non-required slot that failed to resolve,

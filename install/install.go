@@ -108,9 +108,15 @@ type Layer struct {
 	// skills directory. Carried for the reason [bootdir.Instance].Env is.
 	Env profile.Expander
 
-	// Values are the instance values a template may substitute. This layer is
-	// not one session, so the ones that describe a session — scope, and the
-	// session segment — are empty here and substitute nothing.
+	// Values are the instance values a template may substitute, keyed by the
+	// names in [bootdir.ValueNames]. This layer is not one session, so the ones
+	// that describe a session — scope, and the session segment — are empty here
+	// and substitute nothing.
+	//
+	// A key outside that list substitutes nothing either, which matters because
+	// this field is public and an external caller fills it directly. Reaching a
+	// template is not something a key added here can do: substitution fills a
+	// value marker only from the names cairn declares it fills.
 	Values map[string]string
 }
 

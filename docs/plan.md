@@ -519,10 +519,16 @@ nothing: the warning exists to debug a block that was supposed to fill, and one
 template can carry every marker any profile might fill, so a line per marker a
 profile does not use would bury the one line that matters. The report exists so
 an operator can diagnose a missing block, not so Cairn can judge the result. A
-marker in Cairn's own namespace that Cairn cannot act on — an unknown verb, a
-body that is not exactly a verb and one name, a value that is not one of the
-six — is a **refusal**, because leaving it would plant the marker's own text in
-a file an agent reads.
+marker in Cairn's own namespace that Cairn cannot act on — an unknown verb, or a
+body that is not exactly a verb and one name — is a **refusal**, because leaving
+it would plant the marker's own text in a file an agent reads.
+
+**A `cairn:value` naming something Cairn does not fill is not one of those.** It
+renders nothing and is reported, the way a declared slot that filled nothing is.
+The value names are Cairn's own, which is why an unknown one earns a line on
+stderr where an undeclared slot earns silence — but refusing it would let one
+word in a document every profile shares decide whether a boot directory is
+written at all.
 
 Substitution does not look at where in a document a marker sits: one inside a
 fenced code block is substituted like any other, so a template documenting this
