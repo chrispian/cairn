@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chrispian/cairn/bootdir"
 	"github.com/chrispian/cairn/profile"
 	"github.com/chrispian/cairn/store"
 )
@@ -294,8 +295,10 @@ func TestShowRendersNothing(t *testing.T) {
 		t.Errorf("show left something behind:\nbefore %v\nafter  %v", before, after)
 	}
 	// Named individually as well, because the paths above are only as strong
-	// as the tree they cover.
-	for _, rel := range []string{".claude", filepath.FromSlash("dev/agent-os")} {
+	// as the tree they cover. The boot root comes from the constant rather
+	// than a literal: a literal left behind by a change to the default would
+	// go on passing while asserting nothing.
+	for _, rel := range []string{".claude", filepath.FromSlash(bootdir.DefaultRootRel)} {
 		if _, err := os.Stat(filepath.Join(home, rel)); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("show created %s: %v", rel, err)
 		}

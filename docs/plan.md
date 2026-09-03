@@ -435,8 +435,10 @@ single inline slot holding a whole document is valid; so is a template per
 section. Whether one of them is a shared base is the operator's convention and
 invisible to Cairn.
 
-Location: `~/dev/agent-os/runtime/boot/<binding-or-profile>/<session>/`.
-Gitignored. Retention is the caller's. `cairn boot` prints the path and exits;
+Location: `~/.local/state/cairn/boot/<binding-or-profile>/<session>/`, or
+`$CAIRN_BOOT_ROOT` when that is set.
+Outside any repository, so there is nothing to ignore it in and nothing
+tracking it. Retention is the caller's. `cairn boot` prints the path and exits;
 a human launches.
 
 Rendering is deterministic: same inputs, byte-identical output. Slots resolve

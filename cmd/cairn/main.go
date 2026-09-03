@@ -35,7 +35,8 @@ usage:
 
 flags for boot:
   --scope <path|alias>   the directory the instance works in; overrides the binding's
-  --boot-root <path>     where boot directories are planted; defaults to $CAIRN_BOOT_ROOT
+  --boot-root <path>     where boot directories are planted; defaults to $CAIRN_BOOT_ROOT,
+                         else ~/.local/state/cairn/boot
   --session <name>       the session segment; defaults to a UTC timestamp and a random suffix
 
 flags for install:

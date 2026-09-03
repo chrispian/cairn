@@ -1028,3 +1028,20 @@ func read(t *testing.T, dir, rel string) string {
 	}
 	return string(b)
 }
+
+// TestUsageNamesTheBootRootDefault ties the usage text to the constant it
+// describes.
+//
+// Nothing else does: no golden renders --help, and a default documented as a
+// literal goes stale the moment the constant moves, silently and in the one
+// place an operator who does not know the default goes looking. That is the
+// same vacuous-assertion failure the boot root itself was, so it gets a pin
+// rather than a promise to remember.
+func TestUsageNamesTheBootRootDefault(t *testing.T) {
+	if !strings.Contains(usage, bootdir.DefaultRootRel) {
+		t.Errorf("usage does not name the boot root default %q:\n%s", bootdir.DefaultRootRel, usage)
+	}
+	if !strings.Contains(usage, bootdir.EnvBootRoot) {
+		t.Errorf("usage does not name %s, which overrides that default", bootdir.EnvBootRoot)
+	}
+}

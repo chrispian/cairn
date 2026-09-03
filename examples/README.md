@@ -50,7 +50,7 @@ Three things it demonstrates that are easy to get wrong:
 
 ```bash
 cairn boot eng
-# /Users/chrispian/dev/agent-os/runtime/boot/eng/20260826T014133Z-9f2a1c
+# /Users/chrispian/.local/state/cairn/boot/eng/20260826T014133Z-9f2a1c
 ```
 
 The path goes to **stdout**; diagnostics go to **stderr**. A slot that fails to

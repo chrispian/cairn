@@ -12,11 +12,32 @@ import (
 )
 
 // EnvBootRoot names the environment variable that overrides where boot
-// directories are planted.
+// directories are planted. It wins over [DefaultRootRel] and loses to the
+// command-line flag.
 const EnvBootRoot = "CAIRN_BOOT_ROOT"
 
-// DefaultRootRel is the boot root relative to the operator's home directory.
-const DefaultRootRel = "dev/agent-os/runtime/boot"
+// DefaultRootRel is the boot root relative to the operator's home directory:
+// XDG's state location, which is where machine-local runtime state belongs and
+// where the rest of the portfolio already puts it.
+//
+// A boot directory is the agent's working directory, so every git command the
+// agent runs resolves against whatever repository contains the boot root. The
+// previous default, "dev/agent-os/runtime/boot", named a path that on the
+// machine it was written for sat inside a checkout, and pointed every agent's
+// shell at a repository that was not its scope — while the slots in that same
+// agent's boot.md, which resolve against the scope, reported the right one. A
+// default has to be somewhere cairn can justify while knowing nothing about
+// the machine: below home, under a name reserved for state, and not somewhere
+// a repository plausibly lives.
+//
+// Fixed rather than read from $XDG_STATE_HOME, which cairn could pass in as
+// easily as it passes $XDG_CONFIG_HOME to the store's DefaultPath. Honoring it
+// fixes nothing this default was wrong about, and a state home pointed at a
+// checkout reopens exactly the same hole — so it waits for the guard that
+// would catch that, and for the pass that gives every path cairn resolves one
+// documented precedence rather than inventing this one's alone. [EnvBootRoot]
+// is what an operator who wants it somewhere else reaches for meanwhile.
+const DefaultRootRel = ".local/state/cairn/boot"
 
 // SessionLayout is the time layout of a generated session segment. It sorts
 // lexically in chronological order and carries no separator a filesystem
