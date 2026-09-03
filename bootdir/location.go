@@ -31,7 +31,7 @@ const EnvBootRoot = "CAIRN_BOOT_ROOT"
 // a repository plausibly lives.
 //
 // Fixed rather than read from $XDG_STATE_HOME, which cairn could pass in as
-// easily as it passes $XDG_CONFIG_HOME to the store's DefaultPath. Honoring it
+// easily as it passes $XDG_CONFIG_HOME to catalog.DefaultRoot. Honoring it
 // fixes nothing this default was wrong about, and a state home pointed at a
 // checkout reopens exactly the same hole — so it waits for the guard that
 // would catch that, and for the pass that gives every path cairn resolves one

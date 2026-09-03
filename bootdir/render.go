@@ -119,8 +119,8 @@ type Instance struct {
 	// Subagents are the definitions this instance plants, in the order the
 	// manifest named them, each carrying the named profile's own declaration.
 	// They arrive resolved for the same reason Boot and Files do: naming a
-	// subagent means reading another profile out of the store and walking its
-	// extends chain, and a renderer reads nothing it was not handed. Empty
+	// subagent means reading another profile out of the catalog and walking
+	// its extends chain, and a renderer reads nothing it was not handed. Empty
 	// renders no definitions.
 	Subagents []Subagent
 }

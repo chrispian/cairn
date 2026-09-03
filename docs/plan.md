@@ -14,7 +14,7 @@ The prior tree is archived at `~/dev/projects/cairn-prior-20260825/`.
 
 **Cairn assembles files and writes them into a directory.**
 
-It reads a profile from its own store, resolves it through an `extends`
+It reads a profile out of a profile bundle, resolves it through an `extends`
 cascade, and materializes a boot directory a CLI coding agent can be launched
 from. It renders the installed layer (`~/.claude`, `~/.codex`) from the same
 source.
@@ -62,15 +62,18 @@ to end exactly that; Cairn was becoming the fourth.
 | `agentkit/agentlaunch` | Vocabulary, not pipeline: `MCPServerSpec{Name, Command, Args, Env}` for MCP server definitions, `NativeFile{Kind: raw, RelPath, Content, Mode}` for arbitrary planted files, and `ValidateBootDirRelPath` as a second path-safety opinion. |
 | `go-agent-wrapper/plant` | `plant.Planter` / `plant.Spec` as the write boundary, so Cairn speaks the same planting contract as Nanite. |
 | `go-providers/provider` | Per-provider layout convention via `BootDirSpec`: which files, at which relative paths, cwd preference, the `--add-dir` argument pattern, and per-file modes (codex `auth.json` is 0600). This is also how codex and opencode arrive without inventing their layouts. |
-| `go-sqlite` (`sqlitekit`, `txutil`) | Store. Pure Go via `modernc.org/sqlite`, no cgo. |
 
-Verified: all four modules resolve and build together (`agentkit v0.5.1`,
-`go-agent-wrapper v0.8.1`, `go-providers v0.24.0`, `go-sqlite v0.1.0`),
-indirect graph is `creack/pty`, `go-llm-contracts`, `go-llm-types`.
+Verified: all three modules resolve and build together (`agentkit v0.5.1`,
+`go-agent-wrapper v0.8.1`, `go-providers v0.24.0`), indirect graph is
+`creack/pty`, `go-llm-contracts`, `go-llm-types`.
 
-`yaml.v3` is the one direct dependency outside those four. It was already in
-the graph, and it arrives directly because a subagent definition's frontmatter
-is YAML while the manifest it comes from is JSON — see §5. Hand-rolling a YAML
+`go-sqlite` was a fourth. It went with the store: the catalog is a directory of
+files, and there is no database left to open.
+
+`yaml.v3` is the one direct dependency outside those three, and it is load
+bearing at both ends now: a profile is authored as YAML frontmatter and read
+through it (§3), and a subagent definition's frontmatter is written back out as
+YAML while the manifest it comes from is JSON (§5). Hand-rolling a YAML
 encoder for an opaque map is how quoting bugs plant an unparseable frontmatter,
 which a harness reads as no frontmatter at all.
 
@@ -88,7 +91,7 @@ Ported from `~/dev/projects/cairn-prior-20260825/`, not rewritten:
 
 ### Built here
 
-- The sqlite store and the `extends` cascade. Nothing in the portfolio does
+- The catalog reader and the `extends` cascade. Nothing in the portfolio does
   profile inheritance; `agentlaunch/catalog` is file-backed and flat.
 - The composition root and the CLI.
 
@@ -119,48 +122,67 @@ resolution as policy (see §6).
 
 ---
 
-## 3. Store
+## 3. Catalog
 
-`go-sqlite`'s `sqlitekit` for opening, `txutil` for transactions. Default path
-`~/.config/agents/cairn.db`, `XDG_CONFIG_HOME`-aware, overridable by flag and
-by `CAIRN_DB`. **Cairn creates the database if it is absent** — unlike the
-prior config-root rule, because an empty database is a usable starting state
-and a missing one is not a configuration error.
+A profile bundle is a directory, and the directory is the whole store.
+
+```
+<bundle>/
+  profiles/    one markdown file per profile — YAML frontmatter, then prose
+  bindings/    one YAML file per binding, named after the binding
+  scopes.yaml  scope aliases, for as long as the alias registry lasts
+  templates/   the documents profiles name
+  skills/      one directory per skill
+```
+
+`--profile <dir>` names it; without the flag Cairn reads
+`$CAIRN_PROFILE_ROOT`, then `$XDG_CONFIG_HOME/agents`, then `~/.config/agents`.
+The whole bundle is read into memory at the start of a command and nothing is
+read after it, so a cascade, a subagent's profile and a binding's scope all
+come out of one snapshot.
+
+**A bundle that is not there is named, not created**, and that is the reverse
+of the rule the database it replaces had. A database was conjured on every
+open because an empty one is a usable starting state; a directory of files is
+not. An absent bundle is a sign Cairn was pointed somewhere wrong, so a read
+that finds nothing writes nothing and says which bundle it was reading. `show`
+and `install --check` promise that in their own help, and now keep it.
+
+There is nothing to seed and nothing to import. The files are the source, git
+is the review surface, and the next command reads whatever is on disk.
+
+A profile's frontmatter is a **closed** set of keys — `id`, `extends`,
+`abstract`, `name`, `description`, `provider`, `model`, `spec` — and one Cairn
+has never heard of is refused by name. That is the opposite of the rule for
+`spec` below, deliberately: a manifest key is somebody else's vocabulary, while
+a frontmatter key is a typo, and the file is now the only copy. Nothing
+downstream notices that a misspelled `descripton` left a profile with no
+description, or that a misspelled `spec` left it with no manifest at all.
+
+A profile's id is its file name and the two are held to agreeing; so is a
+binding's name. A binding naming a profile that has no file is refused when the
+bundle is read, rather than whenever somebody happens to boot that one name.
 
 Deliberately small. The cautionary example is Nanite's `agents` table: 40-plus
 columns across 134 migrations, several deprecated but inert, entangled with
-plugins, consumers, roles, and tenancy. That is what happens when the database
-schema becomes the model.
+plugins, consumers, roles, and tenancy. That is what happens when the schema
+becomes the model — and a frontmatter key set is a schema wherever it is kept.
 
-```sql
-CREATE TABLE profiles (
-  id          TEXT PRIMARY KEY,
-  extends     TEXT NOT NULL DEFAULT '',
-  abstract    INTEGER NOT NULL DEFAULT 0,
-  name        TEXT NOT NULL DEFAULT '',
-  description TEXT NOT NULL DEFAULT '',
-  provider    TEXT NOT NULL DEFAULT '',
-  model       TEXT NOT NULL DEFAULT '',
-  body        TEXT NOT NULL DEFAULT '',
-  spec        TEXT NOT NULL DEFAULT '{}',
-  created_at  TEXT NOT NULL,
-  updated_at  TEXT NOT NULL
-);
+**Durations are translated as the catalog is read.** Go unmarshals a
+`time.Duration` from a number of nanoseconds and not from `"5s"`, and every
+duration in the portfolio's YAML is written `5s`. So a `timeout` under
+`spec.slots`, `spec.files` or `spec.templates` — the keys whose values reach a
+library struct that carries one — is parsed by `time.ParseDuration` and carried
+as that number, and the operator keeps writing `5s`. It is those keys and not
+every field named `timeout`: `spec.settings`, `spec.subagent` and every key
+Cairn does not render are documents somebody else reads, and rewriting a string
+into a number inside one of them would hand a harness a value its own schema
+rejects — silently, because a wrong duration is a wrong number rather than an
+error.
 
-CREATE TABLE bindings (
-  name       TEXT PRIMARY KEY,
-  profile_id TEXT NOT NULL REFERENCES profiles(id),
-  scope      TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE scopes (
-  alias TEXT PRIMARY KEY,
-  path  TEXT NOT NULL
-);
-```
-
-`spec` is the rendering manifest: opaque JSON, of which Cairn interprets only
-the keys it renders. Anything else is carried and ignored.
+`spec` is the rendering manifest: authored as YAML and converted key by key
+into the JSON every shape below decodes from, of which Cairn interprets only
+the keys it renders. Anything else is converted like the rest and carried.
 
 ```jsonc
 {
@@ -409,9 +431,10 @@ on the flag only, since a variable Cairn passes through untouched is not
 Cairn's to vet. Symlinks are left alone, unlike a scope's: nothing compares this
 path for identity, and resolving it would put a spelling into diagnostics that
 the operator never wrote. It loses to nothing and wins over
-`$CAIRN_PROFILE_ROOT` itself, matching `--db` and `--boot-root`. Profiles and
-bindings still come from the store: the bundle is read from, not resolved out
-of, until the catalog becomes the store.
+`$CAIRN_PROFILE_ROOT` itself, matching `--boot-root`. The bundle is also where
+the profiles and bindings come from — the catalog is the store (§3), so the
+directory a profile is read out of and the directory its values expand against
+are one value, resolved once.
 
 `spec` is JSON, so slot entries use `agentcontext.SlotSpec`'s **JSON** tags.
 `SlotSource.Kind` is `json:"kind"` and `yaml:"type"` — a slot copied out of a
@@ -619,7 +642,7 @@ directory already receives that directory's `CLAUDE.md`, and through it
 `AGENTS.md`. Rendering the named profile's cascade into the definition would
 repeat every ancestor body the parent already supplies, and would put an
 ancestor's persona — "you implement one task end to end" — into a definition
-for a profile that reviews. Taking the named profile's own row body instead
+for a profile that reviews. Taking the named profile's own prose instead
 would mean reading a field that had skipped the cascade, which §3 says no field
 does. The declaration is where the definition is declared, so the body is
 declared there too, and a descendant restating `spec.subagent` restates it
@@ -806,7 +829,7 @@ value is the ambiguity the neutral declaration exists to remove; unioning them
 would let a grant reach the file through a channel that gets none of the
 checks below. The refusal names the key it found and the key to move it to.
 The conflict is detected by walking the *fragment's* own keys against the
-stored document, so cairn still names none of them and looks nowhere the
+declared document, so cairn still names none of them and looks nowhere the
 adapter's answer does not already sit.
 
 **A declared directory is checked before it is granted.** Expanded, then
@@ -851,11 +874,25 @@ cairn boot <binding|profile> [--scope <path>]       materialize a boot dir, prin
 cairn install <binding|profile>                     render the installed layer
 cairn install <binding|profile> --check             re-render, diff against disk, report drift
 cairn show <binding|profile> [--scope <path>]       print what the profile resolves to
+cairn list                                          enumerate the catalog
 ```
 
-All three take `--profile <dir>`, naming a profile bundle. `boot` and `install`
-seed `$CAIRN_PROFILE_ROOT` with its root; `show` seeds nothing and reports it —
-see §3.
+All four take `--profile <dir>`, naming the profile bundle the catalog is read
+from and seeding `$CAIRN_PROFILE_ROOT` with its root — see §3. `show` reports
+the root as well, because it expands nothing itself.
+
+`list` prints the bindings with the directories their scopes resolve to, and
+the profiles with their descriptions, each in its own block and an empty block
+omitted. It exists because a file-backed catalog with no way to list it is a
+directory the operator has to `ls` themselves — the answer is in no one file,
+since a binding's scope may be an alias that resolves elsewhere — and because
+the conductor profile's launch menu was a SQL query until the database went
+away. It takes no target: one profile is what `show` is for.
+
+It does not print the bundle's own path. The listing is read in a terminal,
+where the operator just typed the flag that chose the bundle, and in a boot
+file, where a machine-specific absolute path would be the one line of a render
+that differs between two checkouts. `show` reports the root.
 
 `install` takes the same argument as `boot`, and there is no default. A
 well-known id like `base` would mean Cairn knowing the name of a profile it
@@ -867,9 +904,12 @@ normally rendered from the abstract root of the cascade.
 runs under `~/.claude`; an agent running `install` rewrites its own live
 configuration mid-session.
 
-`show` resolves and prints. It renders nothing — no boot directory, no
-installed layer, no temporary file; opening the database creates one if it is
-absent, as every command does. It is the mitigation §3 owes the operator: a
+`show` resolves and prints. It renders nothing and writes nothing — no boot
+directory, no installed layer, no temporary file, and nothing in the bundle it
+read. That is unqualified now and was not always: until the catalog became the
+store, opening the database created one, and did it before the target was
+looked up, so a `show` that then failed still left a directory and a schema'd
+file behind. It is the mitigation §3 owes the operator: a
 value the cascade composed from three profiles reads exactly like a value one
 profile wrote, so each manifest key is printed beside the profiles in the chain
 that declare it.
@@ -888,9 +928,20 @@ typed on the command line being run. There is no `--provider` yet:
 `spec.settings` is one document rather than one per provider, so there is
 nothing for it to select.
 
-Profile authoring is out of MVP scope — the operator writes rows directly, or
-via a later `cairn profile import/export`. That command is a convenience, not a
-prerequisite.
+**`install --root` requires the directory; `boot --boot-root` creates it.** The
+asymmetry is deliberate and is not a thing to tidy. `install` writes into the
+operator's real home, and refusing an absent `--root` (`install.ErrRootNotFound`)
+is what stops a typo silently building a parallel configuration tree that
+nothing will ever read — the failure would be invisible, because a render into
+the wrong place succeeds. A boot directory is disposable and creating its root
+is the point: `cairn boot` plants a fresh directory per session under a root
+that may well not exist yet on a new machine. `--profile` follows `install`'s
+half for the same reason, one step earlier: a bundle that is not there is a
+sign cairn was pointed somewhere wrong.
+
+Profile authoring is a text editor. A profile is a file under `<bundle>/profiles`
+and a binding is a file under `<bundle>/bindings`; there is no import command
+and nothing to import into.
 
 ---
 
@@ -900,10 +951,13 @@ prerequisite.
 and read.** Until that exists, every question about content is answered by
 reasoning instead of by looking.
 
-1. **Module skeleton** — `go.mod` with the four adopted modules. `cmd/cairn`
+1. **Module skeleton** — `go.mod` with the adopted modules. `cmd/cairn`
    with flag parsing that errors honestly on every unimplemented path.
-2. **Store** — schema, migration, open/create, profile CRUD, binding and scope
-   lookup. `sqlitekit.OpenWriter` / `OpenReader`, `txutil.WithImmediate`.
+2. **Catalog** — read `<bundle>/profiles/*.md` and `<bundle>/bindings/*.yaml`
+   into memory, convert each profile's YAML manifest into the JSON `spec` the
+   rest of the tree decodes, and refuse a bundle that is not there. It was a
+   sqlite store until the catalog replaced it; the shape of what is loaded did
+   not change.
 3. **Profile + cascade** — load by id, walk `extends` ancestor-first, detect
    cycles, closest-wins over the columns, keyed collections in `spec` merged by
    key and every other `spec` key replaced whole, concatenate `body`.
@@ -976,8 +1030,9 @@ useful part, and an unnamed loose end gets rediscovered as a bug.
   inventing a diff format nobody has asked for is how a small tool grows.
 
 Bounded by construction, and worth knowing: §6 says `spec.settings` is written
-with no validation, but a value that is not valid JSON cannot be stored at all
-— `encodeSpec` runs `json.Valid` per value. "Not validated" is bounded by "it
-is at least JSON", which is shape rather than meaning. That is the intended
+with no validation, but a value that is not valid JSON cannot reach the
+manifest at all — the catalog builds each key's JSON from the YAML the operator
+wrote rather than accepting JSON text. "Not validated" is bounded by "it is at
+least JSON", which is shape rather than meaning. That is the intended
 line, and it is what lets the renderer lay a document out without ever needing
 a fallback in practice.

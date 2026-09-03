@@ -77,7 +77,8 @@ var ErrGrantConflict = errors.New("the settings document declares a key cairn gr
 // could displace something is the key the grant is written into, and a
 // document that declares that key by hand is refused rather than overwritten —
 // see [ErrGrantConflict], which is the only reason anything here looks inside
-// the stored document at all, and looks only where the fragment already sits.
+// the declared document at all, and looks only where the fragment already
+// sits.
 //
 // That composition is also the one thing that costs a document its exact
 // spelling: one Cairn contributes to is decoded and re-encoded at the levels it
@@ -343,9 +344,10 @@ func encodeFragment(doc map[string]any) (json.RawMessage, error) {
 // neither, and the document that comes out is the one that went in with the
 // newlines put back.
 //
-// A value that is not JSON is returned as it was stored. Every manifest value
-// is validated before the store will write it and a merge composes valid JSON
-// out of valid JSON, so this is unreachable through either — but a renderer
+// A value that is not JSON is returned as it was declared. Every manifest
+// value is JSON by construction — the catalog builds it from the YAML the
+// operator wrote rather than accepting JSON text — and a merge composes valid
+// JSON out of valid JSON, so this is unreachable through either. A renderer
 // that dropped an artifact because it could not lay it out prettily would fail
 // at exactly the moment the operator most needs to see what is there.
 //

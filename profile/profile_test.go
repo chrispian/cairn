@@ -172,7 +172,7 @@ func TestSpecInstallSkills(t *testing.T) {
 // without directories, and no access key at all.
 //
 // The paths come back exactly as the manifest wrote them. Expanding here would
-// mean a stored profile answering a question it has no home directory and no
+// mean a declared profile answering a question it has no home directory and no
 // environment to answer, and it would cost the caller the declared form a
 // diagnostic quotes.
 func TestSpecAccessDirectories(t *testing.T) {

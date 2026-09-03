@@ -1,6 +1,6 @@
 // Command cairn assembles files and writes them into a directory.
 //
-// It reads a profile from its own store, resolves it through an extends
+// It reads a profile out of a bundle directory, resolves it through an extends
 // cascade, and materializes a boot directory a CLI coding agent can be
 // launched from. It prints the path — or, with --json, one object describing
 // the boot — and exits; a human launches.
@@ -19,11 +19,11 @@ import (
 	"time"
 
 	"github.com/chrispian/cairn/bootdir"
+	"github.com/chrispian/cairn/catalog"
 	"github.com/chrispian/cairn/install"
 	"github.com/chrispian/cairn/profile"
 	"github.com/chrispian/cairn/scope"
 	"github.com/chrispian/cairn/slots"
-	"github.com/chrispian/cairn/store"
 	"github.com/hollis-labs/agentkit/agentcontext"
 )
 
@@ -33,6 +33,7 @@ usage:
   cairn boot <binding|profile> [flags]      materialize a boot directory, print its path
   cairn install <binding|profile> [flags]   render the installed layer
   cairn show <binding|profile> [flags]      print what the profile resolves to
+  cairn list [flags]                        enumerate the catalog
 
 flags for boot:
   --scope <path|alias>   the directory the instance works in; overrides the binding's
@@ -48,21 +49,21 @@ flags for install:
 flags for show:
   --scope <path|alias>   the scope to report, as boot would resolve it; overrides the binding's
 
-flags for all three:
-  --db <path>            the database; defaults to $CAIRN_DB, else $XDG_CONFIG_HOME/agents/cairn.db
-  --profile <dir>        a profile bundle. For boot and install, $CAIRN_PROFILE_ROOT expands
-                         to this directory in every manifest value that names somewhere to
-                         read from, so a profile says $CAIRN_PROFILE_ROOT/templates/agents.md
-                         and the bundle relocates without edits. show expands nothing and
-                         reports it. Wins over the variable when both are set
+flags for all four:
+  --profile <dir>        the profile bundle — the directory the catalog is read from,
+                         holding profiles/ and bindings/. Defaults to $CAIRN_PROFILE_ROOT,
+                         else $XDG_CONFIG_HOME/agents, else ~/.config/agents.
+                         $CAIRN_PROFILE_ROOT expands to it in every manifest value that
+                         names somewhere to read from, so a profile says
+                         $CAIRN_PROFILE_ROOT/templates/agents.md and the bundle relocates
+                         without edits
 
 cairn install is human-executed. Every agent working under ~/.claude that runs
 it rewrites its own live configuration mid-session.
 
-cairn show renders nothing — no boot directory, no installed layer. An extends
-chain composes keyed collections member by member, so what a profile resolves
-to is held in no one row, and this is where it is read. Opening the database
-still creates one if it is absent, as every command does.
+cairn show and cairn install --check render nothing and write nothing — no boot
+directory, no installed layer, and no part of the bundle they read. A read that
+finds nothing says which bundle it was reading and where.
 `
 
 func main() {
@@ -95,6 +96,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runInstall(ctx, args[1:], stdout, stderr)
 	case "show":
 		return runShow(ctx, args[1:], stdout, stderr)
+	case "list":
+		return runList(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		_, _ = fmt.Fprint(stdout, usage)
 		return nil
@@ -125,7 +128,6 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	fs.SetOutput(stderr)
 	var (
 		check       = fs.Bool("check", false, "re-render, diff against disk, report drift, write nothing")
-		dbFlag      = fs.String("db", "", "the database path")
 		rootFlag    = fs.String("root", "", "the directory the installed layer is written beneath")
 		profileFlag = fs.String("profile", "", profileFlagUsage)
 	)
@@ -146,22 +148,22 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 
 	home, _ := os.UserHomeDir()
 
-	// The environment every value in this manifest expands against, built once
-	// and handed to everything below. --profile is the only thing that varies
-	// it; see [environment].
-	profileRoot, err := resolveProfileRoot(*profileFlag, home)
+	// The bundle this command reads, and the environment every value in its
+	// manifest expands against. They are one value: the catalog is the store,
+	// so the directory the profile came out of is the directory
+	// $CAIRN_PROFILE_ROOT names — see [bundleRoot] and [environment].
+	bundle, err := bundleRoot(*profileFlag, home)
 	if err != nil {
 		return err
 	}
-	env := environment(profileRoot)
+	env := environment(bundle)
 
-	st, err := openStore(ctx, *dbFlag, home)
+	cat, err := catalog.Open(bundle)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = st.Close() }()
 
-	_, profileID, _, err := lookup(ctx, st, target)
+	_, profileID, _, err := lookup(ctx, cat, target)
 	if err != nil {
 		return err
 	}
@@ -169,7 +171,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// abstract root of the cascade, and refusing one here would refuse the
 	// profile this command mostly exists to render. `cairn boot` is where a
 	// direct boot of an abstract profile is refused — plan §7.
-	resolved, err := profile.Resolve(ctx, st, profileID)
+	resolved, err := profile.Resolve(ctx, cat, profileID)
 	if err != nil {
 		return err
 	}
@@ -306,18 +308,27 @@ func kindList(kinds []agentcontext.SlotSourceKind) string {
 	return strings.Join(quoted, ", ")
 }
 
-// openStore resolves the database path and opens it. Both commands need it and
-// both resolve it the same way: the flag, then CAIRN_DB, then XDG, then home.
-func openStore(ctx context.Context, flagValue, home string) (*store.Store, error) {
-	path := flagValue
-	if strings.TrimSpace(path) == "" {
-		var err error
-		path, err = store.DefaultPath(os.Getenv(store.EnvDB), os.Getenv(store.EnvXDGConfigHome), home)
-		if err != nil {
-			return nil, err
-		}
+// lookup resolves a boot target to the name its boot directory is planted
+// under, the profile it boots, and the scope it declares.
+//
+// A binding is tried first: it is the name an operator boots by, and a profile
+// of the same id is the fallback rather than an ambiguity, because Cairn is a
+// single-operator tool and the operator who named both meant the binding.
+func lookup(ctx context.Context, cat *catalog.Catalog, target string) (name, profileID, declaredScope string, err error) {
+	b, err := cat.Binding(target)
+	switch {
+	case err == nil:
+		return b.Name, b.ProfileID, b.Scope, nil
+	case !errors.Is(err, catalog.ErrBindingNotFound):
+		return "", "", "", err
 	}
-	return store.Open(ctx, path)
+	if _, err := cat.Profile(ctx, target); err != nil {
+		if errors.Is(err, catalog.ErrProfileNotFound) {
+			return "", "", "", fmt.Errorf("%s: no binding and no profile named %q", cat.Root(), target)
+		}
+		return "", "", "", err
+	}
+	return target, target, "", nil
 }
 
 // runBoot materializes one boot directory and prints its path, or --json and
@@ -331,7 +342,6 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs.SetOutput(stderr)
 	var (
 		scopeFlag   = fs.String("scope", "", "the directory the instance works in, as a path or a scope alias")
-		dbFlag      = fs.String("db", "", "the database path")
 		rootFlag    = fs.String("boot-root", "", "where boot directories are planted")
 		sessFlag    = fs.String("session", "", "the session segment")
 		jsonFlag    = fs.Bool("json", false, "print one JSON object describing the boot instead of the bare path")
@@ -354,27 +364,27 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 
 	home, _ := os.UserHomeDir()
 
-	// The environment every value in this manifest expands against, built once
-	// and handed to everything below. --profile is the only thing that varies
-	// it; see [environment].
-	profileRoot, err := resolveProfileRoot(*profileFlag, home)
+	// The bundle this command reads, and the environment every value in its
+	// manifest expands against. They are one value: the catalog is the store,
+	// so the directory the profile came out of is the directory
+	// $CAIRN_PROFILE_ROOT names — see [bundleRoot] and [environment].
+	bundle, err := bundleRoot(*profileFlag, home)
 	if err != nil {
 		return err
 	}
-	env := environment(profileRoot)
+	env := environment(bundle)
 
-	st, err := openStore(ctx, *dbFlag, home)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
-
-	name, profileID, declaredScope, err := lookup(ctx, st, target)
+	cat, err := catalog.Open(bundle)
 	if err != nil {
 		return err
 	}
 
-	resolved, err := profile.Resolve(ctx, st, profileID)
+	name, profileID, declaredScope, err := lookup(ctx, cat, target)
+	if err != nil {
+		return err
+	}
+
+	resolved, err := profile.Resolve(ctx, cat, profileID)
 	if err != nil {
 		return err
 	}
@@ -391,14 +401,14 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if strings.TrimSpace(*scopeFlag) != "" {
 		rawScope = *scopeFlag
 	}
-	scopeDir, err := resolveScope(ctx, st, rawScope, home)
+	scopeDir, err := resolveScope(cat, rawScope, home)
 	if err != nil {
 		return err
 	}
 
-	root := *rootFlag
-	if strings.TrimSpace(root) == "" {
-		root, err = bootdir.DefaultRoot(os.Getenv(bootdir.EnvBootRoot), home)
+	bootRoot := *rootFlag
+	if strings.TrimSpace(bootRoot) == "" {
+		bootRoot, err = bootdir.DefaultRoot(os.Getenv(bootdir.EnvBootRoot), home)
 		if err != nil {
 			return err
 		}
@@ -410,7 +420,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			return err
 		}
 	}
-	dir, err := bootdir.Location{Root: root, Name: name, Session: session}.Dir()
+	dir, err := bootdir.Location{Root: bootRoot, Name: name, Session: session}.Dir()
 	if err != nil {
 		return err
 	}
@@ -489,9 +499,9 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 
 	// Subagent declarations resolve here for the same reason slots and files
 	// do, and it is the third form the reason takes: naming a subagent means
-	// reading another profile out of the store and walking its extends chain,
-	// and a renderer does no I/O.
-	subagents, err := resolveSubagents(ctx, st, resolved)
+	// reading another profile out of the catalog and walking its extends
+	// chain, and a renderer does no I/O.
+	subagents, err := resolveSubagents(ctx, cat, resolved)
 	if err != nil {
 		return err
 	}
@@ -548,8 +558,8 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 
 // splitTarget lifts a leading positional argument out of args so that flags may
 // be written on either side of it. Go's flag package stops parsing at the first
-// non-flag argument, which would otherwise make `cairn boot eng --db x` read
-// --db and its value as two more positionals.
+// non-flag argument, which would otherwise make `cairn boot eng --profile x`
+// read --profile and its value as two more positionals.
 //
 // An empty target means the first argument was a flag, and the positional is
 // whatever the flag set has left over.
@@ -558,29 +568,6 @@ func splitTarget(args []string) (target string, rest []string) {
 		return args[0], args[1:]
 	}
 	return "", args
-}
-
-// lookup resolves a boot target to the name its boot directory is planted
-// under, the profile it boots, and the scope it declares.
-//
-// A binding is tried first: it is the name an operator boots by, and a profile
-// of the same id is the fallback rather than an ambiguity, because Cairn is a
-// single-operator tool and the operator who named both meant the binding.
-func lookup(ctx context.Context, st *store.Store, target string) (name, profileID, declaredScope string, err error) {
-	b, err := st.Binding(ctx, target)
-	switch {
-	case err == nil:
-		return b.Name, b.ProfileID, b.Scope, nil
-	case !errors.Is(err, store.ErrBindingNotFound):
-		return "", "", "", err
-	}
-	if _, err := st.Profile(ctx, target); err != nil {
-		if errors.Is(err, store.ErrProfileNotFound) {
-			return "", "", "", fmt.Errorf("no binding and no profile named %q", target)
-		}
-		return "", "", "", err
-	}
-	return target, target, "", nil
 }
 
 // resolveScope turns a declared scope into a directory. A value that could not
@@ -592,16 +579,16 @@ func lookup(ctx context.Context, st *store.Store, target string) (name, profileI
 // silently retargets any binding whose scope is the literal relative path
 // "src" — unlikely, and one predicate to make impossible. A scope that moves
 // on its own is the kind of bug that eats an afternoon.
-func resolveScope(ctx context.Context, st *store.Store, raw, home string) (string, error) {
+func resolveScope(cat *catalog.Catalog, raw, home string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", nil
 	}
 	if !pathLike(trimmed) {
-		switch path, err := st.Scope(ctx, trimmed); {
+		switch path, err := cat.Scope(trimmed); {
 		case err == nil:
 			return scope.Parse(path, home)
-		case !errors.Is(err, store.ErrScopeNotFound):
+		case !errors.Is(err, catalog.ErrScopeNotFound):
 			return "", err
 		}
 	}

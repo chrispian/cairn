@@ -4,12 +4,13 @@ Cairn assembles files and writes them into a directory. It prints the path —
 or, with `--json`, one object describing the boot — and exits. **You launch.**
 Nothing here starts, watches, or supervises an agent.
 
-Two commands and one workflow:
+Three commands and one workflow:
 
 ```
 cairn boot <binding|profile> [--scope <path|alias>]   materialize a boot dir, print its path
 cairn boot <binding|profile> --json                   ... and describe it for a launcher
 cairn install <binding|profile> [--check]             render ~/.claude from the same source
+cairn list                                            enumerate the catalog
 ```
 
 ---
@@ -21,32 +22,58 @@ cd ~/dev/projects/cairn
 make build            # → bin/cairn
 ```
 
-## 2. Seed a store
+## 2. Point at a bundle
 
-Cairn ships no profiles and has no authoring command yet, so profiles are rows
-in a sqlite database at `$XDG_CONFIG_HOME/agents/cairn.db` (override with
-`--db` or `CAIRN_DB`). `seed.sh` is the worked example:
+Cairn ships no profiles. It reads them out of a **bundle** — a directory of
+files, which is the whole store:
 
-```bash
-./examples/seed.sh
+```
+<bundle>/
+  profiles/    one markdown file per profile, YAML frontmatter and prose
+  bindings/    one YAML file per binding, named after the binding
+  scopes.yaml  scope aliases, if you use them
+  templates/   the documents your profiles name
+  skills/      one directory per skill
 ```
 
-It writes an abstract `base`, a concrete `engineer` that extends it, a
-`reviewer` the engineer dispatches and that also boots on its own, two scope
-aliases, two bindings, and the templates those profiles name. Read it — it is
-the profile-authoring documentation.
+`--profile <dir>` names it; without the flag cairn reads `$CAIRN_PROFILE_ROOT`,
+then `$XDG_CONFIG_HOME/agents`, then `~/.config/agents`. There is nothing to
+seed and nothing to import: edit a file, and the next command reads it.
 
-Three things it demonstrates that are easy to get wrong:
+`examples/bundle/` is the worked example — a small, real bundle you can boot:
+
+```bash
+./bin/cairn list --profile examples/bundle
+./bin/cairn boot eng --profile examples/bundle --scope ~/dev/projects/cairn
+```
+
+It holds an abstract `base`, a concrete `engineer` that extends it, a
+`reviewer` the engineer dispatches and that also boots on its own, two scope
+aliases, two bindings, and the templates and skill those profiles name. Read
+it — it is the profile-authoring documentation.
+
+Four things it demonstrates that are easy to get wrong:
 
 - **`extends` merges keyed collections by key and replaces everything else.**
   A child declaring one slot, one template or one skill keeps the ancestor's
   rest — it does not restate them. Every other key is taken whole from the
   nearest profile that declares it, including every key Cairn has never heard
-  of. `body` is the exception to both and concatenates ancestor-first.
-- **`spec` is JSON, so a slot's kind key is `"kind"`.** Every boot profile in
-  the wider portfolio is YAML and writes `type:`. Cairn will tell you.
-- **`"key": null` clears an ancestor's key.** Presence wins, and an explicit
-  null is presence.
+  of. The prose below the frontmatter is the exception to both and concatenates
+  ancestor-first.
+- **Frontmatter is YAML and `spec` becomes JSON.** So a slot's kind key is
+  written `kind:`, and it lands as `"kind"` — which is the `type:`/`"kind"`
+  trap that catches everybody copying a slot out of a YAML boot profile
+  somewhere else. Cairn will tell you.
+- **A duration is written the way Go writes one** — `5s`, `300ms`, `1m30s`.
+  Cairn translates it into the nanoseconds a `time.Duration` unmarshals from as
+  it reads the catalog, so you never write the number.
+- **`key: null` clears an ancestor's key.** Presence wins, and an explicit null
+  is presence.
+
+A profile's id is its file name, and the two are held to agreeing. A binding's
+name is its file name. Cairn refuses a bundle where either disagrees, and a
+binding naming a profile that has no file, rather than discovering it whenever
+somebody happens to boot that one name.
 
 ## 3. Boot
 
@@ -77,7 +104,7 @@ What lands:
 ```
 
 **Cairn names none of those files.** `AGENTS.md`, `CLAUDE.md` and `boot.md` are
-destinations the seeded profiles happen to declare. Declare none and you get no
+destinations the example profiles happen to declare. Declare none and you get no
 prose; declare fifty and you get fifty. Cairn composes no heading, no section
 and no ordering of its own.
 
@@ -121,7 +148,7 @@ profile might fill: a line for every marker a profile does not use would be
 noise deep enough to bury the one line that matters.
 
 **Slots are where the leverage is.** They resolve at materialization, so they
-carry live state rather than a paragraph that went stale a month ago. The seeded
+carry live state rather than a paragraph that went stale a month ago. The example
 `engineer` pulls `git status` and `git log`; the same mechanism reaches an HTTP
 endpoint or any command, which is how memory and task state get in:
 

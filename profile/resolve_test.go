@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-// errFakeNotFound stands in for the store's ErrProfileNotFound. The cascade
+// errFakeNotFound stands in for the catalog's ErrProfileNotFound. The cascade
 // must propagate whatever its loader reports, so the tests use a sentinel of
-// their own rather than depending on package store.
+// their own rather than depending on package catalog.
 var errFakeNotFound = errors.New("fake loader: no such profile")
 
 // fakeLoader is an in-memory [Loader]: the profiles a test declares, by id.

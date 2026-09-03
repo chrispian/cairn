@@ -14,7 +14,8 @@
 #                way `make install-system` stages the real ~/.config/agents
 #   $FIX/scope   a git repo built from literals, so the git slots print the
 #                same two blocks on every machine
-#   $FIX/cairn.db  a store seeded from agent-setup/profiles/*.md
+#   $FIX/bin     the cairn built from this working tree, first on PATH, because
+#                the conductor's `fleet` slot shells out to `cairn list`
 #
 # and the session segment is pinned to "golden", which removes the only
 # non-determinism inside cairn itself (bootdir.NewSession's timestamp + random
@@ -75,7 +76,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-for tool in rsync git sqlite3 python3; do
+for tool in rsync git python3; do
 	command -v "$tool" >/dev/null 2>&1 || { echo "capture.sh: $tool is not on PATH" >&2; exit 1; }
 done
 [ -d "$AGENT_SETUP/profiles" ] || {
@@ -171,24 +172,9 @@ printf 'The scope a golden capture renders against.\n' >"$FIX/scope/README.md"
 fixgit add README.md
 fixgit commit -q -m 'Seed the golden fixture scope'
 
-# 3. the store, seeded from the profile files. seed.py needs an absolute --db:
-#    it makedirs os.path.dirname(--db), which a bare filename makes empty.
-"$AGENT_SETUP/bin/seed.py" --db "$FIX/cairn.db" >/dev/null
-
-# --- the environment every render runs under -------------------------------
-#
-# Built from nothing rather than inherited, so the operator's environment is
-# not an input. PATH survives because the git and sqlite3 slots need it.
-#
-# CAIRN_DB is exported and not merely passed as --db: the conductor's `fleet`
-# slot is a shell command that reads ${CAIRN_DB:-$HOME/.config/agents/cairn.db}
-# out of the environment, and cairn's --db flag never reaches it.
-render_env=(env -i
-	PATH="$PATH"
-	HOME="$FIX/home"
-	CAIRN_DB="$FIX/cairn.db"
-	TZ=UTC
-	LC_ALL=C)
+# There is no third. A seeded store used to be one, built from the profile
+# files by agent-setup's bin/seed.py; the catalog is the store now, so the
+# profiles are read out of $AGENT_SETUP where they already live.
 
 # --- the binary ------------------------------------------------------------
 #
@@ -196,13 +182,46 @@ render_env=(env -i
 # runs verify.sh to prove its own change did not alter rendering, so the
 # harness has to exercise the source in front of it — not a stale cairn that
 # happens to be on $PATH.
+#
+# It always lands at $FIX/bin/cairn, a CAIRN given by the operator copied there
+# rather than run where it lies, because the renders below put that directory
+# first on PATH. The conductor's `fleet` slot shells out to `cairn list`, and a
+# slot that found some other cairn would be capturing a binary this run never
+# built.
+#
+# Removing that PATH entry today happens to fail loudly, and that is a
+# coincidence rather than a property. It fails because the cairn installed on
+# this machine predates `cairn list` and answers with a usage banner and a
+# non-zero exit. Install this cairn and the same removal goes quiet: the slot
+# would resolve, render plausible output, and the capture would baseline a
+# listing produced by a binary nobody in this run built. The pin is what makes
+# it right; the noise is not.
+mkdir -p "$FIX/bin"
+CAIRN_BIN=$FIX/bin/cairn
 if [ -n "${CAIRN:-}" ]; then
-	CAIRN_BIN=$CAIRN
+	cp "$CAIRN" "$CAIRN_BIN"
 else
-	CAIRN_BIN=$FIX/bin/cairn
-	mkdir -p "$FIX/bin"
 	(cd "$REPO" && go build -o "$CAIRN_BIN" ./cmd/cairn)
 fi
+
+# --- the environment every render runs under -------------------------------
+#
+# Built from nothing rather than inherited, so the operator's environment is
+# not an input. PATH survives because the git slots need it, with $FIX/bin
+# ahead of it for the reason just above.
+#
+# CAIRN_PROFILE_ROOT is exported as well as passed as --profile, and the two
+# are not redundant. The flag tells cairn which bundle to read; the variable is
+# the only way the same bundle reaches a slot's shell, because a flag does not.
+# The conductor's `fleet` slot runs `cairn list`, which resolves its bundle the
+# way every other command does — the flag it was not given, then this variable.
+# It is the same seam CAIRN_DB filled before the store was retired.
+render_env=(env -i
+	PATH="$FIX/bin:$PATH"
+	HOME="$FIX/home"
+	CAIRN_PROFILE_ROOT="$AGENT_SETUP"
+	TZ=UTC
+	LC_ALL=C)
 
 # --- the nine renders ------------------------------------------------------
 mkdir -p "$OUT/stdout" "$OUT/stderr"
@@ -220,7 +239,7 @@ fail() {
 
 for id in "${BOOTS[@]}"; do
 	"${render_env[@]}" "$CAIRN_BIN" boot "$id" \
-		--db "$FIX/cairn.db" \
+		--profile "$AGENT_SETUP" \
 		--scope "$FIX/scope" \
 		--session golden \
 		--boot-root "$OUT/boot" \
@@ -235,7 +254,7 @@ done
 # validates the shape and Root.Check requires the directory.
 mkdir -p "$OUT/install/base"
 "${render_env[@]}" "$CAIRN_BIN" install base \
-	--db "$FIX/cairn.db" \
+	--profile "$AGENT_SETUP" \
 	--root "$OUT/install/base" \
 	>"$OUT/stdout/base.txt" 2>"$OUT/stderr/base.txt" || fail base
 
@@ -302,12 +321,15 @@ done
 # legitimately empty.
 #
 # The conductor's `fleet` slot is the case that motivated this. It is a cmd slot
-# reading ${CAIRN_DB:-$HOME/.config/agents/cairn.db} out of the environment,
-# `cairn boot --db <path>` does not export CAIRN_DB, and sqlite3's immutable=1
-# on an absent path opens an EMPTY database rather than erroring. So the query
-# fails with "no such table", the section renders nothing, and the boot still
-# exits 0. The export above is what prevents it; this is what catches it if the
-# export is ever lost.
+# that shells out, `cairn boot --profile <dir>` does not reach a slot's shell,
+# and the two exports above — CAIRN_PROFILE_ROOT and $FIX/bin on PATH — are what
+# point it at this run's bundle and this run's binary. Lose either and the slot
+# reads somewhere else or runs something else. It used to be worse: the slot
+# queried sqlite, and immutable=1 on an absent path opens an EMPTY database
+# rather than erroring, so the section rendered nothing and the boot still
+# exited 0. `cairn list` against a bundle that is not there is an error, so the
+# failure is loud now — but loud on stderr, which a capture would still
+# baseline, and this is what refuses it.
 #
 # All three patterns are cmd/cairn/main.go's own: reportSlotFailures and
 # reportUnfilledMarkers. Anything else on stderr is printed and does not fail —

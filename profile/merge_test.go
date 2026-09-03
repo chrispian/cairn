@@ -9,9 +9,15 @@ import (
 	"testing"
 )
 
-// pythonSpelling is a stored manifest value written the way bin/seed.py in
-// agent-setup writes one: json.dumps with sort_keys and its default separators,
-// which are ", " and ": ". Go's encoder emits neither space.
+// pythonSpelling is a manifest value written the way agent-setup's bin/seed.py
+// wrote one before the catalog replaced it: json.dumps with sort_keys and its
+// default separators, which are ", " and ": ". Go's encoder emits neither
+// space.
+//
+// The seeder is gone and the fixture is not, because what it is for is a
+// spelling no Go encoder produces. Any hand-written or non-Go-written document
+// serves; this one is kept because it is the spelling this rule was written
+// against.
 //
 // It is the fixture for the one rule this whole file exists to protect. What
 // is stored under spec.settings is written into the harness's settings

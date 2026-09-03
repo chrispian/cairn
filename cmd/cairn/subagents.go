@@ -7,18 +7,17 @@ import (
 
 	"github.com/chrispian/cairn/bootdir"
 	"github.com/chrispian/cairn/profile"
-	"github.com/chrispian/cairn/store"
 )
 
 // resolveSubagents turns the ids a profile names under spec.subagents into the
 // declarations their definitions are rendered from.
 //
-// It resolves here rather than in a renderer for the reason slots and files do:
-// it reads the store and walks an extends chain, and a renderer consults
-// nothing beyond the instance it is handed. What crosses over is one opaque
-// JSON value per id — the named profile's own spec.subagent — so nothing else
-// about a named profile reaches the boot directory of the profile that named
-// it.
+// It resolves here rather than in a renderer for the reason slots and files
+// do: it reads another profile out of the catalog and walks an extends chain,
+// and a renderer consults nothing beyond the instance it is handed. What
+// crosses over is one opaque JSON value per id — the named profile's own
+// spec.subagent — so nothing else about a named profile reaches the boot
+// directory of the profile that named it.
 //
 // A named profile is resolved through the same cascade a booted one is, so a
 // subagent declaration may be inherited or restated like any other manifest
@@ -38,7 +37,7 @@ import (
 // Depth is one by construction. This walks the ids the booting profile named
 // and stops; a named profile's own spec.subagents is never read, and a
 // subagent gets no boot directory to hold definitions in.
-func resolveSubagents(ctx context.Context, st *store.Store, parent *profile.Resolved) ([]bootdir.Subagent, error) {
+func resolveSubagents(ctx context.Context, loader profile.Loader, parent *profile.Resolved) ([]bootdir.Subagent, error) {
 	declared, err := parent.Spec.Subagents()
 	if err != nil {
 		return nil, fmt.Errorf("profile %q: %w", parent.ID, err)
@@ -52,7 +51,7 @@ func resolveSubagents(ctx context.Context, st *store.Store, parent *profile.Reso
 		id := strings.TrimSpace(raw)
 		named := fmt.Sprintf("profile %q names subagent %q", parent.ID, id)
 
-		child, err := profile.Resolve(ctx, st, id)
+		child, err := profile.Resolve(ctx, loader, id)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", named, err)
 		}

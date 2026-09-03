@@ -77,7 +77,7 @@ type Subagent struct {
 //
 // The definitions arrive on the instance already resolved — see
 // [Instance].Subagents. Looking one up means reading another profile out of
-// the store and walking its extends chain, and a renderer does no I/O.
+// the catalog and walking its extends chain, and a renderer does no I/O.
 //
 // A profile naming no subagents renders nothing and reports no error. The
 // output is deterministic: definitions in the order the resolved spec.subagents
@@ -281,8 +281,8 @@ func subagentIDs(subs []Subagent) []string {
 // and its values by key.
 //
 // The order is kept because it is the operator's: a definition is a file they
-// read, and sorting their keys would rewrite it for no gain, since the stored
-// bytes are fixed and so is the order they are walked in.
+// read, and sorting their keys would rewrite it for no gain, since the bytes
+// it was declared as are fixed and so is the order they are walked in.
 //
 // A repeated key is refused. encoding/json would let the last one win, and a
 // key that silently loses is a line of the operator's declaration that never

@@ -1,0 +1,178 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// TestList covers the command that answers "what can I boot" against a
+// directory of files. It replaces a SQL query the conductor profile ran against
+// the store, so the question is the same one and the answer has to carry the
+// same three facts: what a binding is called, what it boots, and where.
+func TestList(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := filepath.Join(home, "bundle")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, bundle, skillsDir, scopeDir)
+	writeScopes(t, bundle, map[string]string{"repo": scopeDir})
+	writeBinding(t, bundle, "aliased", "engineer", "repo")
+
+	list := func(t *testing.T, args ...string) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if err := run(ctx, append([]string{"list"}, append(args, "--profile", bundle)...), &stdout, &stderr); err != nil {
+			t.Fatalf("list: %v\nstderr: %s", err, stderr.String())
+		}
+		if stderr.Len() > 0 {
+			t.Errorf("list wrote to stderr with nothing to report:\n%s", stderr.String())
+		}
+		return stdout.String()
+	}
+
+	t.Run("a binding carries its profile and its directory", func(t *testing.T) {
+		// One line, not three substrings: three assertions that each pass
+		// somewhere in the document would pass on a listing that never put the
+		// three facts together.
+		out := list(t)
+		if !hasLine(out, "aliased", "engineer", scopeDir) {
+			t.Errorf("no line carries the binding, its profile and its directory:\n%s", out)
+		}
+	})
+
+	t.Run("a scope alias is resolved, and listed as well", func(t *testing.T) {
+		// The alias is what the binding file says and the directory is what a
+		// boot would work in. A listing showing the alias would make an
+		// operator open a second file to find out where that is, which is the
+		// whole reason the command exists.
+		out := list(t)
+		if strings.Contains(out, "aliased      engineer      repo\n") {
+			t.Errorf("the binding shows its alias rather than the directory it resolves to:\n%s", out)
+		}
+		if !hasLine(out, "repo", scopeDir) {
+			t.Errorf("the alias itself is not listed:\n%s", out)
+		}
+	})
+
+	t.Run("an abstract profile is listed apart from the bootable ones", func(t *testing.T) {
+		out := list(t)
+		bootable := rowIDs(blockOf(t, out, "Profiles"))
+		abstract := rowIDs(blockOf(t, out, "Abstract profiles"))
+		if slices.Contains(bootable, "base") {
+			t.Errorf("an abstract profile is listed as bootable: %v", bootable)
+		}
+		if !slices.Contains(abstract, "base") {
+			t.Errorf("the abstract profile is not listed at all:\n%s", out)
+		}
+	})
+
+	t.Run("the bundle's own path is not printed", func(t *testing.T) {
+		// Deliberate, and load-bearing twice: the listing is planted into a
+		// boot file, where an absolute path would be the one line of a render
+		// that differs between two checkouts, and the operator running this at
+		// a terminal just typed the flag that chose the bundle.
+		if out := list(t); strings.Contains(out, bundle) {
+			t.Errorf("the listing names the bundle it read:\n%s", out)
+		}
+	})
+
+	t.Run("a block with nothing in it renders nothing", func(t *testing.T) {
+		// install.Report's rule: a bundle with no aliases should not have to
+		// scroll past a heading saying so.
+		bare := filepath.Join(home, "bare")
+		writeProfile(t, bare, bundleProfile{ID: "only", Name: "Only", Provider: "claude"})
+
+		var stdout, stderr bytes.Buffer
+		if err := run(ctx, []string{"list", "--profile", bare}, &stdout, &stderr); err != nil {
+			t.Fatalf("list: %v\nstderr: %s", err, stderr.String())
+		}
+		for _, absent := range []string{"Bindings", "Abstract profiles", "Scope aliases"} {
+			if strings.Contains(stdout.String(), absent) {
+				t.Errorf("a bundle with no %s printed the heading anyway:\n%s", absent, stdout.String())
+			}
+		}
+		if !strings.Contains(stdout.String(), "Profiles (1)") {
+			t.Errorf("the one block with something in it is missing:\n%s", stdout.String())
+		}
+	})
+
+	t.Run("it takes no target", func(t *testing.T) {
+		// A listing is of the catalog. One profile is what `cairn show` is for,
+		// and a target silently ignored would read as a filter that does not
+		// filter.
+		var stdout, stderr bytes.Buffer
+		err := run(ctx, []string{"list", "engineer", "--profile", bundle}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("list with a target reported success")
+		}
+		if !strings.Contains(err.Error(), "engineer") {
+			t.Errorf("the refusal does not name what it was given: %v", err)
+		}
+	})
+}
+
+// hasLine reports whether some line of out carries every field, in order. It is
+// how a row is asserted as one fact rather than as several that happen to be in
+// the same document.
+func hasLine(out string, fields ...string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		rest, ok := line, true
+		for _, field := range fields {
+			_, after, found := strings.Cut(rest, field)
+			if !found {
+				ok = false
+				break
+			}
+			rest = after
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// rowIDs returns the first column of every row of a block, dropping the note
+// under the heading. It is a whole-field read rather than a substring one:
+// "base2" carries "base", and an assertion that could not tell them apart
+// would pass on a listing that put an abstract profile among the bootable
+// ones.
+func rowIDs(block string) []string {
+	var out []string
+	for i, line := range strings.Split(block, "\n") {
+		fields := strings.Fields(line)
+		if i == 0 || len(fields) == 0 {
+			continue
+		}
+		out = append(out, fields[0])
+	}
+	return out
+}
+
+// blockOf returns the lines under a heading, up to the blank line that ends it.
+func blockOf(t *testing.T, out, heading string) string {
+	t.Helper()
+	var block []string
+	in := false
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, heading+" ("):
+			in = true
+		case in && strings.TrimSpace(line) == "":
+			return strings.Join(block, "\n")
+		case in:
+			block = append(block, line)
+		}
+	}
+	if !in {
+		t.Fatalf("the listing has no %q block:\n%s", heading, out)
+	}
+	return strings.Join(block, "\n")
+}

@@ -18,7 +18,6 @@ import (
 	"github.com/chrispian/cairn/profile"
 	"github.com/chrispian/cairn/scope"
 	"github.com/chrispian/cairn/slots"
-	"github.com/chrispian/cairn/store"
 	goprovider "github.com/hollis-labs/go-providers/provider"
 )
 
@@ -29,19 +28,19 @@ import (
 func TestBootEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	bootRoot := filepath.Join(home, "runtime", "boot")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	var stdout, stderr bytes.Buffer
 	err := run(ctx, []string{
 		"boot", "engineer",
-		"--db", dbPath,
+		"--profile", bundle,
 		"--boot-root", bootRoot,
 		"--session", "s1",
 	}, &stdout, &stderr)
@@ -178,18 +177,18 @@ func TestBootEndToEnd(t *testing.T) {
 func TestBootJSONDescribesTheBootForALauncher(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	bootRoot := filepath.Join(home, "runtime", "boot")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	var stdout, stderr bytes.Buffer
 	err := run(ctx, []string{
 		"boot", "engineer",
-		"--db", dbPath,
+		"--profile", bundle,
 		"--boot-root", bootRoot,
 		"--session", "s1",
 		"--json",
@@ -230,8 +229,8 @@ func TestBootJSONDescribesTheBootForALauncher(t *testing.T) {
 		t.Errorf("provider = %q, want %q", report.Provider, profile.ProviderClaude)
 	}
 	// The scope as the boot resolved it, symlinks and all, and not the raw
-	// value the binding stored — a granted directory is matched against by the
-	// harness, so the spelling matters.
+	// value the binding declared — a granted directory is matched against by
+	// the harness, so the spelling matters.
 	wantScope, err := scope.Parse(scopeDir, home)
 	if err != nil {
 		t.Fatalf("resolve the fixture scope: %v", err)
@@ -317,13 +316,13 @@ func TestBootJSONReportsAFlaglessProviderAsNull(t *testing.T) {
 func TestBootJSONSpellsAPathTheOperatorCanRead(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	bootRoot := filepath.Join(home, "runtime", "boot")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	awkward := filepath.Join(home, "r&d <x>")
 	mustMkdir(t, awkward)
@@ -331,7 +330,7 @@ func TestBootJSONSpellsAPathTheOperatorCanRead(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run(ctx, []string{
 		"boot", "engineer",
-		"--db", dbPath,
+		"--profile", bundle,
 		"--boot-root", bootRoot,
 		"--session", "s1",
 		"--scope", awkward,
@@ -376,18 +375,18 @@ func TestBootJSONSpellsAPathTheOperatorCanRead(t *testing.T) {
 func TestBootWithoutJSONPrintsTheBarePath(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	bootRoot := filepath.Join(home, "runtime", "boot")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	var stdout, stderr bytes.Buffer
 	if err := run(ctx, []string{
 		"boot", "engineer",
-		"--db", dbPath,
+		"--profile", bundle,
 		"--boot-root", bootRoot,
 		"--session", "s1",
 	}, &stdout, &stderr); err != nil {
@@ -416,18 +415,18 @@ func TestBootWithoutJSONPrintsTheBarePath(t *testing.T) {
 func TestBootJSONReportsAnAbsentValueAsNull(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	bootRoot := filepath.Join(home, "runtime", "boot")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	var stdout, stderr bytes.Buffer
 	if err := run(ctx, []string{
 		"boot", "nosettings",
-		"--db", dbPath,
+		"--profile", bundle,
 		"--boot-root", bootRoot,
 		"--session", "s1",
 		"--json",
@@ -467,7 +466,7 @@ func TestBootJSONReportsAnAbsentValueAsNull(t *testing.T) {
 	stderr.Reset()
 	if err := run(ctx, []string{
 		"boot", "grantsonly",
-		"--db", dbPath,
+		"--profile", bundle,
 		"--boot-root", bootRoot,
 		"--session", "s2",
 		"--json",
@@ -526,17 +525,17 @@ func deref(s *string) string {
 func TestASlotThatProducedNothingLeavesNoTraceInTheBootFile(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	var stdout, stderr bytes.Buffer
 	err := run(ctx, []string{
 		"boot", "engineer",
-		"--db", dbPath,
+		"--profile", bundle,
 		"--boot-root", filepath.Join(home, "runtime", "boot"),
 		"--session", "s1",
 	}, &stdout, &stderr)
@@ -582,19 +581,19 @@ func TestASlotThatProducedNothingLeavesNoTraceInTheBootFile(t *testing.T) {
 func TestTwoBootsOfOneProfileAreByteIdentical(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	bootRoot := filepath.Join(home, "runtime", "boot")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	boot := func(session string) map[string]string {
 		var stdout, stderr bytes.Buffer
 		if err := run(ctx, []string{
 			"boot", "engineer",
-			"--db", dbPath,
+			"--profile", bundle,
 			"--boot-root", bootRoot,
 			"--session", session,
 		}, &stdout, &stderr); err != nil {
@@ -638,18 +637,18 @@ func TestTwoBootsOfOneProfileAreByteIdentical(t *testing.T) {
 func TestBootRefusesAFileSourceThatDoesNotResolve(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	bootRoot := filepath.Join(home, "runtime", "boot")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	var stdout, stderr bytes.Buffer
 	err := run(ctx, []string{
 		"boot", "brokenfiles",
-		"--db", dbPath,
+		"--profile", bundle,
 		"--boot-root", bootRoot,
 		"--session", "s1",
 	}, &stdout, &stderr)
@@ -686,33 +685,23 @@ func TestBootRefusesAFileSourceThatDoesNotResolve(t *testing.T) {
 func TestAFailedSlotNamesWhatTheOperatorWrote(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	profiles := seed(t, bundle, skillsDir, scopeDir)
 
-	st, err := store.Open(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	engineer, err := st.Profile(ctx, "engineer")
-	if err != nil {
-		t.Fatalf("load the profile: %v", err)
-	}
-	engineer.Spec["slots"] = json.RawMessage(`[
+	engineer := profiles["engineer"]
+	engineer.Spec["slots"] = `[
 		{"name":"memory","section":"## Memory",
 		 "source":{"kind":"static_file","static_file":{"path":"$CAIRN_TEST_NEVER_SET/process.md"}}}
-	]`)
-	if err := st.PutProfile(ctx, *engineer); err != nil {
-		t.Fatalf("put the profile: %v", err)
-	}
-	_ = st.Close()
+	]`
+	writeProfile(t, bundle, engineer)
 
 	var stdout, stderr bytes.Buffer
 	if err := run(ctx, []string{
-		"boot", "engineer", "--db", dbPath,
+		"boot", "engineer", "--profile", bundle,
 		"--boot-root", filepath.Join(home, "runtime"), "--session", "s1",
 	}, &stdout, &stderr); err != nil {
 		t.Fatalf("boot: %v\nstderr: %s", err, stderr.String())
@@ -749,32 +738,22 @@ func TestAFailedSlotNamesWhatTheOperatorWrote(t *testing.T) {
 func TestAValueCairnCannotFillIsRenderedAwayAndReported(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	profiles := seed(t, bundle, skillsDir, scopeDir)
 
-	st, err := store.Open(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	reviewer, err := st.Profile(ctx, "reviewer")
-	if err != nil {
-		t.Fatalf("load the profile: %v", err)
-	}
-	reviewer.Spec["templates"] = json.RawMessage(`{
+	reviewer := profiles["reviewer"]
+	reviewer.Spec["templates"] = `{
 		"AGENTS.md": "# <!-- cairn:value profile -->\n\n- tenant: <!-- cairn:value tenant -->\n- scope: <!-- cairn:value scope -->\n"
-	}`)
-	if err := st.PutProfile(ctx, *reviewer); err != nil {
-		t.Fatalf("put the profile: %v", err)
-	}
-	_ = st.Close()
+	}`
+	writeProfile(t, bundle, reviewer)
 
 	var stdout, stderr bytes.Buffer
 	if err := run(ctx, []string{
-		"boot", "reviewer", "--db", dbPath,
+		"boot", "reviewer", "--profile", bundle,
 		"--boot-root", filepath.Join(home, "runtime"), "--session", "s1",
 	}, &stdout, &stderr); err != nil {
 		t.Fatalf("boot: %v\nstderr: %s", err, stderr.String())
@@ -821,16 +800,16 @@ func TestAValueCairnCannotFillIsRenderedAwayAndReported(t *testing.T) {
 func TestBootRefusals(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	t.Run("an abstract profile", func(t *testing.T) {
 		var out, errOut bytes.Buffer
-		err := run(ctx, []string{"boot", "base", "--db", dbPath, "--boot-root", filepath.Join(home, "b1")}, &out, &errOut)
+		err := run(ctx, []string{"boot", "base", "--profile", bundle, "--boot-root", filepath.Join(home, "b1")}, &out, &errOut)
 		if err == nil || !strings.Contains(err.Error(), "abstract") {
 			t.Errorf("booting an abstract profile = %v, want a refusal naming it as abstract", err)
 		}
@@ -838,7 +817,7 @@ func TestBootRefusals(t *testing.T) {
 
 	t.Run("a target that names nothing", func(t *testing.T) {
 		var out, errOut bytes.Buffer
-		err := run(ctx, []string{"boot", "nobody", "--db", dbPath, "--boot-root", filepath.Join(home, "b2")}, &out, &errOut)
+		err := run(ctx, []string{"boot", "nobody", "--profile", bundle, "--boot-root", filepath.Join(home, "b2")}, &out, &errOut)
 		if err == nil || !strings.Contains(err.Error(), "nobody") {
 			t.Errorf("booting an unknown target = %v, want a refusal naming it", err)
 		}
@@ -852,7 +831,7 @@ func TestBootRefusals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
 			err := run(ctx, []string{
-				"boot", target, "--db", dbPath,
+				"boot", target, "--profile", bundle,
 				"--boot-root", filepath.Join(home, target), "--session", "s1",
 			}, &out, &errOut)
 			if err == nil {
@@ -875,7 +854,7 @@ func TestBootRefusals(t *testing.T) {
 		var out, errOut bytes.Buffer
 		err := run(ctx, []string{
 			"boot", "engineer",
-			"--db", dbPath,
+			"--profile", bundle,
 			"--boot-root", filepath.Join(scopeDir, "runtime", "boot"),
 			"--session", "s1",
 		}, &out, &errOut)
@@ -893,19 +872,19 @@ func TestBootRefusals(t *testing.T) {
 func TestInstall(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	// "base" is abstract. install renders it and boot refuses it — that
 	// divergence is the reason the cascade carries the flag rather than acting
 	// on it.
-	if err := run(ctx, []string{"install", "base", "--db", dbPath, "--root", root}, &stdout, &stderr); err != nil {
+	if err := run(ctx, []string{"install", "base", "--profile", bundle, "--root", root}, &stdout, &stderr); err != nil {
 		t.Fatalf("install: %v\nstderr: %s", err, stderr.String())
 	}
 
@@ -936,7 +915,7 @@ func TestInstall(t *testing.T) {
 
 	t.Run("a clean check reports no drift", func(t *testing.T) {
 		var out, errOut bytes.Buffer
-		if err := run(ctx, []string{"install", "base", "--db", dbPath, "--root", root, "--check"}, &out, &errOut); err != nil {
+		if err := run(ctx, []string{"install", "base", "--profile", bundle, "--root", root, "--check"}, &out, &errOut); err != nil {
 			t.Fatalf("install --check on a freshly installed root = %v\n%s", err, out.String())
 		}
 	})
@@ -947,7 +926,7 @@ func TestInstall(t *testing.T) {
 		writeFile(t, edited, before+"\nthe operator edited this in place\n", 0o644)
 
 		var out, errOut bytes.Buffer
-		err := run(ctx, []string{"install", "base", "--db", dbPath, "--root", root, "--check"}, &out, &errOut)
+		err := run(ctx, []string{"install", "base", "--profile", bundle, "--root", root, "--check"}, &out, &errOut)
 		var code exitCode
 		if !errors.As(err, &code) || int(code) == 0 {
 			t.Fatalf("install --check over an edited file = %v, want a non-zero exit status", err)
@@ -965,24 +944,24 @@ func TestInstall(t *testing.T) {
 		// A fresh root, so the edit from the previous subtest is not in play.
 		clean := t.TempDir()
 		var out, errOut bytes.Buffer
-		if err := run(ctx, []string{"install", "base", "--db", dbPath, "--root", clean}, &out, &errOut); err != nil {
+		if err := run(ctx, []string{"install", "base", "--profile", bundle, "--root", clean}, &out, &errOut); err != nil {
 			t.Fatalf("install: %v", err)
 		}
 		for _, rel := range []string{".claude/settings.local.json", ".claude/.credentials.json"} {
 			writeFile(t, filepath.Join(clean, filepath.FromSlash(rel)), "{}\n", 0o644)
 		}
 		out.Reset()
-		if err := run(ctx, []string{"install", "base", "--db", dbPath, "--root", clean, "--check"}, &out, &errOut); err != nil {
+		if err := run(ctx, []string{"install", "base", "--profile", bundle, "--root", clean, "--check"}, &out, &errOut); err != nil {
 			t.Fatalf("the harness's own state files were reported as drift: %v\n%s", err, out.String())
 		}
 	})
 
 	t.Run("install takes exactly one target", func(t *testing.T) {
 		var out, errOut bytes.Buffer
-		if err := run(ctx, []string{"install", "--root", root, "--db", dbPath}, &out, &errOut); err == nil {
+		if err := run(ctx, []string{"install", "--root", root, "--profile", bundle}, &out, &errOut); err == nil {
 			t.Error("install with no target reported success")
 		}
-		if err := run(ctx, []string{"install", "base", "engineer", "--db", dbPath, "--root", root}, &out, &errOut); err == nil {
+		if err := run(ctx, []string{"install", "base", "engineer", "--profile", bundle, "--root", root}, &out, &errOut); err == nil {
 			t.Error("install with two targets reported success")
 		}
 	})
@@ -1011,34 +990,24 @@ func TestInstall(t *testing.T) {
 func TestInstallReportsAValueCairnCannotFill(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	profiles := seed(t, bundle, skillsDir, scopeDir)
 
-	st, err := store.Open(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	base, err := st.Profile(ctx, "base")
-	if err != nil {
-		t.Fatalf("load the profile: %v", err)
-	}
-	base.Spec["templates"] = json.RawMessage(`{
+	base := profiles["base"]
+	base.Spec["templates"] = `{
 		"AGENTS.md": "<!-- cairn:value sesion -->\n",
 		"CLAUDE.md": "@AGENTS.md\n"
-	}`)
-	if err := st.PutProfile(ctx, *base); err != nil {
-		t.Fatalf("put the profile: %v", err)
-	}
-	_ = st.Close()
+	}`
+	writeProfile(t, bundle, base)
 
 	root := t.TempDir()
 	for _, args := range [][]string{
-		{"install", "base", "--db", dbPath, "--root", root},
-		{"install", "base", "--db", dbPath, "--root", root, "--check"},
+		{"install", "base", "--profile", bundle, "--root", root},
+		{"install", "base", "--profile", bundle, "--root", root, "--check"},
 	} {
 		mode := "write"
 		if args[len(args)-1] == "--check" {
@@ -1087,33 +1056,23 @@ func TestInstallReportsAValueCairnCannotFill(t *testing.T) {
 func TestAMarkerThatWillNotParseNamesWhatTheOperatorEdits(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	profiles := seed(t, bundle, skillsDir, scopeDir)
 
-	st, err := store.Open(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	base, err := st.Profile(ctx, "base")
-	if err != nil {
-		t.Fatalf("load the profile: %v", err)
-	}
-	base.Spec["templates"] = json.RawMessage(`{
+	base := profiles["base"]
+	base.Spec["templates"] = `{
 		"AGENTS.md": "<!-- cairn:section repo -->\n",
 		"CLAUDE.md": "@AGENTS.md\n"
-	}`)
-	if err := st.PutProfile(ctx, *base); err != nil {
-		t.Fatalf("put the profile: %v", err)
-	}
-	_ = st.Close()
+	}`
+	writeProfile(t, bundle, base)
 
 	for name, args := range map[string][]string{
-		"install": {"install", "base", "--db", dbPath, "--root", t.TempDir()},
-		"boot":    {"boot", "base2", "--db", dbPath, "--boot-root", filepath.Join(home, "rt"), "--session", "s1"},
+		"install": {"install", "base", "--profile", bundle, "--root", t.TempDir()},
+		"boot":    {"boot", "base2", "--profile", bundle, "--boot-root", filepath.Join(home, "rt"), "--session", "s1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -1179,156 +1138,152 @@ func TestInstanceValuesCarriesOnlyTheNamesCairnFills(t *testing.T) {
 }
 
 // seed writes the two profiles and the binding the tests above boot.
-func seed(t *testing.T, ctx context.Context, dbPath, skillsDir, scopeDir string) {
+func seed(t *testing.T, bundle, skillsDir, scopeDir string) map[string]bundleProfile {
 	t.Helper()
 	// A path nothing ever writes, for the slot and the file source that have
 	// to fail. It sits under the test's own temp tree so it cannot collide
 	// with anything real.
-	missing := filepath.Join(filepath.Dir(dbPath), "never-written.md")
-	st, err := store.Open(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	defer func() { _ = st.Close() }()
+	missing := filepath.Join(filepath.Dir(bundle), "never-written.md")
 
-	base := profile.Profile{
+	base := bundleProfile{
 		ID:       "base",
 		Abstract: true,
 		Name:     "Base",
-		Provider: profile.ProviderClaude,
+		Provider: "claude",
 		Model:    "opus",
 		Body:     "base persona",
-		Spec: profile.Spec{
-			"settings": json.RawMessage(`{"env":{"CAIRN":"whateverTheOperatorWrote"}}`),
+		Spec: map[string]string{
+			"settings": `{"env":{"CAIRN":"whateverTheOperatorWrote"}}`,
 			// Every file of prose in the boot directory is a template a profile
 			// declared. Cairn names none of them: the destinations, the order
 			// of the blocks, and whether an instruction file exists at all are
 			// all here.
-			"templates": json.RawMessage(`{
+			"templates": `{
 				"AGENTS.md": "# <!-- cairn:value profile --> on <!-- cairn:value provider -->\n\nbase persona\n\nscope: <!-- cairn:value scope -->\n\n<!-- cairn:slot note -->\n\n<!-- cairn:slot quiet -->\n\n<!-- cairn:slot memory -->\n",
 				"CLAUDE.md": "@AGENTS.md\n",
 				"boot.md":   "<!-- cairn:slot note -->\n"
-			}`),
+			}`,
 			// An unknown key: carried through the cascade and ignored by every
 			// renderer, never an error.
-			"somethingCairnHasNeverHeardOf": json.RawMessage(`{"nested":[1,2,3]}`),
+			"somethingCairnHasNeverHeardOf": `{"nested":[1,2,3]}`,
 		},
 	}
 	// A profile that exists to be dispatched. Its spec.subagent is the whole
 	// of what a definition is rendered from — the parent neither narrows nor
 	// widens it, so a tool this profile needs is a change made here.
-	reviewer := profile.Profile{
+	reviewer := bundleProfile{
 		ID:      "reviewer",
 		Extends: "base",
 		Name:    "Reviewer",
 		Body:    "reviewer persona, which the definition does not carry",
-		Spec: profile.Spec{
-			"subagent": json.RawMessage(`{
+		Spec: map[string]string{
+			"subagent": `{
 				"description": "Fresh review with no shared context.",
 				"tools": ["Read", "Grep", "Glob"],
 				"model": "sonnet",
 				"body": "You review a diff and report what you found.\n"
-			}`),
+			}`,
 		},
 	}
 	// Three profiles a boot has to refuse to name as a subagent: one that is
 	// abstract, one that declares no definition, and — by its absence — one
 	// that does not exist.
-	abstractSub := profile.Profile{ID: "template", Extends: "base", Abstract: true, Name: "Template",
-		Spec: profile.Spec{"subagent": json.RawMessage(`{"description":"d"}`)}}
-	undeclaredSub := profile.Profile{ID: "plain", Extends: "base", Name: "Plain"}
+	abstractSub := bundleProfile{ID: "template", Extends: "base", Abstract: true, Name: "Template",
+		Spec: map[string]string{"subagent": `{"description":"d"}`}}
+	undeclaredSub := bundleProfile{ID: "plain", Extends: "base", Name: "Plain"}
 
-	namesSubagent := func(id string) profile.Profile {
-		return profile.Profile{
+	namesSubagent := func(id string) bundleProfile {
+		return bundleProfile{
 			ID: "names-" + id, Extends: "base", Name: "Names " + id,
-			Spec: profile.Spec{"subagents": json.RawMessage(`["` + id + `"]`)},
+			Spec: map[string]string{"subagents": `["` + id + `"]`},
 		}
 	}
 
-	engineer := profile.Profile{
+	engineer := bundleProfile{
 		ID:      "engineer",
 		Extends: "base",
 		Name:    "Engineer",
 		Body:    "engineer persona",
-		Spec: profile.Spec{
-			"subagents": json.RawMessage(`["reviewer"]`),
+		Spec: map[string]string{
+			"subagents": `["reviewer"]`,
 			// The leaf restates the whole template, which is how closest-wins
 			// works for every other key. Ordering is the operator's: the
 			// ancestor's prose is here because this profile put it here, not
 			// because a cascade concatenated it first.
-			"templates": json.RawMessage(`{
+			"templates": `{
 				"AGENTS.md": "# <!-- cairn:value profile --> on <!-- cairn:value provider -->\n\nbase persona\n\nengineer persona\n\nscope: <!-- cairn:value scope -->\n\n<!-- cairn:slot note -->\n\n<!-- cairn:slot quiet -->\n\n<!-- cairn:slot memory -->\n",
 				"CLAUDE.md": "@AGENTS.md\n",
 				"boot.md":   "<!-- cairn:slot note -->\n"
-			}`),
+			}`,
 			// Three slots on purpose: one that resolves, one that resolves
 			// empty, and one that fails. The last two are the pair docs/plan.md
 			// §5 says must leave nothing behind.
-			"slots": json.RawMessage(`[
+			"slots": `[
 				{"name":"note",  "section":"## Note",  "source":{"kind":"inline","inline":{"content":"the standing note"}}},
 				{"name":"quiet", "section":"## Quiet", "source":{"kind":"cmd","cmd":{"run":"true"}}},
 				{"name":"memory","section":"## Memory","source":{"kind":"static_file","static_file":{"path":"` + missing + `"}}}
-			]`),
-			"mcp":        json.RawMessage(`[{"name":"vanta","command":"vanta-mcp","args":["serve"]}]`),
-			"skills":     json.RawMessage(`["code-review"]`),
-			"skills_dir": json.RawMessage(`"` + skillsDir + `"`),
+			]`,
+			"mcp":        `[{"name":"vanta","command":"vanta-mcp","args":["serve"]}]`,
+			"skills":     `["code-review"]`,
+			"skills_dir": `"` + skillsDir + `"`,
 			// A literal and a source side by side: the source is the torque
 			// case, a task bundle rendered from state that is only true now.
-			"files": json.RawMessage(`{
+			"files": `{
 				"notes/scratch.md":  "scratch\n",
 				"tasks/T-1/task.md": {"kind":"cmd","cmd":{"run":"printf '# T-1\\nin progress\\n'"}}
-			}`),
+			}`,
 		},
 	}
 	// A profile whose file source cannot resolve. Nothing boots it except the
 	// test that asserts a boot is refused rather than half-written.
-	broken := profile.Profile{
+	broken := bundleProfile{
 		ID:      "brokenfiles",
 		Extends: "base",
 		Name:    "Broken",
-		Spec: profile.Spec{
-			"files": json.RawMessage(`{
+		Spec: map[string]string{
+			"files": `{
 				"notes/fine.md":     "a literal, which resolves",
 				"tasks/T-2/task.md": {"kind":"static_file","static_file":{"path":"` + missing + `"}}
-			}`),
+			}`,
 		},
 	}
 	// A concrete profile that adds nothing of its own. `cairn boot` refuses an
 	// abstract profile before it reads a template, so a test about templates
 	// needs one the cascade will actually boot.
-	base2 := profile.Profile{ID: "base2", Extends: "base", Name: "Base, bootable"}
+	base2 := bundleProfile{ID: "base2", Extends: "base", Name: "Base, bootable"}
 
 	// A profile with no settings document at all, and no binding to give it a
 	// scope. An explicit null clears the ancestor's key, and with nothing
 	// declared and no scope to grant there is nothing for RenderSettings to
 	// write — which is the only way a boot directory legitimately holds no
 	// settings file, and the case a launcher must not be handed a path for.
-	nosettings := profile.Profile{ID: "nosettings", Extends: "base", Name: "No settings",
-		Spec: profile.Spec{"settings": json.RawMessage(`null`)}}
+	nosettings := bundleProfile{ID: "nosettings", Extends: "base", Name: "No settings",
+		Spec: map[string]string{"settings": `null`}}
 
 	// The same, plus one directory to grant. It is what keeps "no scope" and
 	// "no settings file" from being one fact tested twice: this profile has no
 	// binding either, so its scope is null, and the grant alone still renders
 	// the settings document. A report that derived one from the other would
 	// pass every other test in this file and fail here.
-	grantsonly := profile.Profile{ID: "grantsonly", Extends: "base", Name: "Grants only",
-		Spec: profile.Spec{
-			"settings": json.RawMessage(`null`),
-			"access":   json.RawMessage(`{"directories":["` + scopeDir + `"]}`),
+	grantsonly := bundleProfile{ID: "grantsonly", Extends: "base", Name: "Grants only",
+		Spec: map[string]string{
+			"settings": `null`,
+			"access":   `{"directories":["` + scopeDir + `"]}`,
 		}}
 
-	profiles := []profile.Profile{
+	written := map[string]bundleProfile{}
+	for _, p := range []bundleProfile{
 		base, base2, engineer, broken, reviewer, abstractSub, undeclaredSub, nosettings, grantsonly,
 		namesSubagent("template"), namesSubagent("plain"), namesSubagent("nosuchprofile"),
+	} {
+		writeProfile(t, bundle, p)
+		written[p.ID] = p
 	}
-	for _, p := range profiles {
-		if err := st.PutProfile(ctx, p); err != nil {
-			t.Fatalf("put profile %q: %v", p.ID, err)
-		}
-	}
-	if err := st.PutBinding(ctx, store.Binding{Name: "engineer", ProfileID: "engineer", Scope: scopeDir}); err != nil {
-		t.Fatalf("put binding: %v", err)
-	}
+	writeBinding(t, bundle, "engineer", "engineer", scopeDir)
+	// The fixtures are returned so a test can re-author one: a file is the
+	// store now, so changing a profile is writing its file again rather than
+	// updating a row.
+	return written
 }
 
 // writeSkill lays down a multi-file skill: an entry file, a reference under a

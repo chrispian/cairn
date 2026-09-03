@@ -22,10 +22,10 @@ var ErrNilLoader = errors.New("nil loader")
 // as a named error instead of a nil dereference further down.
 var ErrNilProfile = errors.New("loader returned no profile and no error")
 
-// Loader is what [Resolve] reads profiles through: one stored profile by id,
-// with no cascade applied. The store implements it.
+// Loader is what [Resolve] reads profiles through: one declared profile by id,
+// with no cascade applied. The catalog implements it.
 //
-// A Loader that has no profile for an id returns an error — the store's
+// A Loader that has no profile for an id returns an error — the catalog's
 // ErrProfileNotFound — rather than a nil profile. [Resolve] propagates that
 // error, so what "not found" means stays the Loader's to define.
 type Loader interface {

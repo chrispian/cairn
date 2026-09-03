@@ -178,8 +178,9 @@ func TestInstallGeneratedMarkerSurvivesToDisk(t *testing.T) {
 // [json.Marshal] escapes "<", ">" and "&" into their \u00XX forms by default,
 // so anything on this path that re-marshalled a merged [profile.Spec]
 // would silently rewrite a settings document containing a shell pipeline, a
-// glob, or a comparison. The store assembles that column by hand for the same
-// reason. This is where the mistake gets caught if it is ever reintroduced.
+// glob, or a comparison. The catalog builds every manifest value with escaping
+// off for the same reason, and the cascade re-encodes a merged one the same
+// way. This is where the mistake gets caught if it is ever reintroduced.
 //
 // The render is laid out, so the comparison is against the document laid out
 // and the escape check is against the characters. Laying a document out moves

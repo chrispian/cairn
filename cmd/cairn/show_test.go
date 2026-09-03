@@ -13,8 +13,7 @@ import (
 	"testing"
 
 	"github.com/chrispian/cairn/bootdir"
-	"github.com/chrispian/cairn/profile"
-	"github.com/chrispian/cairn/store"
+	"github.com/chrispian/cairn/catalog"
 )
 
 // TestShow covers the command that answers "what does this profile actually
@@ -25,17 +24,17 @@ import (
 func TestShow(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	show := func(t *testing.T, args ...string) (string, string) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
-		if err := run(ctx, append([]string{"show"}, append(args, "--db", dbPath)...), &stdout, &stderr); err != nil {
+		if err := run(ctx, append([]string{"show"}, append(args, "--profile", bundle)...), &stdout, &stderr); err != nil {
 			t.Fatalf("show %v: %v\nstderr: %s", args, err, stderr.String())
 		}
 		return stdout.String(), stderr.String()
@@ -74,16 +73,7 @@ func TestShow(t *testing.T) {
 	})
 
 	t.Run("a profile declaring nothing prints an empty spec", func(t *testing.T) {
-		st, err := store.Open(ctx, dbPath)
-		if err != nil {
-			t.Fatalf("open the store: %v", err)
-		}
-		if err := st.PutProfile(ctx, profile.Profile{
-			ID: "bare", Extends: "", Name: "Bare", Provider: profile.ProviderClaude,
-		}); err != nil {
-			t.Fatalf("put the profile: %v", err)
-		}
-		_ = st.Close()
+		writeProfile(t, bundle, bundleProfile{ID: "bare", Name: "Bare", Provider: "claude"})
 
 		out, _ := show(t, "bare")
 		if !strings.HasSuffix(out, "\nspec (0 keys)\n") {
@@ -133,30 +123,30 @@ func TestShow(t *testing.T) {
 		}
 	})
 
-	t.Run("a value one profile declares is that profile's own bytes", func(t *testing.T) {
+	t.Run("a value one profile declares is that profile's own declaration", func(t *testing.T) {
 		// The promise the section note makes. Indentation is whitespace, so
-		// compacting what was printed has to give back exactly what the store
-		// holds — the property bootdir.RenderSettings depends on.
+		// compacting what was printed has to give back exactly what the
+		// catalog read out of the file — the property bootdir.RenderSettings
+		// depends on.
 		out, _ := show(t, "base")
-		st, err := store.Open(ctx, dbPath)
+		cat, err := catalog.Open(bundle)
 		if err != nil {
-			t.Fatalf("open the store: %v", err)
+			t.Fatalf("open the catalog: %v", err)
 		}
-		defer func() { _ = st.Close() }()
-		stored, err := st.Profile(ctx, "base")
+		declared, err := cat.Profile(ctx, "base")
 		if err != nil {
 			t.Fatalf("load base: %v", err)
 		}
-		for key, raw := range stored.Spec {
+		for key, raw := range declared.Spec {
 			var printed, want bytes.Buffer
 			if err := json.Compact(&printed, []byte(rawValueOf(t, out, key))); err != nil {
 				t.Fatalf("spec.%s: the printed value is not JSON: %v", key, err)
 			}
 			if err := json.Compact(&want, raw); err != nil {
-				t.Fatalf("spec.%s: the stored value is not JSON: %v", key, err)
+				t.Fatalf("spec.%s: the declared value is not JSON: %v", key, err)
 			}
 			if printed.String() != want.String() {
-				t.Errorf("spec.%s was re-spelled:\n printed %s\n stored  %s", key, printed.String(), want.String())
+				t.Errorf("spec.%s was re-spelled:\n printed  %s\n declared %s", key, printed.String(), want.String())
 			}
 		}
 	})
@@ -175,8 +165,8 @@ func TestShow(t *testing.T) {
 		if !slices.IsSorted(keys) {
 			t.Errorf("the manifest keys are not sorted: %v", keys)
 		}
-		// Laid out rather than printed raw: a nested value the store holds on
-		// one line arrives here across several, indented under its key.
+		// Laid out rather than printed raw: a nested value the catalog carries
+		// on one line arrives here across several, indented under its key.
 		if !strings.Contains(out, "\n  {\n    \"") {
 			t.Errorf("a nested value was not indented for reading:\n%s", out)
 		}
@@ -218,7 +208,7 @@ func TestShow(t *testing.T) {
 		// into would make show least usable exactly when something is wrong.
 		var stdout, stderr bytes.Buffer
 		err := run(ctx, []string{
-			"show", "engineer", "--db", dbPath,
+			"show", "engineer", "--profile", bundle,
 			"--scope", filepath.Join(home, "no-such-directory"),
 		}, &stdout, &stderr)
 		if err != nil {
@@ -240,83 +230,96 @@ func TestShow(t *testing.T) {
 
 	t.Run("show takes exactly one target", func(t *testing.T) {
 		var out, errOut bytes.Buffer
-		if err := run(ctx, []string{"show", "--db", dbPath}, &out, &errOut); err == nil {
+		if err := run(ctx, []string{"show", "--profile", bundle}, &out, &errOut); err == nil {
 			t.Error("show with no target reported success")
 		}
-		if err := run(ctx, []string{"show", "base", "engineer", "--db", dbPath}, &out, &errOut); err == nil {
+		if err := run(ctx, []string{"show", "base", "engineer", "--profile", bundle}, &out, &errOut); err == nil {
 			t.Error("show with two targets reported success")
 		}
-		if err := run(ctx, []string{"show", "nobody", "--db", dbPath}, &out, &errOut); err == nil ||
+		if err := run(ctx, []string{"show", "nobody", "--profile", bundle}, &out, &errOut); err == nil ||
 			!strings.Contains(err.Error(), "nobody") {
 			t.Errorf("show of an unknown target = %v, want a refusal naming it", err)
 		}
 	})
 }
 
-// TestShowRendersNothing is the command's other half of its contract, and the
-// half a reader cannot check by looking at the output.
+// TestAReadThatFindsNothingWritesNothing is the half of `show` and
+// `install --check`'s contract that a reader cannot check by looking at the
+// output, and it is the contract T07c was opened for.
 //
-// Rendering, not writing. Opening the database writes — store.Open creates the
-// file and its parent directory when they are absent and applies the schema in
-// an immediate transaction — so "writes nothing" is not the claim, and the
-// subtest below pins what it does write rather than pretending it does not.
-// What is asserted here is that nothing else appears: no boot directory, no
-// installed layer, no file beside the database.
+// It is unqualified now, and it was not. Both commands promised in their own
+// help to write nothing, and both opened a database to do it: store.Open
+// created the file, its parent directories and the schema when they were
+// absent, and did it before the target was looked up — so a command pointed at
+// a path that named nothing conjured a directory tree and an empty database,
+// and then failed. The catalog reads a directory and creates none.
 //
 // HOME is pointed at the fixture so that every default a write would take —
 // the boot root under $HOME, and the installed layer's root, which is $HOME —
 // lands inside the tree this walks. Without that the defaults resolve to the
 // operator's real home and the assertion covers a directory nothing was ever
 // going to touch.
-func TestShowRendersNothing(t *testing.T) {
+func TestAReadThatFindsNothingWritesNothing(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
+	bundle := filepath.Join(home, "bundle")
 	skillsDir := filepath.Join(home, "skills")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
-	seed(t, ctx, dbPath, skillsDir, scopeDir)
+	seed(t, bundle, skillsDir, scopeDir)
 
 	t.Setenv("HOME", home)
 	t.Setenv("CAIRN_BOOT_ROOT", "")
 
-	before := pathsUnder(t, home)
-	for _, target := range []string{"base", "engineer"} {
-		var stdout, stderr bytes.Buffer
-		if err := run(ctx, []string{"show", target, "--db", dbPath}, &stdout, &stderr); err != nil {
-			t.Fatalf("show %s: %v\nstderr: %s", target, err, stderr.String())
+	t.Run("a show that succeeds renders nothing", func(t *testing.T) {
+		before := pathsUnder(t, home)
+		for _, target := range []string{"base", "engineer"} {
+			var stdout, stderr bytes.Buffer
+			if err := run(ctx, []string{"show", target, "--profile", bundle}, &stdout, &stderr); err != nil {
+				t.Fatalf("show %s: %v\nstderr: %s", target, err, stderr.String())
+			}
+			if stdout.Len() == 0 {
+				t.Fatalf("show %s printed nothing", target)
+			}
 		}
-		if stdout.Len() == 0 {
-			t.Fatalf("show %s printed nothing", target)
+		if after := pathsUnder(t, home); !slices.Equal(before, after) {
+			t.Errorf("show left something behind:\nbefore %v\nafter  %v", before, after)
 		}
-	}
-	if after := pathsUnder(t, home); !slices.Equal(before, after) {
-		t.Errorf("show left something behind:\nbefore %v\nafter  %v", before, after)
-	}
-	// Named individually as well, because the paths above are only as strong
-	// as the tree they cover. The boot root comes from the constant rather
-	// than a literal: a literal left behind by a change to the default would
-	// go on passing while asserting nothing.
-	for _, rel := range []string{".claude", filepath.FromSlash(bootdir.DefaultRootRel)} {
-		if _, err := os.Stat(filepath.Join(home, rel)); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("show created %s: %v", rel, err)
+		// Named individually as well, because the paths above are only as
+		// strong as the tree they cover. The boot root comes from the constant
+		// rather than a literal: a literal left behind by a change to the
+		// default would go on passing while asserting nothing.
+		for _, rel := range []string{".claude", filepath.FromSlash(bootdir.DefaultRootRel)} {
+			if _, err := os.Stat(filepath.Join(home, rel)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("show created %s: %v", rel, err)
+			}
 		}
-	}
+	})
 
-	// The one thing it does write, pinned rather than denied. store.Open
-	// creates an absent database, and it does so before the target is looked
-	// up, so even a show that goes on to fail leaves the file behind. It is
-	// cairn's rule everywhere — docs/plan.md §3 — and the reason the contract
-	// above is "renders nothing" and not "writes nothing".
-	fresh := filepath.Join(t.TempDir(), "made", "up", "cairn.db")
-	var stdout, stderr bytes.Buffer
-	if err := run(ctx, []string{"show", "nobody", "--db", fresh}, &stdout, &stderr); err == nil {
-		t.Fatal("show of an unknown target in an empty database reported success")
-	}
-	if _, err := os.Stat(fresh); err != nil {
-		t.Errorf("opening an absent database did not create it, which the doc comment claims it does: %v", err)
-	}
+	// The case that used to write. A bundle two directories deep inside a
+	// temp root that does not exist: nothing may appear at any level of it,
+	// and the assertion is on the outermost segment so that a command creating
+	// only the parent is caught too.
+	t.Run("a read of a bundle that is not there creates none of it", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"show", "nobody"},
+			{"install", "base", "--check", "--root", t.TempDir()},
+		} {
+			outer := filepath.Join(t.TempDir(), "made")
+			absent := filepath.Join(outer, "up", "bundle")
+
+			var stdout, stderr bytes.Buffer
+			err := run(ctx, append(args, "--profile", absent), &stdout, &stderr)
+			if err == nil {
+				t.Fatalf("%s against a bundle that is not there reported success", args[0])
+			}
+			if !strings.Contains(err.Error(), absent) {
+				t.Errorf("the %s refusal does not name the bundle: %v", args[0], err)
+			}
+			nothingUnder(t, outer)
+		}
+	})
 }
 
 // declarersOf returns the profiles named beside spec.<key> in a printed

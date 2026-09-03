@@ -1,9 +1,9 @@
 // Package cairn is the module root. It holds no code.
 //
 // Cairn assembles files and writes them into a directory: it reads a profile
-// from its own store, resolves it through an extends cascade, and materializes
-// a boot directory a CLI coding agent can be launched from. It renders the
-// installed layer from the same source.
+// out of a bundle directory, resolves it through an extends cascade, and
+// materializes a boot directory a CLI coding agent can be launched from. It
+// renders the installed layer from the same source.
 //
 // It does not launch, monitor, track, control, create, harness, or steer
 // agents, and it has no opinion about how agents work or behave. File contents

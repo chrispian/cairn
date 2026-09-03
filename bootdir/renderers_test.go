@@ -75,7 +75,7 @@ func contractInstance(t *testing.T) *Instance {
 		"tasks/T-1/task.md":  "# T-1\n\nin progress\n",
 	}
 	// Subagent declarations reach a renderer already resolved, for the same
-	// reason: reading the profile a manifest names is a trip to the store.
+	// reason: reading the profile a manifest names is a trip to the catalog.
 	inst.Subagents = []Subagent{{
 		ID:          "scribe",
 		Declaration: json.RawMessage(`{"description": "Writes the decision down.", "body": "You write it down.\n"}`),

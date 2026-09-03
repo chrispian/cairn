@@ -8,39 +8,43 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/chrispian/cairn/catalog"
 	"github.com/chrispian/cairn/profile"
 )
 
 // envProfileRoot names the environment variable a profile bundle's root
-// reaches a manifest through. It loses to the command-line flag, as every
-// other variable cairn reads a path from does.
+// reaches a manifest through, and the one cairn reads a bundle from when no
+// flag names one. It loses to the command-line flag, as every other variable
+// cairn reads a path from does.
 //
 // It is spelled here rather than in a library because nothing below the
 // composition root knows it exists: a profile writes "$CAIRN_PROFILE_ROOT/..."
 // in a value that names somewhere to read from, and the expander that answers
 // it is an ordinary [profile.Expander] handed down from here. Expansion did
-// not have to learn a new name, and did not.
+// not have to learn a new name, and did not — and neither did the catalog,
+// which is handed a directory rather than the name of a variable.
 const envProfileRoot = "CAIRN_PROFILE_ROOT"
 
-// profileFlagUsage is the one description of --profile, so that the three
+// envXDGConfigHome names the XDG base-directory variable for user
+// configuration, which the default bundle sits under.
+const envXDGConfigHome = "XDG_CONFIG_HOME"
+
+// profileFlagUsage is the one description of --profile, so that the four
 // commands that take it describe it identically.
-const profileFlagUsage = "a profile bundle directory, seeded as $" + envProfileRoot
+const profileFlagUsage = "the profile bundle the catalog is read from, seeded as $" + envProfileRoot
 
 // errProfileBundle reports a --profile that does not name an existing
 // directory.
 var errProfileBundle = errors.New("--profile does not name a profile bundle")
 
 // resolveProfileRoot turns --profile's value into the absolute directory
-// [envProfileRoot] is seeded with. An empty value seeds nothing and returns
-// the empty string, which leaves the process environment's own answer in play.
+// [envProfileRoot] is seeded with. An empty value returns the empty string,
+// and [bundleRoot] is where the environment and the default are read instead.
 //
 // Everything below is done to the flag and to nothing else. A bundle root
 // arriving through the variable is passed through exactly as it was exported —
-// unabsolutized, unchecked — because it is not cairn's value to rewrite, and
-// the guarantees here stop at the command line. `CAIRN_PROFILE_ROOT=/gone cairn
-// boot x` therefore reaches the failure the check below exists to prevent, one
-// diagnostic per derived path. That is the cost of not vetting somebody else's
-// environment, and it is named here rather than left for a reader to discover.
+// unabsolutized, unrewritten — because it is not cairn's value to rewrite, and
+// the guarantees here stop at the command line.
 //
 // Absolute, and made so here. The bundle root is a prefix on paths cairn then
 // resolves somewhere else entirely — a slot's static path resolves against the
@@ -65,16 +69,12 @@ var errProfileBundle = errors.New("--profile does not name a profile bundle")
 // spelling they never used into every diagnostic about a path that failed —
 // which is the loss [profile.QuotedExpansion] exists to prevent.
 //
-// A bundle that does not exist is refused rather than seeded. This is not a
-// rule about where a bundle may live, in the way plan §1 rules out: any
-// directory is accepted, and nothing inside it is required — cairn opens no
-// part of the bundle itself, only the paths a profile names inside it. What
-// the check buys is where the failure lands. A root that is not there makes
-// every value that expands it wrong at once, and without this the operator
-// reads that as one diagnostic per derived path, none of which names the flag
-// that caused them. It is install.Root.Check's reasoning about the install
-// root: a missing directory here is not a starting state, it is a sign cairn
-// was pointed somewhere wrong.
+// A bundle that does not exist is refused rather than seeded, here and again
+// in [catalog.Open]. Twice is not redundant: this one names the flag, and
+// [catalog.Open] names whichever bundle the command ended up reading —
+// flag, variable or default. It is install.Root.Check's reasoning about the
+// install root: a missing directory here is not a starting state, it is a sign
+// cairn was pointed somewhere wrong.
 func resolveProfileRoot(raw, home string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -100,9 +100,33 @@ func resolveProfileRoot(raw, home string) (string, error) {
 	return abs, nil
 }
 
+// bundleRoot returns the directory the catalog is read from: the flag, then
+// [envProfileRoot], then $XDG_CONFIG_HOME/agents, then ~/.config/agents.
+//
+// It is one value and it answers two questions — where the profiles are, and
+// what $CAIRN_PROFILE_ROOT expands to — because since the catalog became the
+// store those are the same question. Resolving them separately is how a
+// command ends up reading a profile out of one directory and expanding its
+// paths against another.
+//
+// The variable and the default are passed through as they are. Only the flag
+// is absolutized and checked, for the reason [resolveProfileRoot] gives; every
+// path here still reaches [catalog.Open], which refuses a bundle that is not
+// there and names it.
+func bundleRoot(flagValue, home string) (string, error) {
+	root, err := resolveProfileRoot(flagValue, home)
+	if err != nil {
+		return "", err
+	}
+	if root != "" {
+		return root, nil
+	}
+	return catalog.DefaultRoot(os.Getenv(envProfileRoot), os.Getenv(envXDGConfigHome), home)
+}
+
 // environment returns the lookup a manifest's variables are expanded against:
-// the process environment, with [envProfileRoot] answered by the bundle the
-// operator named on the command line.
+// the process environment, with [envProfileRoot] answered by the bundle this
+// command read its profile out of.
 //
 // One value threaded from here is the whole of what --profile does. Cairn
 // already expands $VAR and ${VAR} in every manifest value that names somewhere
@@ -111,14 +135,12 @@ func resolveProfileRoot(raw, home string) (string, error) {
 // root is a variable like any other, and seeding it needed no new expansion,
 // no new manifest key and no new path rule.
 //
-// An empty root returns [os.Getenv] itself, so a command run without the flag
-// reads the environment exactly as it did before, [envProfileRoot] included: a
-// profile bundle exported into the shell keeps working, and the flag is what
-// overrides it rather than the reverse.
+// It is seeded on every run, including the one where no flag was given. The
+// bundle is not optional any more — a command that read a profile read it out
+// of a directory — so a manifest that names $CAIRN_PROFILE_ROOT resolves
+// against the bundle in play rather than against whatever the shell happened
+// to export, or against nothing at all.
 func environment(profileRoot string) profile.Expander {
-	if profileRoot == "" {
-		return os.Getenv
-	}
 	return func(name string) string {
 		if name == envProfileRoot {
 			return profileRoot

@@ -15,10 +15,10 @@ none of this reaches a build or a test binary.
 **They prove byte-identity on this machine, against one working tree, and they
 prove nothing anywhere else.** `capture.sh` reads `~/dev/projects/agent-setup`
 live — the checkout as it stands, not a pinned revision — `rsync`s its
-`templates/` and `skills/` into the fixture home and seeds the fixture store by
-running its `bin/seed.py` over `profiles/*.md`. `verify.sh` re-runs
-`capture.sh`, so it inherits all of it. `AGENT_SETUP` moves the path; nothing
-moves the dependency.
+`templates/` and `skills/` into the fixture home and points cairn at it with
+`--profile`, so the profiles under review are read where they live. `verify.sh`
+re-runs `capture.sh`, so it inherits all of it. `AGENT_SETUP` moves the path;
+nothing moves the dependency.
 
 The consequences are worth naming, because this is the proof the whole
 migration rests on:
@@ -52,7 +52,7 @@ the tree would itself be a diff every time upstream moved — reporting the drif
 as drift — and because `verify.sh` re-runs `capture.sh` into a scratch
 directory, which would clobber a record kept at a fixed path in the repo.
 
-None of this pins anything. `capture.sh` still seeds from live `agent-setup`;
+None of this pins anything. `capture.sh` still reads live `agent-setup`;
 the record only makes the resulting diff legible.
 
 Everything cairn controls *is* pinned — see the table below. The profiles,
@@ -87,13 +87,19 @@ not that something breaks; it is that something breaks and the record of it
 looks correct.
 
 The `conductor` profile's `fleet` slot is the case that motivated the guard. It
-reads `${CAIRN_DB:-$HOME/.config/agents/cairn.db}` out of the environment, and
-`cairn boot --db <path>` does not export `CAIRN_DB`. sqlite3 opening
-`immutable=1` on a path that does not exist gets an **empty database rather than
-an error**, so the query fails with `no such table`, the section renders
-nothing, and the boot still exits 0. The `CAIRN_DB` export in the render
-environment is what prevents that; this guard is what catches it if the export
-is ever lost.
+shells out to `cairn list`, and `cairn boot --profile <dir>` does not reach a
+slot's shell — so two things in the render environment point it at this run:
+`CAIRN_PROFILE_ROOT`, which is how it finds the same bundle, and `$FIX/bin`
+first on `PATH`, which is how it finds the cairn this run built. Lose either
+and the slot reads somewhere else or runs something else.
+
+It used to be worse. The slot was a `sqlite3` query reading
+`${CAIRN_DB:-...}`, and sqlite3 opening `immutable=1` on a path that does not
+exist gets an **empty database rather than an error** — so the query failed
+with `no such table`, the section rendered nothing, and the boot still exited
+0. `cairn list` against a bundle that is not there exits non-zero and says so,
+which is loud on stderr. That is still a line a capture would happily baseline,
+which is what this guard refuses.
 
 Anything else on `stderr` is printed and kept rather than refused — the
 installed layer's "renders no section for" line says which slot kinds `install`
@@ -108,8 +114,9 @@ Everything the render can reach is staged into one throwaway fixture root:
 | `--session golden` | `bootdir.NewSession` is the only nondeterminism inside cairn, and it is used only when `--session` is empty: a UTC timestamp plus a random suffix. |
 | a fixture `HOME` | The profiles read `~/.config/agents/templates/…` and `~/.config/agents/skills`. Staged with the same `rsync` flags `make install-system` uses in agent-setup, so what the render reads is what the installed location holds. |
 | a fixture scope | `director`, `engineer` and `orchestrator` run `git status --short --branch` and `git log --oneline -12` against the scope. The fixture is a git repo built from literals: pinned author and committer identity and dates so the abbreviated hash is stable, `core.abbrev` set rather than left to git's object-count heuristic, and `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` nulled on every invocation so the operator's own gitconfig cannot leak in. No remote, so `git status` prints just the branch line. |
-| a fixture store | Seeded from `agent-setup/profiles/*.md` by `bin/seed.py`, so the profiles under review are the ones rendered. |
-| `CAIRN_DB` in the environment | The `conductor` profile's `fleet` slot is a shell command reading `${CAIRN_DB:-$HOME/.config/agents/cairn.db}`. Cairn's `--db` flag never reaches it. Without the export the slot queries a store that is not there, and the boot still exits 0 with an empty `boot.md`. |
+| `--profile $AGENT_SETUP` | The catalog is the store, so the profiles under review are read out of the checkout rather than seeded into a database first. |
+| `CAIRN_PROFILE_ROOT` in the environment | The `conductor` profile's `fleet` slot shells out to `cairn list`, and cairn's `--profile` flag never reaches a slot's shell. Without the export the slot lists `~/.config/agents` instead — which under the fixture `HOME` holds no profiles, so it fails rather than answering quietly. |
+| `$FIX/bin` first on `PATH` | The same slot runs `cairn`, by name. Without this it would run whatever cairn is installed on the machine, which is the one thing the harness exists not to test. Losing it fails loudly only for as long as the installed cairn predates `cairn list`; once this one is installed the same loss would render plausible output from the wrong binary. |
 | `TZ=UTC`, `LC_ALL=C`, `XDG_CONFIG_HOME` and `CAIRN_BOOT_ROOT` unset | The environment is built from nothing rather than inherited (`env -i` plus `PATH`), so the operator's shell is not an input. |
 
 Two per-run paths are rewritten to tokens after the render, because leaving
@@ -134,9 +141,11 @@ written.
     testdata/goldens/capture.sh --force
 
 `capture.sh` builds `cairn` from the working tree unless `CAIRN` names a
-binary. That is deliberate: every change from here on runs `verify.sh` to prove
-it did not alter rendering, so the harness must exercise the source in front of
-it and not whatever stale `cairn` is on `$PATH`.
+binary, which it copies into the fixture instead. That is deliberate: every
+change from here on runs `verify.sh` to prove it did not alter rendering, so
+the harness must exercise the source in front of it and not whatever stale
+`cairn` is on `$PATH` — and the copy is what lets the `fleet` slot's own
+`cairn list` be that same binary.
 
 `AGENT_SETUP` overrides where the profiles, templates and skills come from; it
 defaults to `~/dev/projects/agent-setup`.

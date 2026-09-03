@@ -1,0 +1,5 @@
+# A binding is a name plus a default scope. The scope is a path, or an alias
+# from ../scopes.yaml — anything that does not look like a path is tried as an
+# alias first.
+profile: engineer
+scope: cairn

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/chrispian/cairn/catalog"
 	"github.com/chrispian/cairn/profile"
 )
 
@@ -34,38 +35,36 @@ const columnGap = 2
 // records that a profile can no longer be read without walking its chain.
 //
 // The count of names is not a detail: it decides what the value below can be
-// trusted to be. One name and the value is that profile's own document, which
-// the cascade never re-serializes and this command only re-spaces — the case
-// that matters, because spec.settings reaches the harness's settings document
-// with its own spelling intact and an operator will diff the two. Both are
-// laid out at [specIndent], so that diff is about content. Two or more and it is a
-// composition: profile.encodeJSON marshals a Go map, so the members are what
-// the profiles declared and the order is the cascade's, at every depth. A note
-// promising byte identity for both would be wrong for exactly the key it was
-// written to explain.
+// trusted to be. One name and the value is that profile's own declaration,
+// converted from the YAML it was authored in and never re-serialized after —
+// the case that matters, because spec.settings reaches the harness's settings
+// document with exactly those bytes and an operator will diff the two. Both
+// are laid out at [specIndent], so that diff is about content. Two or more and
+// it is a composition: profile.encodeJSON marshals a Go map, so the members
+// are what the profiles declared and the order is the cascade's, at every
+// depth. A note promising the same of both would be wrong for exactly the key
+// it was written to explain.
 const specNote = specIndent + "The names beside a key are the profiles in the chain that declare it. One name\n" +
-	specIndent + "means the value below is that profile's own document, indented here and\n" +
-	specIndent + "otherwise byte for byte what it stored. Two or more means the cascade composed\n" +
-	specIndent + "it: the members are what those profiles declared, and the order is not.\n"
+	specIndent + "means the value below is that profile's own declaration, converted from YAML\n" +
+	specIndent + "and laid out here, and otherwise untouched. Two or more means the cascade\n" +
+	specIndent + "composed it: the members are what those profiles declared, and the order is not.\n"
 
 // runShow resolves a target and prints what it resolves to. It is the
 // mitigation docs/plan.md §3 names: a manifest key is composed member by
 // member across the extends chain, so a profile can no longer be read by
 // reading its own row.
 //
-// It renders nothing. No boot directory, no installed layer, no temporary
-// file; the whole output is on stdout.
+// It renders nothing and writes nothing. No boot directory, no installed
+// layer, no temporary file, and nothing in the bundle it reads; the whole
+// output is on stdout.
 //
-// The exception, because "writes nothing" is the second half of this command's
-// contract and an unnamed exception to it is worse than none: opening the
-// database writes. store.Open creates the file and its parent directory when
-// they are absent and applies the schema in an immediate transaction, so a
-// show against a path that names nothing leaves a directory and an empty
-// database behind — and does it before the target is looked up, so a show that
-// then fails still leaves them. That is cairn's rule everywhere rather than a
-// choice made here: an absent database is a usable starting state, not a
-// configuration error. Nothing else on this path opens, creates or touches a
-// file.
+// That is now unqualified, and it was not always. Until the catalog became the
+// store this command opened a database — creating the file, its parent
+// directory and the schema when they were absent, and doing it before the
+// target was looked up, so a show that then failed still left them. A read
+// that finds nothing writes nothing: [catalog.Open] reads a directory and
+// creates none, and a bundle that is not there is named rather than
+// conjured.
 //
 // An abstract profile shows, following runInstall rather than runBoot: nothing
 // here is run, and the abstract root is the profile most worth reading.
@@ -79,7 +78,6 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs.SetOutput(stderr)
 	var (
 		scopeFlag   = fs.String("scope", "", "the scope to report, as a path or a scope alias")
-		dbFlag      = fs.String("db", "", "the database path")
 		profileFlag = fs.String("profile", "", profileFlagUsage)
 	)
 	target, rest := splitTarget(args)
@@ -99,45 +97,34 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 
 	home, _ := os.UserHomeDir()
 
-	// The profile bundle is reported for the reason the scope is: no part of
-	// the resolved manifest depends on it. A variable is expanded when a value
-	// is read, and this command reads none — spec is printed as the profiles
-	// stored it, which is the promise [specNote] makes — so the flag is kept by
-	// making the bundle one of the reported facts rather than an input to them.
+	// The bundle is where the profile comes from, and it is also a reported
+	// fact. It was only the second of those until the catalog became the
+	// store, and both halves are still true: no value printed below is
+	// expanded — spec is printed as the profiles declared it, which is the
+	// promise [specNote] makes — so the bundle changes what is read and not how
+	// any of it is spelled.
 	//
-	// It is refused here rather than reported unresolved, which is the opposite
-	// of what an unresolvable --scope gets, because the two are refused for
-	// different reasons. A scope may arrive from the binding, stored by an
-	// operator who is not the one running this command, and refusing the whole
-	// document over it makes show least usable exactly when something is
-	// already wrong. --profile is always typed on this command line, and one
-	// that names nothing costs a retype — where a bundle root reported as
-	// though it were there would send an operator to a `cairn boot` that
-	// resolves nothing, having just read a document that said it would.
-	profileRoot, err := resolveProfileRoot(*profileFlag, home)
+	// A --profile that names nothing is refused, which is the opposite of what
+	// an unresolvable --scope gets. The two are refused for different reasons.
+	// A scope may arrive from the binding, written by an operator who is not
+	// the one running this command, and refusing the whole document over it
+	// makes show least usable exactly when something is already wrong. The
+	// bundle is the document.
+	bundle, err := bundleRoot(*profileFlag, home)
 	if err != nil {
 		return err
-	}
-	// With no flag, what a boot would expand the variable to is whatever the
-	// environment holds, and it is reported exactly as it is held. Only the
-	// flag's value is resolved, because only the flag's value is cairn's to
-	// resolve: tidying a variable cairn passes through untouched would name a
-	// directory no expansion will produce.
-	if profileRoot == "" {
-		profileRoot = os.Getenv(envProfileRoot)
 	}
 
-	st, err := openStore(ctx, *dbFlag, home)
+	cat, err := catalog.Open(bundle)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = st.Close() }()
 
-	_, profileID, declaredScope, err := lookup(ctx, st, target)
+	_, profileID, declaredScope, err := lookup(ctx, cat, target)
 	if err != nil {
 		return err
 	}
-	resolved, err := profile.Resolve(ctx, st, profileID)
+	resolved, err := profile.Resolve(ctx, cat, profileID)
 	if err != nil {
 		return err
 	}
@@ -157,7 +144,7 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if strings.TrimSpace(*scopeFlag) != "" {
 		rawScope = *scopeFlag
 	}
-	scopeDir, err := resolveScope(ctx, st, rawScope, home)
+	scopeDir, err := resolveScope(cat, rawScope, home)
 	if err != nil {
 		// Reported, not refused, and the rule it follows is the slot rule: a
 		// resolution that fails costs the reader one fact, and a command that
@@ -178,12 +165,12 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		scopeDir = ""
 	}
 
-	declared, err := declaringProfiles(ctx, st, resolved)
+	declared, err := declaringProfiles(ctx, cat, resolved)
 	if err != nil {
 		return err
 	}
 
-	_, err = fmt.Fprint(stdout, showDocument(resolved, scopeDir, profileRoot, declared))
+	_, err = fmt.Fprint(stdout, showDocument(resolved, scopeDir, cat.Root(), declared))
 	return err
 }
 
@@ -227,9 +214,9 @@ func declaringProfiles(ctx context.Context, l profile.Loader, resolved *profile.
 // tell a field that resolved to nothing from a field this command forgot.
 //
 // The last two are the instance's rather than the cascade's: what a boot of
-// this target would work in, and what it would expand $CAIRN_PROFILE_ROOT to.
-// Neither changes a single value above them — that is why they are at the
-// bottom, and why they are reported at all.
+// this target would work in, and the bundle this profile was read out of,
+// which is also what $CAIRN_PROFILE_ROOT expands to. Neither changes a single
+// value above them — that is why they are at the bottom.
 //
 // Resolved.Body is the field left out, and it is left out rather than
 // forgotten. It is the one thing the cascade concatenates instead of composing
@@ -320,12 +307,13 @@ func plural(n int, word string) string {
 // spelling all survive it. That is a narrower promise than re-encoding would
 // allow, and it is the one [specNote] makes to the reader.
 //
-// A value that is not JSON is printed as it was stored. The store validates
-// every manifest value before writing it and a merge composes valid JSON out
-// of valid JSON, so this is unreachable through either — but showing what is
-// there is this command's whole job, and refusing to print a value because it
-// could not be laid out prettily would fail at exactly the moment the operator
-// most needs to see it.
+// A value that is not JSON is printed as it was declared. Every manifest value
+// is JSON by construction — the catalog builds it from the YAML the operator
+// wrote rather than accepting JSON text — and a merge composes valid JSON out
+// of valid JSON, so this is unreachable through either. Showing what is there
+// is this command's whole job, and refusing to print a value because it could
+// not be laid out prettily would fail at exactly the moment the operator most
+// needs to see it.
 func indentJSON(raw json.RawMessage) string {
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, raw, specIndent, specIndent); err != nil {

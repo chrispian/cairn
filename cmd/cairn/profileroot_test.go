@@ -3,18 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/chrispian/cairn/profile"
-	"github.com/chrispian/cairn/store"
 )
 
 // TestAProfileBundleRelocatesWithoutEdits is the mechanism --profile exists
-// for, asserted the only way it can be: the same profile row, rendered twice
+// for, asserted the only way it can be: the same profile, rendered twice
 // against two bundles, produces each bundle's own content.
 //
 // One boot proves nothing. A profile naming "$CAIRN_PROFILE_ROOT/templates/..."
@@ -23,6 +19,10 @@ import (
 // variable. Two bundles at two paths, with nothing between the runs but the
 // flag, is what says the bundle root decided it.
 //
+// The profile now travels inside the bundle rather than in a database beside
+// it, so "the same profile" is two identical files. That is the catalog being
+// the store, and it makes the relocation whole: what moved is everything.
+//
 // All three of the places a manifest names somewhere to read from are in play,
 // because they resolve through three different calls at the composition root
 // and a thread that reached two of them would look exactly like this from one:
@@ -30,17 +30,15 @@ import (
 func TestAProfileBundleRelocatesWithoutEdits(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
-	seedBundled(t, ctx, dbPath)
 
 	for _, label := range []string{"A", "B"} {
 		t.Run("bundle "+label, func(t *testing.T) {
 			bundle := filepath.Join(home, "bundle-"+label)
 			writeBundle(t, bundle, label)
 
-			dir := bootBundled(t, ctx, dbPath, scopeDir,
+			dir := bootBundled(t, ctx, scopeDir,
 				filepath.Join(home, "boot-"+label), "--profile", bundle)
 
 			// The template itself came out of the bundle, and so did the
@@ -72,15 +70,13 @@ func TestAProfileBundleRelocatesWithoutEdits(t *testing.T) {
 func TestAProfileBundleIsAbsolutizedFromWhereTheOperatorTyped(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
-	seedBundled(t, ctx, dbPath)
 
 	writeBundle(t, filepath.Join(home, "bundle"), "the cwd")
 	t.Chdir(home)
 
-	dir := bootBundled(t, ctx, dbPath, scopeDir, filepath.Join(home, "boot"), "--profile", "bundle")
+	dir := bootBundled(t, ctx, scopeDir, filepath.Join(home, "boot"), "--profile", "bundle")
 	if got := read(t, dir, "AGENTS.md"); !strings.Contains(got, "# agents from the cwd") {
 		t.Errorf("a relative --profile did not resolve against the working directory:\n%s", got)
 	}
@@ -97,7 +93,7 @@ func TestAProfileBundleIsAbsolutizedFromWhereTheOperatorTyped(t *testing.T) {
 		t.Fatalf("working directory: %v", err)
 	}
 	absolute := filepath.Join(wd, "bundle")
-	if got := showBundled(t, ctx, dbPath, "--profile", "bundle"); !strings.Contains(got, "profile root  "+absolute+"\n") {
+	if got := showBundled(t, ctx, "--profile", "bundle"); !strings.Contains(got, "profile root  "+absolute+"\n") {
 		t.Errorf("the reported bundle root is not the absolute %s:\n%s", absolute, got)
 	}
 }
@@ -105,18 +101,21 @@ func TestAProfileBundleIsAbsolutizedFromWhereTheOperatorTyped(t *testing.T) {
 // TestTheProfileFlagWinsOverTheVariable pins the precedence, in both
 // directions.
 //
-// It is the precedence every other path cairn resolves already has — CAIRN_DB
-// and CAIRN_BOOT_ROOT each lose to their flag — and the second half matters as
-// much as the first: a command run without the flag must read the variable
-// exactly as it did before this flag existed, because a bundle exported into a
-// shell is the form that costs an operator nothing to use.
+// It is the precedence every other path cairn resolves already has —
+// CAIRN_BOOT_ROOT loses to its flag, and CAIRN_DB did before the store went —
+// and the second half matters as much as the first: a command run without the
+// flag must read the variable, because a bundle exported into a shell is the
+// form that costs an operator nothing to use.
+//
+// Since the catalog became the store the variable decides more than it did. It
+// no longer only says what a path expands to; it says which bundle the profile
+// itself is read out of. Both halves are asserted by the same line, because
+// under this fixture only the bundle that was read can render its own label.
 func TestTheProfileFlagWinsOverTheVariable(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
-	seedBundled(t, ctx, dbPath)
 
 	flagged := filepath.Join(home, "bundle-flag")
 	exported := filepath.Join(home, "bundle-env")
@@ -124,30 +123,51 @@ func TestTheProfileFlagWinsOverTheVariable(t *testing.T) {
 	writeBundle(t, exported, "the variable")
 	t.Setenv(envProfileRoot, exported)
 
-	dir := bootBundled(t, ctx, dbPath, scopeDir, filepath.Join(home, "boot-flag"), "--profile", flagged)
+	dir := bootBundled(t, ctx, scopeDir, filepath.Join(home, "boot-flag"), "--profile", flagged)
 	if got := read(t, dir, "AGENTS.md"); !strings.Contains(got, "# agents from the flag") {
 		t.Errorf("--profile did not win over %s:\n%s", envProfileRoot, got)
 	}
 
-	dir = bootBundled(t, ctx, dbPath, scopeDir, filepath.Join(home, "boot-env"))
+	dir = bootBundled(t, ctx, scopeDir, filepath.Join(home, "boot-env"))
 	if got := read(t, dir, "AGENTS.md"); !strings.Contains(got, "# agents from the variable") {
 		t.Errorf("without the flag, %s was not read from the environment:\n%s", envProfileRoot, got)
 	}
 }
 
-// TestTheProfileFlagIsRefusedWhenItNamesNoBundle covers the one thing --profile
-// validates, on all three commands.
+// TestTheBundleFallsBackToTheConfigDirectory covers the last link of the chain,
+// which is the one an operator who has exported nothing lands on.
 //
-// It is not a rule about where a bundle may live: any directory is accepted and
-// nothing is required inside it. What it buys is where the failure lands. A
-// root that is not there makes every value expanding it wrong at once, and the
-// operator would otherwise read that as one diagnostic per derived path, none
-// of which names the flag behind them.
+// $XDG_CONFIG_HOME/agents, then ~/.config/agents — the same two the database
+// path resolved through, minus the file name. The directory is named "agents"
+// rather than "cairn" because several tools read the same profiles.
+func TestTheBundleFallsBackToTheConfigDirectory(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+
+	config := filepath.Join(home, "config")
+	writeBundle(t, filepath.Join(config, "agents"), "the config directory")
+	t.Setenv(envXDGConfigHome, config)
+
+	dir := bootBundled(t, ctx, scopeDir, filepath.Join(home, "boot"))
+	if got := read(t, dir, "AGENTS.md"); !strings.Contains(got, "# agents from the config directory") {
+		t.Errorf("with no flag and no variable the config directory was not read:\n%s", got)
+	}
+}
+
+// TestTheProfileFlagIsRefusedWhenItNamesNoBundle covers the one thing --profile
+// validates, on all four commands.
+//
+// It is not a rule about where a bundle may live: any directory holding
+// profiles is accepted. What it buys is where the failure lands. A root that is
+// not there makes every value expanding it wrong at once — and, since the
+// catalog became the store, makes the profile unfindable as well. Without this
+// the operator reads that as "no binding and no profile named x", which sends
+// them after a target that was never the problem.
 func TestTheProfileFlagIsRefusedWhenItNamesNoBundle(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
-	seedBundled(t, ctx, dbPath)
 
 	notADirectory := filepath.Join(home, "bundle.txt")
 	writeFile(t, notADirectory, "a file where a bundle was named\n", 0o644)
@@ -162,9 +182,10 @@ func TestTheProfileFlagIsRefusedWhenItNamesNoBundle(t *testing.T) {
 				{"boot", "bundled", "--boot-root", filepath.Join(home, "boot"), "--session", "s1"},
 				{"install", "bundled", "--root", t.TempDir()},
 				{"show", "bundled"},
+				{"list"},
 			} {
 				var stdout, stderr bytes.Buffer
-				full := append(append([]string{}, args...), "--db", dbPath, "--profile", named.path)
+				full := append(append([]string{}, args...), "--profile", named.path)
 				err := run(ctx, full, &stdout, &stderr)
 				if err == nil {
 					t.Fatalf("%s with --profile %s reported success", args[0], named.path)
@@ -180,6 +201,36 @@ func TestTheProfileFlagIsRefusedWhenItNamesNoBundle(t *testing.T) {
 	}
 }
 
+// TestABundleWithNoProfilesIsNamedRatherThanEmpty covers the failure the store
+// used to hide, and it is the diagnostic T07c asked for.
+//
+// A directory that exists and holds no profiles is not an empty catalog. It is
+// cairn pointed at something that is not a bundle — the parent of one, a
+// checkout that has moved, a variable exported for something else — and the
+// error has to name the bundle and its path. Saying "no binding and no profile
+// named x" instead sends the operator after the target, which was never the
+// problem.
+func TestABundleWithNoProfilesIsNamedRatherThanEmpty(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	empty := filepath.Join(home, "not-a-bundle")
+	mustMkdir(t, empty)
+
+	var stdout, stderr bytes.Buffer
+	err := run(ctx, []string{"show", "bundled", "--profile", empty}, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("show against a directory with no profiles reported success")
+	}
+	for _, want := range []string{empty, "profiles"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "no binding and no profile") {
+		t.Errorf("the refusal blames the target instead of the bundle: %v", err)
+	}
+}
+
 // TestTheInstalledLayerReadsTheBundleToo is the second command's half of the
 // thread. The installed layer resolves its own templates and its own static
 // slots, through calls the boot path does not share, so a bundle root wired
@@ -190,8 +241,6 @@ func TestTheProfileFlagIsRefusedWhenItNamesNoBundle(t *testing.T) {
 func TestTheInstalledLayerReadsTheBundleToo(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
-	seedBundled(t, ctx, dbPath)
 
 	bundle := filepath.Join(home, "bundle")
 	writeBundle(t, bundle, "the installed layer")
@@ -199,7 +248,7 @@ func TestTheInstalledLayerReadsTheBundleToo(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	if err := run(ctx, []string{
-		"install", "bundled", "--db", dbPath, "--root", root, "--profile", bundle,
+		"install", "bundled", "--root", root, "--profile", bundle,
 	}, &stdout, &stderr); err != nil {
 		t.Fatalf("install: %v\nstderr: %s", err, stderr.String())
 	}
@@ -232,10 +281,8 @@ func TestTheInstalledLayerReadsTheBundleToo(t *testing.T) {
 func TestTheBundleReachesTheKeysThatTakeAPathRatherThanASource(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
 	scopeDir := filepath.Join(home, "repo")
 	mustMkdir(t, scopeDir)
-	seedBundled(t, ctx, dbPath)
 
 	bundle := filepath.Join(home, "bundle-named")
 	decoy := filepath.Join(home, "bundle-decoy")
@@ -252,7 +299,7 @@ func TestTheBundleReachesTheKeysThatTakeAPathRatherThanASource(t *testing.T) {
 		dir := filepath.Join(home, "boot")
 		var stdout, stderr bytes.Buffer
 		if err := run(ctx, []string{
-			"boot", "bundled-paths", "--db", dbPath, "--scope", scopeDir,
+			"boot", "bundled-paths", "--scope", scopeDir,
 			"--boot-root", dir, "--session", "s1", "--profile", bundle,
 		}, &stdout, &stderr); err != nil {
 			t.Fatalf("boot: %v\nstderr: %s", err, stderr.String())
@@ -279,7 +326,7 @@ func TestTheBundleReachesTheKeysThatTakeAPathRatherThanASource(t *testing.T) {
 		root := t.TempDir()
 		var stdout, stderr bytes.Buffer
 		if err := run(ctx, []string{
-			"install", "bundled-paths", "--db", dbPath, "--root", root, "--profile", bundle,
+			"install", "bundled-paths", "--root", root, "--profile", bundle,
 		}, &stdout, &stderr); err != nil {
 			t.Fatalf("install: %v\nstderr: %s", err, stderr.String())
 		}
@@ -309,32 +356,35 @@ func assertGrants(t *testing.T, document, granted, refused string) {
 	}
 }
 
-// TestShowReportsTheProfileRoot covers the only thing --profile can change
-// about a command that reads no value and renders nothing.
+// TestShowReportsTheBundleItRead covers the field that says which catalog the
+// document above it came out of.
 //
-// The field is reported whether it was set by the flag or by the environment,
-// because both are what a boot would expand the variable to — and the
-// environment's is reported exactly as it is held, since cairn passes that one
-// through rather than resolving it.
-func TestShowReportsTheProfileRoot(t *testing.T) {
+// The field was only ever reported and never used, back when the profiles were
+// in a database and the bundle was somewhere paths expanded against. It is both
+// now, which makes it the one line that says whether the operator is reading
+// the profile they think they are.
+//
+// The variable's value is reported exactly as it is held. Only the flag is
+// absolutized, because only the flag is cairn's to resolve, and the redundant
+// "/./" below is what tells a pass-through from a tidy-up — the two are
+// indistinguishable on a path that was already canonical.
+func TestShowReportsTheBundleItRead(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
-	dbPath := filepath.Join(home, "cairn.db")
-	seedBundled(t, ctx, dbPath)
 
 	bundle := filepath.Join(home, "bundle")
 	writeBundle(t, bundle, "shown")
 
-	if got := showBundled(t, ctx, dbPath); !strings.Contains(got, "\nprofile root\n") {
-		t.Errorf("with no bundle in play the field does not print bare:\n%s", got)
-	}
-	if got := showBundled(t, ctx, dbPath, "--profile", bundle); !strings.Contains(got, "profile root  "+bundle+"\n") {
+	if got := showBundled(t, ctx, "--profile", bundle); !strings.Contains(got, "profile root  "+bundle+"\n") {
 		t.Errorf("--profile is not reported:\n%s", got)
 	}
 
-	t.Setenv(envProfileRoot, "~/wherever/the/operator/put/it")
-	if got := showBundled(t, ctx, dbPath); !strings.Contains(got, "profile root  ~/wherever/the/operator/put/it\n") {
-		t.Errorf("the variable is not reported as it is held:\n%s", got)
+	// Built by hand rather than with filepath.Join, which would clean the
+	// "/./" back out before cairn ever saw it.
+	asHeld := home + string(filepath.Separator) + "." + string(filepath.Separator) + "bundle"
+	t.Setenv(envProfileRoot, asHeld)
+	if got := showBundled(t, ctx); !strings.Contains(got, "profile root  "+asHeld+"\n") {
+		t.Errorf("the variable is not reported as it is held (%s):\n%s", asHeld, got)
 	}
 }
 
@@ -351,14 +401,14 @@ func TestUsageNamesTheProfileRootVariable(t *testing.T) {
 	}
 }
 
-// writeBundle lays down a profile bundle at root and labels every file in it,
-// so that two bundles are told apart by what they render rather than by where
-// they are.
+// writeBundle lays down a whole profile bundle at root and labels every file in
+// it, so that two bundles are told apart by what they render rather than by
+// where they are.
 //
-// All four directories the bundle layout names are created, and cairn opens
-// none of them: the bundle holds handles, and what is read is whatever path a
-// profile names inside it. They are here because the fixture is meant to be
-// the shape an operator will build, not the subset this test reaches into.
+// The profiles are in it, which is the change the catalog made: a bundle is not
+// a directory of content that a database points into any more, it is the store.
+// Every value that names somewhere to read from is written against
+// $CAIRN_PROFILE_ROOT, and none of them is ever edited again.
 func writeBundle(t *testing.T, root, label string) {
 	t.Helper()
 	for _, dir := range []string{"profiles", "bindings", "templates", "skills"} {
@@ -375,72 +425,58 @@ func writeBundle(t *testing.T, root, label string) {
 	mustMkdir(t, filepath.Join(root, "skills", "relocatable"))
 	writeFile(t, filepath.Join(root, "skills", "relocatable", "SKILL.md"),
 		"# the skill in "+label+"\n", 0o644)
-}
 
-// seedBundled writes the one profile these tests render: every value that names
-// somewhere to read from is written against $CAIRN_PROFILE_ROOT, and none of
-// them is ever edited again.
-func seedBundled(t *testing.T, ctx context.Context, dbPath string) {
-	t.Helper()
-	st, err := store.Open(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	defer func() { _ = st.Close() }()
-
-	if err := st.PutProfile(ctx, profile.Profile{
+	// The profile these tests render: a template source, a slot source and a
+	// files source, which are the three calls at the composition root that
+	// resolve a manifest value.
+	writeProfile(t, root, bundleProfile{
 		ID:       "bundled",
 		Name:     "Bundled",
-		Provider: profile.ProviderClaude,
+		Provider: "claude",
 		Model:    "opus",
-		Spec: profile.Spec{
-			"templates": json.RawMessage(`{
+		Spec: map[string]string{
+			"templates": `{
 				"AGENTS.md": {"kind":"static_file","static_file":{"path":"$CAIRN_PROFILE_ROOT/templates/agents.md"}},
 				"CLAUDE.md": "@AGENTS.md\n"
-			}`),
-			"slots": json.RawMessage(`[
+			}`,
+			"slots": `[
 				{"name":"note","source":{"kind":"static_file","static_file":{"path":"$CAIRN_PROFILE_ROOT/templates/note.md"}}}
-			]`),
-			"files": json.RawMessage(`{
+			]`,
+			"files": `{
 				"docs/handbook.md": {"kind":"static_file","static_file":{"path":"$CAIRN_PROFILE_ROOT/skills/handbook.md"}}
-			}`),
+			}`,
 		},
-	}); err != nil {
-		t.Fatalf("put the profile: %v", err)
-	}
+	})
 
 	// The three manifest keys that take a path rather than a source, kept in a
-	// second profile so the relocation test above renders only what it asserts
-	// on. These reach the lookup through the rendered instance instead of
-	// through a resolver, which is a different thread and the one with the
-	// most at stake.
-	if err := st.PutProfile(ctx, profile.Profile{
+	// second profile so the relocation test renders only what it asserts on.
+	// These reach the lookup through the rendered instance instead of through a
+	// resolver, which is a different thread and the one with the most at stake.
+	writeProfile(t, root, bundleProfile{
 		ID:       "bundled-paths",
 		Name:     "Bundled paths",
-		Provider: profile.ProviderClaude,
+		Provider: "claude",
 		Model:    "opus",
-		Spec: profile.Spec{
-			"templates":  json.RawMessage(`{"AGENTS.md": "# paths\n", "CLAUDE.md": "@AGENTS.md\n"}`),
-			"skills":     json.RawMessage(`["relocatable"]`),
-			"install":    json.RawMessage(`{"skills":["relocatable"]}`),
-			"skills_dir": json.RawMessage(`"$CAIRN_PROFILE_ROOT/skills"`),
-			"trees":      json.RawMessage(`{"bundled": "$CAIRN_PROFILE_ROOT/templates"}`),
-			"access":     json.RawMessage(`{"directories": ["$CAIRN_PROFILE_ROOT"]}`),
+		Spec: map[string]string{
+			"templates":  `{"AGENTS.md": "# paths\n", "CLAUDE.md": "@AGENTS.md\n"}`,
+			"skills":     `["relocatable"]`,
+			"install":    `{"skills":["relocatable"]}`,
+			"skills_dir": `"$CAIRN_PROFILE_ROOT/skills"`,
+			"trees":      `{"bundled": "$CAIRN_PROFILE_ROOT/templates"}`,
+			"access":     `{"directories": ["$CAIRN_PROFILE_ROOT"]}`,
 		},
-	}); err != nil {
-		t.Fatalf("put the profile: %v", err)
-	}
+	})
 }
 
 // bootBundled boots the fixture profile and returns the directory it planted,
 // failing the test on anything reported along the way. A slot that did not
 // resolve is a failure here rather than a warning: every one of them names a
 // path inside the bundle, which is the whole subject.
-func bootBundled(t *testing.T, ctx context.Context, dbPath, scopeDir, bootRoot string, args ...string) string {
+func bootBundled(t *testing.T, ctx context.Context, scopeDir, bootRoot string, args ...string) string {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	full := append([]string{
-		"boot", "bundled", "--db", dbPath, "--scope", scopeDir,
+		"boot", "bundled", "--scope", scopeDir,
 		"--boot-root", bootRoot, "--session", "s1",
 	}, args...)
 	if err := run(ctx, full, &stdout, &stderr); err != nil {
@@ -453,10 +489,10 @@ func bootBundled(t *testing.T, ctx context.Context, dbPath, scopeDir, bootRoot s
 }
 
 // showBundled shows the fixture profile and returns the document.
-func showBundled(t *testing.T, ctx context.Context, dbPath string, args ...string) string {
+func showBundled(t *testing.T, ctx context.Context, args ...string) string {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	full := append([]string{"show", "bundled", "--db", dbPath}, args...)
+	full := append([]string{"show", "bundled"}, args...)
 	if err := run(ctx, full, &stdout, &stderr); err != nil {
 		t.Fatalf("show: %v\nstderr: %s", err, stderr.String())
 	}

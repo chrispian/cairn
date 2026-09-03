@@ -1,10 +1,11 @@
-// Package profile holds the stored profile, the resolved profile a boot
+// Package profile holds the declared profile, the resolved profile a boot
 // directory is rendered from, and the extends cascade between them.
 //
-// A profile is one row of the profiles table plus an opaque JSON rendering
-// manifest. Cairn interprets only the manifest keys it renders and carries the
-// rest untouched, so a key this package has never heard of survives the
-// cascade and reaches whatever does know it.
+// A profile is a markdown file's YAML frontmatter plus an opaque rendering
+// manifest, converted to JSON as the catalog is read. Cairn interprets only the
+// manifest keys it renders and carries the rest untouched, so a key this
+// package has never heard of survives the cascade and reaches whatever does
+// know it.
 package profile
 
 import (
@@ -15,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/hollis-labs/agentkit/agentcontext"
 	"github.com/hollis-labs/agentkit/agentlaunch"
@@ -140,13 +140,14 @@ const (
 	SpecKeySubagent = "subagent"
 )
 
-// Profile is one stored profile: a row of the profiles table, with its
-// manifest decoded into a [Spec] and nothing else interpreted.
+// Profile is one profile as its file declares it: the frontmatter's fields,
+// with the manifest converted into a [Spec] and nothing else interpreted.
 //
 // It is the input to the cascade, not the thing a boot directory is rendered
 // from — see [Resolved].
 type Profile struct {
-	// ID is the profile's primary key.
+	// ID is the profile's identity, and the name of the file it was read
+	// from.
 	ID string
 
 	// Extends is the id of the profile this one inherits from, or empty at the
@@ -176,10 +177,6 @@ type Profile struct {
 
 	// Spec is the rendering manifest.
 	Spec Spec
-
-	// CreatedAt and UpdatedAt are the row's timestamps. Nothing renders them.
-	CreatedAt time.Time
-	UpdatedAt time.Time
 }
 
 // Resolved is a profile after the extends cascade: the fields a renderer
