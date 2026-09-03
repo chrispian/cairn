@@ -23,6 +23,26 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "~/dev/projects/agent-setup/hooks/report-nudge.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/dev/projects/agent-setup/hooks/report-nudge.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "mcp__.*torque_task_transition"
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [
@@ -31,7 +51,7 @@
             "type": "command"
           }
         ],
-        "matcher": "mcp__.*torque_comment_add"
+        "matcher": "mcp__.*(torque_comment_add|torque_comment_bulk_add|torque_task_transition)"
       }
     ],
     "SessionStart": [
