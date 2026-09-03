@@ -438,8 +438,9 @@ invisible to Cairn.
 Location: `~/.local/state/cairn/boot/<binding-or-profile>/<session>/`, or
 `$CAIRN_BOOT_ROOT` when that is set.
 Outside any repository, so there is nothing to ignore it in and nothing
-tracking it. Retention is the caller's. `cairn boot` prints the path and exits;
-a human launches.
+tracking it. Retention is the caller's. `cairn boot` prints the path — or, with
+`--json`, one object describing the boot, which is what a launcher reads
+instead of scraping the rendered prose — and exits; a human launches.
 
 Rendering is deterministic: same inputs, byte-identical output. Slots resolve
 at materialization and may therefore vary between two runs — that is a property

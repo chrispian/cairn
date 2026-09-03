@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/chrispian/cairn/scope"
 	"github.com/chrispian/cairn/slots"
 	"github.com/chrispian/cairn/store"
+	goprovider "github.com/hollis-labs/go-providers/provider"
 )
 
 // TestBootEndToEnd is the MVP gate: cairn boot writes a directory that can be
@@ -164,6 +166,352 @@ func TestBootEndToEnd(t *testing.T) {
 	if info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("the planted run.sh lost its executable bit: mode %v", info.Mode().Perm())
 	}
+}
+
+// TestBootJSONDescribesTheBootForALauncher is the contract examples/boot.sh and
+// Tachyon read, asserted as a document rather than as fields on a struct: a
+// launcher unmarshals bytes, so bytes are what this checks.
+//
+// It replaces a scrape. The launcher used to pull the scope out of the rendered
+// AGENTS.md with sed, which made a launcher's access grant depend on a marker's
+// position in a document written to be re-authored.
+func TestBootJSONDescribesTheBootForALauncher(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	bootRoot := filepath.Join(home, "runtime", "boot")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	var stdout, stderr bytes.Buffer
+	err := run(ctx, []string{
+		"boot", "engineer",
+		"--db", dbPath,
+		"--boot-root", bootRoot,
+		"--session", "s1",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("boot --json: %v\nstderr: %s", err, stderr.String())
+	}
+
+	// One object and nothing else, so `$(cairn boot x --json)` is parseable.
+	dec := json.NewDecoder(strings.NewReader(stdout.String()))
+	var raw map[string]json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, stdout.String())
+	}
+	if dec.More() {
+		t.Errorf("stdout carries more than the one object:\n%s", stdout.String())
+	}
+
+	// The key set is the contract. A key that came and went would make a
+	// consumer handle two shapes for one meaning.
+	want := []string{"boot_dir", "cwd_preference", "project_dir_arg", "provider", "scope",
+		"settings_path"}
+	if got := slices.Sorted(maps.Keys(raw)); !slices.Equal(got, want) {
+		t.Errorf("the document carries %v, want exactly %v", got, want)
+	}
+
+	var report bootReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal the report: %v", err)
+	}
+	if got := filepath.Join(bootRoot, "engineer", "s1"); report.BootDir != got {
+		t.Errorf("boot_dir = %q, want %q", report.BootDir, got)
+	}
+	if _, err := os.Stat(report.BootDir); err != nil {
+		t.Errorf("boot_dir names a directory that is not there: %v", err)
+	}
+	if report.Provider != profile.ProviderClaude.String() {
+		t.Errorf("provider = %q, want %q", report.Provider, profile.ProviderClaude)
+	}
+	// The scope as the boot resolved it, symlinks and all, and not the raw
+	// value the binding stored — a granted directory is matched against by the
+	// harness, so the spelling matters.
+	wantScope, err := scope.Parse(scopeDir, home)
+	if err != nil {
+		t.Fatalf("resolve the fixture scope: %v", err)
+	}
+	if report.Scope == nil || *report.Scope != wantScope {
+		t.Errorf("scope = %v, want %q", deref(report.Scope), wantScope)
+	}
+	// The path a launcher passes to --settings, absolute and pointing at a
+	// file that is really there. Naming one that is not is the failure this
+	// key exists to remove.
+	if report.SettingsPath == nil {
+		t.Fatalf("settings_path is null, but the profile declares settings")
+	}
+	if got := filepath.Join(report.BootDir, ".claude", "settings.json"); *report.SettingsPath != got {
+		t.Errorf("settings_path = %q, want %q", *report.SettingsPath, got)
+	}
+	if _, err := os.Stat(*report.SettingsPath); err != nil {
+		t.Errorf("settings_path names a file that is not there: %v", err)
+	}
+	if report.CwdPreference != "boot_dir" {
+		t.Errorf("cwd_preference = %q, want %q", report.CwdPreference, "boot_dir")
+	}
+	// The provider's own flag, split into argv here and left un-substituted.
+	// Both halves matter and they fail differently: a consumer handed one
+	// string has to substitute and split itself, and doing those in the wrong
+	// order turns a scope with a space in it into two arguments — silently,
+	// and only on the input nobody tests.
+	layout, err := bootdir.LayoutFor(profile.ProviderClaude)
+	if err != nil {
+		t.Fatalf("layout: %v", err)
+	}
+	if got := strings.Fields(layout.ProjectDirArg); !slices.Equal(report.ProjectDirArg, got) {
+		t.Errorf("project_dir_arg = %v, want the layout's own pattern split into %v", report.ProjectDirArg, got)
+	}
+	if !slices.Contains(report.ProjectDirArg, projectDirPlaceholder) {
+		t.Errorf("project_dir_arg = %v, want it to still carry %s", report.ProjectDirArg, projectDirPlaceholder)
+	}
+	for _, tok := range report.ProjectDirArg {
+		// The property the split buys: no element needs quoting, so no
+		// consumer can lose one to word splitting.
+		if strings.ContainsAny(tok, " \t\n") {
+			t.Errorf("project_dir_arg carries a token with whitespace in it: %q", tok)
+		}
+		if strings.Contains(tok, wantScope) {
+			t.Errorf("project_dir_arg was substituted: %v", report.ProjectDirArg)
+		}
+	}
+}
+
+// TestBootJSONReportsAFlaglessProviderAsNull covers the third null, which no
+// supported provider reaches: LayoutFor admits Claude Code alone and that
+// adapter hardcodes a pattern. The rule is still a third of the contract, and
+// without this it rests on nullable's shape and nothing else.
+func TestBootJSONReportsAFlaglessProviderAsNull(t *testing.T) {
+	layout := bootdir.Layout{Provider: profile.ProviderClaude}
+	report, err := newBootReport("/boot/x", layout, "", nil)
+	if err != nil {
+		t.Fatalf("newBootReport: %v", err)
+	}
+	if report.ProjectDirArg != nil {
+		t.Errorf("project_dir_arg = %v, want nil for a provider declaring no flag", report.ProjectDirArg)
+	}
+	// nil and not [], which would read as "pass these zero arguments" rather
+	// than "this harness takes no such flag" — and only the bytes say which.
+	out, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"project_dir_arg":null`) {
+		t.Errorf("project_dir_arg is not null in the document:\n%s", out)
+	}
+}
+
+// TestBootJSONSpellsAPathTheOperatorCanRead is the escaping rule this repo
+// already settled for the settings fragment, applied to the document that
+// describes it.
+//
+// "&", "<" and ">" are legal in a directory name, and Go's default encoder
+// escapes all three. A report spelling a scope in \u0026 while the settings
+// file one directory over spells it plainly would be cairn contradicting
+// itself about the same directory — and this document is one an operator reads
+// at a terminal before any launcher parses it.
+func TestBootJSONSpellsAPathTheOperatorCanRead(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	bootRoot := filepath.Join(home, "runtime", "boot")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	awkward := filepath.Join(home, "r&d <x>")
+	mustMkdir(t, awkward)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(ctx, []string{
+		"boot", "engineer",
+		"--db", dbPath,
+		"--boot-root", bootRoot,
+		"--session", "s1",
+		"--scope", awkward,
+		"--json",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("boot --json: %v\nstderr: %s", err, stderr.String())
+	}
+
+	wantScope, err := scope.Parse(awkward, home)
+	if err != nil {
+		t.Fatalf("resolve the fixture scope: %v", err)
+	}
+	if !strings.Contains(stdout.String(), wantScope) {
+		t.Errorf("the report does not spell the scope as it is on disk:\n%s", stdout.String())
+	}
+	for _, escape := range []string{`\u0026`, `\u003c`, `\u003e`} {
+		if strings.Contains(stdout.String(), escape) {
+			t.Errorf("the report carries %s:\n%s", escape, stdout.String())
+		}
+	}
+	// The claim is agreement, so read the other document too: the settings
+	// file cairn wrote one directory over already has escaping off.
+	var report bootReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal the report: %v", err)
+	}
+	if report.SettingsPath == nil {
+		t.Fatal("settings_path is null, but a scope was granted")
+	}
+	granted, err := os.ReadFile(*report.SettingsPath)
+	if err != nil {
+		t.Fatalf("read the settings document: %v", err)
+	}
+	if !strings.Contains(string(granted), wantScope) {
+		t.Errorf("the two documents disagree about the same directory:\nreport: %s\nsettings: %s",
+			stdout.String(), granted)
+	}
+}
+
+// TestBootWithoutJSONPrintsTheBarePath guards the seam --json was added beside
+// rather than through. A caller that wants a path keeps getting exactly a path.
+func TestBootWithoutJSONPrintsTheBarePath(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	bootRoot := filepath.Join(home, "runtime", "boot")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(ctx, []string{
+		"boot", "engineer",
+		"--db", dbPath,
+		"--boot-root", bootRoot,
+		"--session", "s1",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("boot: %v\nstderr: %s", err, stderr.String())
+	}
+	if got, want := stdout.String(), filepath.Join(bootRoot, "engineer", "s1")+"\n"; got != want {
+		t.Errorf("stdout = %q, want the bare path %q", got, want)
+	}
+}
+
+// TestBootJSONReportsAnAbsentValueAsNull is the rule that keeps a launcher from
+// interpolating nothing into argv.
+//
+// An empty string reaches `claude $FLAG "$VALUE"` as an empty argument and the
+// launch is wrong with nothing reporting it; null forces the consumer to
+// decide. The seeded profile has no binding, so no scope resolves, and clears
+// its ancestor's settings, so with nothing to grant no settings document is
+// written at all.
+//
+// Then the same profile with one directory to grant, which is the case that
+// keeps the two nulls from being one fact. They are not equivalent and only
+// one implication holds: a scope is itself a granted directory, so a non-null
+// scope guarantees a settings document — the invariant examples/boot.sh rests
+// on — while a profile granting a directory it is not scoped to renders one
+// with no scope at all.
+func TestBootJSONReportsAnAbsentValueAsNull(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dbPath := filepath.Join(home, "cairn.db")
+	bootRoot := filepath.Join(home, "runtime", "boot")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, ctx, dbPath, skillsDir, scopeDir)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(ctx, []string{
+		"boot", "nosettings",
+		"--db", dbPath,
+		"--boot-root", bootRoot,
+		"--session", "s1",
+		"--json",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("boot --json: %v\nstderr: %s", err, stderr.String())
+	}
+
+	// Null in the bytes, not merely a zero value after unmarshalling: the
+	// distinction this test is about is one only the document can carry.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	for _, key := range []string{"scope", "settings_path"} {
+		got, present := raw[key]
+		if !present {
+			t.Errorf("%s is missing; an absent value is null and the key is always emitted", key)
+			continue
+		}
+		if string(got) != "null" {
+			t.Errorf("%s = %s, want null", key, got)
+		}
+	}
+
+	var report bootReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal the report: %v", err)
+	}
+	// settings_path is null because the render produced no such file, which is
+	// the claim worth reading off disk rather than off the layout.
+	if _, err := os.Stat(filepath.Join(report.BootDir, ".claude", "settings.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("settings_path is null but a settings document was written: %v", err)
+	}
+
+	// The mixed case. Nothing may read the two nulls as one.
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(ctx, []string{
+		"boot", "grantsonly",
+		"--db", dbPath,
+		"--boot-root", bootRoot,
+		"--session", "s2",
+		"--json",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("boot grantsonly --json: %v\nstderr: %s", err, stderr.String())
+	}
+	var mixed bootReport
+	if err := json.Unmarshal(stdout.Bytes(), &mixed); err != nil {
+		t.Fatalf("unmarshal the report: %v", err)
+	}
+	if mixed.Scope != nil {
+		t.Errorf("scope = %q, want null: the profile has no binding", *mixed.Scope)
+	}
+	if mixed.SettingsPath == nil {
+		t.Fatal("settings_path is null, but spec.access.directories named one to grant")
+	}
+	if _, err := os.Stat(*mixed.SettingsPath); err != nil {
+		t.Errorf("settings_path names a file that is not there: %v", err)
+	}
+}
+
+// TestCwdPreferenceHasNoFallback covers the branch a supported provider cannot
+// reach today. go-providers owns the constants; a third one arriving would
+// otherwise be reported as one of the two cairn knows, and a launcher would
+// invoke the harness in the wrong directory while the document read as though
+// it knew.
+func TestCwdPreferenceHasNoFallback(t *testing.T) {
+	for _, p := range []goprovider.CwdPreference{goprovider.CwdBootDir, goprovider.CwdProjectDir} {
+		name, err := cwdPreferenceName(p)
+		if err != nil || name == "" {
+			t.Errorf("cwdPreferenceName(%d) = %q, %v", p, name, err)
+		}
+	}
+	if _, err := cwdPreferenceName(goprovider.CwdProjectDir + 1); !errors.Is(err, bootdir.ErrProviderLayout) {
+		t.Errorf("an unnamed preference returned %v, want ErrProviderLayout", err)
+	}
+}
+
+// deref renders a nullable report field for a failure message.
+func deref(s *string) string {
+	if s == nil {
+		return "null"
+	}
+	return *s
 }
 
 // TestASlotThatProducedNothingLeavesNoTraceInTheBootFile is docs/plan.md §5
@@ -950,8 +1298,27 @@ func seed(t *testing.T, ctx context.Context, dbPath, skillsDir, scopeDir string)
 	// needs one the cascade will actually boot.
 	base2 := profile.Profile{ID: "base2", Extends: "base", Name: "Base, bootable"}
 
+	// A profile with no settings document at all, and no binding to give it a
+	// scope. An explicit null clears the ancestor's key, and with nothing
+	// declared and no scope to grant there is nothing for RenderSettings to
+	// write — which is the only way a boot directory legitimately holds no
+	// settings file, and the case a launcher must not be handed a path for.
+	nosettings := profile.Profile{ID: "nosettings", Extends: "base", Name: "No settings",
+		Spec: profile.Spec{"settings": json.RawMessage(`null`)}}
+
+	// The same, plus one directory to grant. It is what keeps "no scope" and
+	// "no settings file" from being one fact tested twice: this profile has no
+	// binding either, so its scope is null, and the grant alone still renders
+	// the settings document. A report that derived one from the other would
+	// pass every other test in this file and fail here.
+	grantsonly := profile.Profile{ID: "grantsonly", Extends: "base", Name: "Grants only",
+		Spec: profile.Spec{
+			"settings": json.RawMessage(`null`),
+			"access":   json.RawMessage(`{"directories":["` + scopeDir + `"]}`),
+		}}
+
 	profiles := []profile.Profile{
-		base, base2, engineer, broken, reviewer, abstractSub, undeclaredSub,
+		base, base2, engineer, broken, reviewer, abstractSub, undeclaredSub, nosettings, grantsonly,
 		namesSubagent("template"), namesSubagent("plain"), namesSubagent("nosuchprofile"),
 	}
 	for _, p := range profiles {

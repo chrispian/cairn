@@ -1,12 +1,14 @@
 # Using Cairn
 
-Cairn assembles files and writes them into a directory. It prints the path and
-exits. **You launch.** Nothing here starts, watches, or supervises an agent.
+Cairn assembles files and writes them into a directory. It prints the path —
+or, with `--json`, one object describing the boot — and exits. **You launch.**
+Nothing here starts, watches, or supervises an agent.
 
 Two commands and one workflow:
 
 ```
 cairn boot <binding|profile> [--scope <path|alias>]   materialize a boot dir, print its path
+cairn boot <binding|profile> --json                   ... and describe it for a launcher
 cairn install <binding|profile> [--check]             render ~/.claude from the same source
 ```
 
@@ -57,13 +59,21 @@ The path goes to **stdout**; diagnostics go to **stderr**. A slot that fails to
 resolve reports on stderr and the boot still succeeds — a missing memory
 service should not stop you working.
 
-`boot.sh` is the wrapper that turns the path into a session:
+Pass `--json` and stdout is one JSON object describing the boot instead of the
+bare path — the scope, the settings file to promote, and how the harness wants
+to be opened. That is what a launcher reads; see §5.
+
+`boot.sh` is the wrapper that turns the boot into a session:
 
 ```bash
 ./examples/boot.sh eng                     # boot, then launch claude in it
 ./examples/boot.sh eng --scope ~/dev/nanite  # override the binding's scope
 PRINT_ONLY=1 ./examples/boot.sh eng        # just the path
 ```
+
+It reads `--json` and needs `jq`. It used to pull the scope out of the rendered
+`AGENTS.md` with `sed`, which made a launcher's access grant depend on a
+marker's position in a document written to be re-authored.
 
 What lands:
 
@@ -351,18 +361,24 @@ then **silently downgraded** at launch with a warning. The same rule governs
 Passing `--settings <boot-dir>/.claude/settings.json` promotes the file to
 `flagSettings`, which is trusted. `boot.sh` does this.
 
-This is deliberately the launcher's job. Cairn writes the file and prints a
-path; whoever owns the invocation decides what tier it lands in. Cairn taking
-it over would mean Cairn owning the launch, which is a different product.
+This is deliberately the launcher's job. Cairn writes the file and describes
+it; whoever owns the invocation decides what tier it lands in. Cairn taking it
+over would mean Cairn owning the launch, which is a different product.
 
-**Whether the same downgrade reaches the access grant is not yet known.** The
-warning above names `defaultMode` and the `autoMode` rules; `additionalDirectories`
-lives under the same `permissions` object, and nothing observed so far says
-whether the tier rule gates that object or only those keys. If it gates the
-object, a bare `claude` in a boot directory is granted nothing and `--settings`
-is what makes the grant real. Until someone has watched a session either reach
-its scope or fail to, `boot.sh` keeps passing both `--add-dir` and `--settings`,
-which is correct under either answer.
+**`--settings` is also the whole access grant, and that has been watched.** A
+session opened as `claude --settings <boot-dir>/.claude/settings.json`, with no
+`--add-dir`, in a boot directory scoped to a real project, read that project
+with no permission prompt and no refusal. So `permissions.additionalDirectories`
+in a flag-tier settings file is the grant, and `--add-dir` is redundant for any
+launcher that passes `--settings` — which is every launcher, because
+`--settings` is what keeps `defaultMode` from being downgraded in the first
+place.
+
+`boot.sh` therefore passes `--settings` and nothing else. `cairn boot --json`
+still reports `project_dir_arg`, because a provider that grants directories on
+the command line rather than in a config file will need it — Codex does — and
+that is a fact about the provider for a launcher to act on, not a flag Cairn
+has an opinion about.
 
 ## 4. The installed layer
 
@@ -403,55 +419,125 @@ exactly Cairn's contract.
 So Cairn slots in as a step before the spawn:
 
 ```
-Tachyon.app  ──shell──▶  cairn boot <binding>  ──▶  boot dir on disk
-     │                                                    │
-     └────────────── spawns `claude --add-dir <scope>` with cwd = boot dir
+Tachyon.app  ──shell──▶  cairn boot <binding> --json  ──▶  boot dir on disk
+     │                                                          │
+     └────── spawns `claude --settings <settings_path>` with cwd = boot dir
 ```
+
+### `cairn boot --json`
+
+Without `--json`, stdout is the bare path and nothing else — that seam has not
+moved. With it, stdout is one JSON object and nothing else, so
+`$(cairn boot eng --json)` is parseable and diagnostics still go to stderr:
+
+```json
+{
+  "boot_dir": "/Users/.../boot/eng/20260826T014133Z-9f2a1c",
+  "provider": "claude",
+  "scope": "/Users/chrispian/dev/projects/cairn",
+  "settings_path": "/Users/.../boot/eng/20260826T014133Z-9f2a1c/.claude/settings.json",
+  "cwd_preference": "boot_dir",
+  "project_dir_arg": ["--add-dir", "{{.ProjectDir}}"]
+}
+```
+
+Six keys, flat, `snake_case`, and **every one of them is emitted on every
+boot** — the key set is the contract, and a key that came and went would make a
+consumer handle two shapes for one meaning.
+
+**A value Cairn does not have is `null`, never `""` and never `[]`.** An empty
+string is the shape most likely to be interpolated straight into argv: `claude
+$FLAG "$VALUE"` passes an empty argument and the launch is wrong with nothing
+reporting it, where `null` forces the consumer to decide. Three keys can be
+null and each says something different:
+
+- `scope` — the binding declared none and no `--scope` was given.
+- `settings_path` — the render produced no file at the harness's settings path.
+  That is a real case: a profile declaring no `spec.settings` with no directory
+  to grant produces none. The path is read off what the render actually
+  produced, so it never names a file that is not there.
+- `project_dir_arg` — this harness needs no flag to grant a directory. It is
+  **not** how "there is no scope" is spelled; `scope` says that.
+
+**`scope` and `settings_path` are not equivalent, and only one implication
+holds.** The scope is itself one of the granted directories, and one directory
+to grant is enough on its own to render the settings document — so a non-null
+`scope` guarantees a non-null `settings_path`, which is the invariant
+`boot.sh` rests on when it drops `--add-dir`. The reverse is false: a profile
+that grants a directory it is not scoped to renders the document with no scope
+at all. Read the key; do not infer it.
+
+`cwd_preference` is `"boot_dir"` or `"project_dir"` — the preference, not a
+resolved directory, because Cairn launches nothing and choosing between the two
+on a launcher's behalf would be Cairn deciding the invocation.
+
+`project_dir_arg` is the provider's own flag, **already split into argv tokens**
+and with the placeholder **left standing**. Both halves are deliberate:
+
+- *Split here.* The spec spells it as one string, `"--add-dir {{.ProjectDir}}"`,
+  and a consumer handed that must substitute and split itself. Substitute first
+  and a scope named `.../scope with space` becomes two arguments instead of one
+  — silently, on the one input nobody tests. Nothing in `go-providers` states
+  the safe order, and both of that library's own boot-dir examples replace on
+  the whole pattern, so a consumer reading this document alongside them lands
+  on the unsafe recipe. Split into tokens, no element can contain whitespace
+  and the shape is safe by construction.
+- *Substituted there.* `go-providers` documents substitution as the app's job
+  at spawn time, and doing it here would tie the key to `scope`: a boot with no
+  scope would have to report `null`, which already means "this harness needs no
+  such flag". Replace `{{.ProjectDir}}` in each token with `scope`.
+
+There is no `version` field, and the rule that replaces it is: **new keys are
+free; renaming or removing one is breaking and must update every consumer in
+the same change.** There is one consumer today — `examples/boot.sh` — and
+Tachyon is the one expected next; both live in this portfolio, which is what
+makes the rule enforceable at all. A version number would not have stopped a
+rename; the sentence might.
 
 Minimal Go, engine-side:
 
 ```go
-// Materialize a boot directory. Cairn writes files and prints a path; it
+// Materialize a boot directory. Cairn writes files and describes them; it
 // starts nothing.
-cmd := exec.CommandContext(ctx, cairnBin, "boot", binding, "--scope", scope)
+cmd := exec.CommandContext(ctx, cairnBin, "boot", binding, "--scope", scope, "--json")
 cmd.Stderr = os.Stderr // slot failures and diagnostics surface to the operator
 out, err := cmd.Output()
 if err != nil {
     return fmt.Errorf("cairn boot %s: %w", binding, err)
 }
-bootDir := strings.TrimSpace(string(out))
+var boot struct {
+    BootDir       string   `json:"boot_dir"`
+    Scope         *string  `json:"scope"`
+    SettingsPath  *string  `json:"settings_path"`
+    ProjectDirArg []string `json:"project_dir_arg"`
+}
+if err := json.Unmarshal(out, &boot); err != nil {
+    return fmt.Errorf("cairn boot %s: %w", binding, err)
+}
 
 // Tachyon spawns it. Cairn is done.
-launch := exec.Command("claude", "--add-dir", scope)
-launch.Dir = bootDir
-```
-
-### What Cairn is missing for this, honestly
-
-`cairn boot` prints a bare path. That is enough to `cd` into and launch, but a
-launcher building a UI wants what `tachyon-engine launch` already returns —
-provider, model, the scope to pass to `--add-dir`, and which slots failed so it
-can show a warning rather than making the operator read stderr.
-
-Today a launcher has to scrape `AGENTS.md` for the scope, as `boot.sh` does.
-That works and is stable, but it is scraping.
-
-**A `--json` flag is the fix** and would mirror Tachyon's own contract:
-
-```jsonc
-{
-  "status": "ready",
-  "boot_dir": "/Users/.../boot/eng/20260826T014133Z-9f2a1c",
-  "scope":    "/Users/chrispian/dev/projects/cairn",
-  "provider": "claude",
-  "model":    "",
-  "files":    [".claude/settings.json", ".mcp.json", "AGENTS.md", "boot.md", "CLAUDE.md"],
-  "slots":    [ { "name": "memory", "status": "failed", "error": "connection refused" } ]
+args := []string{}
+if boot.SettingsPath != nil {
+    args = append(args, "--settings", *boot.SettingsPath)
 }
+// Only for a provider that grants directories on the command line. Claude Code
+// does not — the grant is in the settings file above — so this is nil here.
+// Substituting per token is what keeps a scope with a space in it one argument.
+if boot.Scope != nil {
+    for _, tok := range boot.ProjectDirArg {
+        args = append(args, strings.ReplaceAll(tok, "{{.ProjectDir}}", *boot.Scope))
+    }
+}
+launch := exec.Command("claude", args...)
+launch.Dir = boot.BootDir
 ```
 
-It is not built. It is the first thing to add when a launcher actually consumes
-Cairn, and it is small — the data all exists at the point the path is printed.
+### What Cairn is still missing for this
+
+Which slots failed. A launcher building a UI wants to show a warning rather
+than making the operator read stderr, and the report carries no `slots` array
+yet. Adding one is additive and therefore free; it is the next key to add when
+a launcher wants it.
 
 ### On `plant.Planter`
 

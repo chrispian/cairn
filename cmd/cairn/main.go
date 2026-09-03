@@ -2,7 +2,8 @@
 //
 // It reads a profile from its own store, resolves it through an extends
 // cascade, and materializes a boot directory a CLI coding agent can be
-// launched from. It prints the path and exits; a human launches.
+// launched from. It prints the path — or, with --json, one object describing
+// the boot — and exits; a human launches.
 package main
 
 import (
@@ -38,6 +39,7 @@ flags for boot:
   --boot-root <path>     where boot directories are planted; defaults to $CAIRN_BOOT_ROOT,
                          else ~/.local/state/cairn/boot
   --session <name>       the session segment; defaults to a UTC timestamp and a random suffix
+  --json                 print one JSON object describing the boot instead of the bare path
 
 flags for install:
   --check                re-render, diff against disk, report drift, write nothing
@@ -303,7 +305,12 @@ func openStore(ctx context.Context, flagValue, home string) (*store.Store, error
 	return store.Open(ctx, path)
 }
 
-// runBoot materializes one boot directory and prints its path.
+// runBoot materializes one boot directory and prints its path, or --json and
+// prints one object describing it.
+//
+// Without --json stdout is the bare path and nothing else. That is the seam
+// this command is, and --json does not move it: a caller that wants a path
+// keeps getting exactly a path, and one that wants the rest asks for it.
 func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("cairn boot", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -312,6 +319,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		dbFlag    = fs.String("db", "", "the database path")
 		rootFlag  = fs.String("boot-root", "", "where boot directories are planted")
 		sessFlag  = fs.String("session", "", "the session segment")
+		jsonFlag  = fs.Bool("json", false, "print one JSON object describing the boot instead of the bare path")
 	)
 	target, rest := splitTarget(args)
 	if err := fs.Parse(rest); err != nil {
@@ -496,10 +504,17 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 
-	// The path is the whole output of the command, so a write that fails is
-	// reported rather than dropped — and it names the directory, which by now
-	// exists, so the failure does not also lose it.
-	if _, err := fmt.Fprintln(stdout, dir); err != nil {
+	// Whichever form it takes, this is the whole output of the command, so a
+	// write that fails is reported rather than dropped — and it names the
+	// directory, which by now exists, so the failure does not also lose it.
+	out := dir + "\n"
+	if *jsonFlag {
+		out, err = bootDocument(dir, layout, scopeDir, files)
+		if err != nil {
+			return fmt.Errorf("the boot directory was written to %s but it could not be described: %w", dir, err)
+		}
+	}
+	if _, err := fmt.Fprint(stdout, out); err != nil {
 		return fmt.Errorf("the boot directory was written to %s but its path could not be printed: %w", dir, err)
 	}
 	return nil
