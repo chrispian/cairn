@@ -23,6 +23,17 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "~/dev/projects/agent-setup/hooks/torque-author-tag.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "mcp__.*torque_comment_add"
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
