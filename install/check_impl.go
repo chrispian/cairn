@@ -48,6 +48,14 @@ type SweepPlan struct {
 	// how a settings.json left behind by a profile that stopped declaring one
 	// gets found. A path that is not a claim is not cairn's and is not
 	// reported, whatever is in it.
+	//
+	// A claim may be only partly cairn's, and that needs no shape here. An
+	// artifact declaring a [Renderer.Merge] is still one exact path, and a
+	// render that produces it is classified by the manifest half — which is
+	// where how much of it is cairn's gets decided. A render that does not
+	// produce it is the orphan above, unchanged: a profile that declares no
+	// settings renders no settings document, and the whole file is then the
+	// leftover. Neither case wants a fourth list. Do not add one.
 	Claims []string
 
 	// Trees are the directories cairn fills whole: for each renderer that
@@ -223,7 +231,7 @@ func CheckFS(fsys fs.ReadLinkFS, lay *Layer) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries := checkManifest(fsys, rendered, normalizers(lay.Profile.Provider))
+	entries := checkManifest(fsys, rendered, comparisons(lay.Profile.Provider))
 	entries = append(entries, sweep(fsys, plan, manifestPaths(rendered))...)
 	return &Report{Entries: entries}, nil
 }
@@ -238,39 +246,56 @@ func manifestPaths(rendered []File) map[string]struct{} {
 	return paths
 }
 
-// normalizers returns the [Renderer.Normalize] of every artifact that declares
-// one, keyed by the path it lands at, so a comparison can find the one for a
-// rendered file.
+// comparison is how one artifact is held against what is on disk: which of
+// the bytes there are cairn's, and how the two are laid out before they are
+// compared. Both are narrowings of the claim and both are declared on the
+// [Renderer], so they travel together.
+//
+// The zero comparison is the default and the common one: the whole file is
+// cairn's, and the bytes are compared as they are.
+type comparison struct {
+	// merge is the artifact's [Renderer.Merge]: the bytes an install would
+	// write, given the render and what is already there.
+	merge func(rendered, existing []byte) []byte
+
+	// normalize is the artifact's [Renderer.Normalize].
+	normalize func([]byte) []byte
+}
+
+// comparisons returns the [comparison] of every artifact that narrows one,
+// keyed by the path it lands at, so a check can find the one for a rendered
+// file.
 //
 // It reads the registration list rather than the render, for the reason
-// [NewSweepPlan] does: which artifacts cairn claims — and how it compares them
-// — is settled where they are registered, not by the profile being checked.
+// [NewSweepPlan] does: which artifacts cairn claims — how much of one, and how
+// it is compared — is settled where they are registered, not by the profile
+// being checked.
 //
 // A provider with no harness returns nothing rather than an error. The render
 // that reaches a comparison has already gone through [Render], which refuses
 // that provider outright, so there is nothing here to report a second opinion
 // on.
-func normalizers(p profile.Provider) map[string]func([]byte) []byte {
+func comparisons(p profile.Provider) map[string]comparison {
 	h, err := harnessFor(p)
 	if err != nil {
 		return nil
 	}
-	out := make(map[string]func([]byte) []byte)
+	out := make(map[string]comparison)
 	for _, r := range h.renderers {
-		if r.Normalize == nil || r.Artifact == "" {
+		if r.Artifact == "" || (r.Merge == nil && r.Normalize == nil) {
 			continue
 		}
-		out[path.Join(h.dir, r.Artifact)] = r.Normalize
+		out[path.Join(h.dir, r.Artifact)] = comparison{merge: r.Merge, normalize: r.Normalize}
 	}
 	return out
 }
 
 // checkManifest is the first half: every rendered file, looked up on disk, in
 // render order.
-func checkManifest(fsys fs.ReadLinkFS, rendered []File, norm map[string]func([]byte) []byte) []Entry {
+func checkManifest(fsys fs.ReadLinkFS, rendered []File, how map[string]comparison) []Entry {
 	entries := make([]Entry, 0, len(rendered))
 	for _, f := range rendered {
-		entries = append(entries, checkRendered(fsys, f, norm[f.Path]))
+		entries = append(entries, checkRendered(fsys, f, how[f.Path]))
 	}
 	return entries
 }
@@ -282,15 +307,23 @@ func checkManifest(fsys fs.ReadLinkFS, rendered []File, norm map[string]func([]b
 // the install, so reporting one would report the operator's shell rather than
 // the layer's content.
 //
+// What the file is held against is what an install would write there, which
+// for an artifact cairn owns whole is the render and nothing else. An artifact
+// registered with a [Renderer.Merge] is held against the merge instead, so a
+// key cairn never declared is not a finding — it is not cairn's, an install
+// would not touch it, and reporting it would be the check crying wolf over
+// somebody else's file. That is the same rule [Renderer.Fills] applies to a
+// directory, in a file.
+//
 // An artifact registered with a [Renderer.Normalize] has it applied to both
-// sides first, so the comparison forgives exactly what that function moves and
-// nothing else. The detail still counts the bytes actually on disk, because
-// that is the number the operator sees in a directory listing.
+// sides after that, so the comparison forgives exactly what that function
+// moves and nothing else. The detail still counts the bytes actually on disk,
+// because that is the number the operator sees in a directory listing.
 //
 // A path that cannot be read is a finding rather than a failure of the check.
 // One unreadable file in a skills tree should not hide what the rest of the
 // layer looks like.
-func checkRendered(fsys fs.ReadLinkFS, f File, normalize func([]byte) []byte) Entry {
+func checkRendered(fsys fs.ReadLinkFS, f File, how comparison) Entry {
 	entry := Entry{Path: f.Path}
 	info, err := fs.Lstat(fsys, f.Path)
 	switch {
@@ -313,18 +346,41 @@ func checkRendered(fsys fs.ReadLinkFS, f File, normalize func([]byte) []byte) En
 		entry.Detail = err.Error()
 		return entry
 	}
-	found, want := content, f.Content
-	if normalize != nil {
-		found, want = normalize(found), normalize(want)
+	write := f.Content
+	if how.merge != nil {
+		write = how.merge(f.Content, content)
+	}
+	found, want := content, write
+	if how.normalize != nil {
+		found, want = how.normalize(found), how.normalize(want)
 	}
 	if !bytes.Equal(found, want) {
 		entry.Status = StatusModified
-		entry.Detail = fmt.Sprintf("the bytes on disk are not the render's: %d on disk, %d rendered",
-			len(content), len(f.Content))
+		entry.Detail = fmt.Sprintf("the bytes on disk are not %s: %d on disk, %d %s",
+			describeWrite(how), len(content), len(write), describeWritten(how))
 		return entry
 	}
 	entry.Status = StatusMatch
 	return entry
+}
+
+// describeWrite and describeWritten name what a modified file was held
+// against, so the detail says which comparison it failed. An artifact cairn
+// owns whole is held against the render; one it claims part of is held against
+// the merge, and calling that "the render" would name a document that is not
+// what an install would write.
+func describeWrite(how comparison) string {
+	if how.merge != nil {
+		return "what an install would write"
+	}
+	return "the render's"
+}
+
+func describeWritten(how comparison) string {
+	if how.merge != nil {
+		return "to write"
+	}
+	return "rendered"
 }
 
 // sweep is the second half: every file inside a directory of the plan that the

@@ -178,6 +178,41 @@ type Renderer struct {
 	// settings.local.json, one level down.
 	Fills func(*profile.Resolved) ([]string, error)
 
+	// Merge, when set, narrows the claim inside one file: it is handed the
+	// render and whatever is already at the artifact's path, and returns the
+	// bytes cairn will write there.
+	//
+	// It is the third narrowing on this type and the one for a file whose
+	// contents are only partly cairn's. Fills says which parts of a directory
+	// artifact are claimed; Normalize says how a claim is compared; this says
+	// what a claim covers inside one file. [SweepPlan] needs no new shape for
+	// it — settings.json is still one exact [SweepPlan.Claims] path, still
+	// rendered on every run, so the sweep half never reaches it.
+	//
+	// It exists for the same disease Fills was written for, in a file rather
+	// than a directory. ~/.claude/settings.json is a document the harness and
+	// the operator write too, and a render-and-overwrite install deletes
+	// whatever they put there: it demonstrably did, to a live `model` key that
+	// cairn deliberately declines to declare. What cairn did not render is not
+	// cairn's to remove — see [mergeSettingsDocument] for what that means key
+	// by key.
+	//
+	// A merge changes what both halves of the layer mean, and it has to change
+	// both or neither. [Install] writes the merge rather than the render, so
+	// the operator's keys survive; [Check] compares the merge against what is
+	// on disk rather than the render, so the question it answers becomes
+	// "would an install change this file?" — and a key cairn never declared is
+	// then neither written nor reported, which is the whole rule.
+	//
+	// It runs before Normalize and is total: a document it cannot read is not
+	// merged at all, and the render stands. There is no error to return
+	// because there is no failure to report — an unreadable settings document
+	// is a finding the check already makes.
+	//
+	// A renderer without one is written and compared as the render, which is
+	// the default for every artifact cairn owns whole.
+	Merge func(rendered, existing []byte) []byte
+
 	// Normalize, when set, is applied to the render and to the bytes on disk
 	// before a check compares them, so that a difference it forgives is a
 	// difference in neither.
@@ -190,10 +225,17 @@ type Renderer struct {
 	//
 	// What it forgives has to stay narrow, and that is why this is a byte
 	// transformation rather than a comparison. [bootdir.IndentJSON] moves
-	// whitespace and changes nothing else, so a reordered key, a changed value
-	// and an added key all still read as modified. A normalizer that parsed
-	// both sides and compared them as values would forgive far more than the
-	// operator asked it to, in the one layer that is not disposable.
+	// whitespace and changes nothing else, so a changed value, a respelled
+	// number and a collapsed duplicate all still read as modified. A
+	// normalizer that parsed both sides and compared them as values would
+	// forgive far more than the operator asked it to, in the one layer that is
+	// not disposable.
+	//
+	// It stays a whitespace transformation now that Merge exists beside it.
+	// Which keys a check answers for is Merge's question and is settled before
+	// this runs; what this decides is only how the two documents are laid out
+	// when they are compared. Folding one into the other would put both
+	// answers in a function whose name promises neither.
 	//
 	// A renderer without one is compared byte for byte, which is the default
 	// for every artifact that is prose.
@@ -243,7 +285,12 @@ func ClaudeRenderers() []Renderer {
 	return []Renderer{
 		{Artifact: bootdir.AgentsFileName, Render: bootdir.RenderAgentsTemplate},
 		{Artifact: bootdir.PointerFileName, Render: bootdir.RenderPointerTemplate},
-		{Artifact: SettingsFileName, Render: bootdir.RenderSettings, Normalize: bootdir.IndentJSON},
+		{
+			Artifact:  SettingsFileName,
+			Render:    bootdir.RenderSettings,
+			Merge:     mergeSettingsDocument,
+			Normalize: bootdir.IndentJSON,
+		},
 		{Artifact: SkillsDirName, Render: bootdir.RenderInstallSkills, Fills: installedSkillNames},
 	}
 }

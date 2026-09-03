@@ -42,13 +42,21 @@ type checkFixture struct {
 // render into a fresh temporary install root, so the root starts out matching.
 func newCheckFixture(t *testing.T, skills ...string) checkFixture {
 	t.Helper()
+	return newCheckFixtureDeclaring(t, map[string]any{"model": "opus"}, skills...)
+}
+
+// newCheckFixtureDeclaring is [newCheckFixture] with the settings document the
+// profile declares supplied, for a test that needs a shape the one-key default
+// cannot express — a key nested inside a key cairn declares, above all.
+func newCheckFixtureDeclaring(t *testing.T, settings map[string]any, skills ...string) checkFixture {
+	t.Helper()
 	rootDir := t.TempDir()
 	root, err := install.NewRoot(rootDir)
 	if err != nil {
 		t.Fatalf("NewRoot(t.TempDir()): %v", err)
 	}
 	manifest := map[string]any{
-		"settings":  map[string]any{"model": "opus"},
+		"settings":  settings,
 		"templates": map[string]any{"AGENTS.md": "declared, and resolved onto the layer"},
 	}
 	if len(skills) > 0 {
@@ -1012,10 +1020,14 @@ func TestCheckForgivesTheHarnessRelayingOutTheSettingsDocument(t *testing.T) {
 	}
 }
 
-// TestCheckStillReportsAChangedSettingsDocument is the other half. Normalizing
-// moves whitespace and nothing else, so a changed value, an added key and a
-// reordered key are all still findings — which is what keeps the forgiveness
-// above from being a hole.
+// TestCheckStillReportsAChangedSettingsDocument is the other half, and it is
+// what keeps the two forgivenesses above and below from being a hole.
+//
+// Normalizing moves whitespace and nothing else; the merge covers the keys
+// cairn declares and nothing else. Between them, every edit to a key cairn
+// declared is still a finding — and so is a document the merge cannot read
+// member by member, because a file cairn cannot parse is not a file it can
+// claim part of.
 func TestCheckStillReportsAChangedSettingsDocument(t *testing.T) {
 	t.Parallel()
 	const settings = ".claude/settings.json"
@@ -1024,9 +1036,14 @@ func TestCheckStillReportsAChangedSettingsDocument(t *testing.T) {
 		document string
 	}{
 		{"a changed value", "{\n  \"model\": \"haiku\"\n}\n"},
-		{"an added key", "{\n  \"model\": \"opus\",\n  \"tui\": \"fullscreen\"\n}\n"},
 		{"a removed key", "{}\n"},
 		{"a document that is not JSON at all", "not a settings document\n"},
+		{"a document that is not an object", "[\"model\"]\n"},
+		{"content after the object", "{\n  \"model\": \"opus\"\n}\nand then some\n"},
+		// The declared key twice. Go's decoder resolves that silently and the
+		// merge refuses to, so the file is reported rather than collapsed —
+		// which matters here more than anywhere, since permissions live in it.
+		{"a key declared twice", "{\n  \"model\": \"opus\",\n  \"model\": \"haiku\"\n}\n"},
 	} {
 		t.Run(edit.name, func(t *testing.T) {
 			t.Parallel()
@@ -1038,6 +1055,69 @@ func TestCheckStillReportsAChangedSettingsDocument(t *testing.T) {
 			report := fixture.check(t)
 			if got := entryAt(t, report, settings).Status; got != install.StatusModified {
 				t.Errorf("%s = %q, want %q", settings, got, install.StatusModified)
+			}
+		})
+	}
+}
+
+// TestCheckIsQuietAboutASettingsKeyCairnNeverDeclared is the check half of
+// T19, and it is the case the `--check` before this change could not express.
+//
+// ~/.claude/settings.json is a document the operator and the harness write
+// too. Cairn declares nine keys of the live one and rendered every one of
+// them; the tenth, `model`, was the operator's, and the render-and-overwrite
+// install deleted it rather than reporting it. Reporting it would have been no
+// better — it is not cairn's, an install now leaves it alone, and a check that
+// named it would be crying wolf about a file cairn shares. So: not written,
+// and not reported.
+//
+// The nested case is the one that matters most. Cairn declares
+// permissions.defaultMode, and the operator's own rules sit in permissions
+// beside it.
+func TestCheckIsQuietAboutASettingsKeyCairnNeverDeclared(t *testing.T) {
+	t.Parallel()
+	const settings = ".claude/settings.json"
+	for _, kept := range []struct {
+		name string
+		// declared is the settings document the profile declares; nil is the
+		// fixture's own one-key default.
+		declared map[string]any
+		document string
+	}{
+		{name: "beside the keys cairn declares", document: `{"model":"opus","tui":"fullscreen"}`},
+		{name: "before them", document: `{"tui":"fullscreen","model":"opus"}`},
+		{
+			name:     "inside a key cairn declares",
+			declared: map[string]any{"permissions": map[string]any{"defaultMode": "auto"}},
+			document: `{"permissions":{"allow":["Bash(ls:*)"],"defaultMode":"auto"}}`,
+		},
+	} {
+		t.Run(kept.name, func(t *testing.T) {
+			t.Parallel()
+			declared := kept.declared
+			if declared == nil {
+				declared = map[string]any{"model": "opus"}
+			}
+			fixture := newCheckFixtureDeclaring(t, declared)
+			if err := os.WriteFile(fixture.path(settings), []byte(kept.document), 0o644); err != nil {
+				t.Fatalf("rewrite %s: %v", settings, err)
+			}
+
+			report := fixture.check(t)
+			if got := entryAt(t, report, settings).Status; got != install.StatusMatch {
+				t.Errorf("%s = %q, want %q: the added key is not cairn's",
+					settings, got, install.StatusMatch)
+			}
+			if !report.Clean() {
+				t.Errorf("the report is not clean: %v", entryPaths(report.Entries))
+			}
+			// The check repairs nothing, here least of all.
+			got, err := os.ReadFile(fixture.path(settings))
+			if err != nil {
+				t.Fatalf("read %s back: %v", settings, err)
+			}
+			if string(got) != kept.document {
+				t.Errorf("the check rewrote %s to %q", settings, got)
 			}
 		})
 	}

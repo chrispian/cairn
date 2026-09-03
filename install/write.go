@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/chrispian/cairn/bootdir"
 )
@@ -24,12 +25,17 @@ var ErrDestinationOccupied = errors.New("a rendered file's destination is occupi
 //     all, which is the failure worth preventing: a manifest error that left
 //     half a layer on disk would leave every session on the machine reading a
 //     truncated contract.
-//  3. Every destination is checked before anything is written: a path where
+//  3. Every artifact that claims only part of the file it lands in is merged
+//     with what is already there — see [Renderer.Merge]. It is the one step
+//     that reads the root, and it is why [Render] does not have to: a render
+//     stays a function of the profile, and what the operator's own file
+//     contributes is folded in here.
+//  4. Every destination is checked before anything is written: a path where
 //     something other than a regular file already sits fails the whole install
 //     rather than half of it. A rename onto a directory fails, and without
 //     this the failure would come part way through the moves with the earlier
 //     files already in place.
-//  4. The rendered files are written into a staging directory inside the root,
+//  5. The rendered files are written into a staging directory inside the root,
 //     then moved into place one rename at a time, with parent directories
 //     created at [DirMode].
 //
@@ -55,6 +61,11 @@ var ErrDestinationOccupied = errors.New("a rendered file's destination is occupi
 // to the operator, because cairn does not delete out of a home directory on
 // the strength of its own bookkeeping. Do not add it here.
 //
+// Step 3 is the same sentence one level in. A key of the settings document
+// that cairn never declared is not removed either, for the same reason and by
+// the same authority: cairn writes what it declares, and what it finds beside
+// that belongs to whoever put it there.
+//
 // Errors wrap [ErrNoProfile] or come from [Root.Check], [Render], or the
 // write.
 func Install(lay *Layer) (*Result, error) {
@@ -68,6 +79,10 @@ func Install(lay *Layer) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	files, err = mergeWithDisk(lay.Root, files, comparisons(lay.Profile.Provider))
+	if err != nil {
+		return nil, err
+	}
 	if err := writeFiles(lay.Root, files); err != nil {
 		return nil, err
 	}
@@ -76,6 +91,67 @@ func Install(lay *Layer) (*Result, error) {
 		written = append(written, f.Path)
 	}
 	return &Result{Root: lay.Root.Dir(), Files: written}, nil
+}
+
+// mergeWithDisk returns files with the content of every artifact that declares
+// a [Renderer.Merge] replaced by the merge of that render and the bytes
+// already at its destination.
+//
+// It is the only place in an install that reads the root, and it reads one
+// path per merging artifact — never a directory, never anything the layer does
+// not already render. That keeps [Render] a pure function of the profile,
+// which is what lets [Check] diff a render against a root it is not standing
+// in.
+//
+// Only a regular file is merged with. Nothing else at that path is read: a
+// symbolic link is not followed, because reading through one and writing over
+// it are opposite answers to the same question. A destination that is absent
+// leaves the render standing, which is what makes a first install on a clean
+// machine the render and nothing else.
+//
+// Inspecting and reading fail differently here, and the difference is not an
+// oversight. A path that cannot be inspected at all is left to
+// [checkDestination], which looks at the same path a moment later and turns
+// every one of those into an [ErrDestinationOccupied] naming the component
+// actually in the way — see [nonDirectoryAncestor]. Reporting it here would
+// replace that with the raw Lstat error, which names the leaf and calls it not
+// a directory. Nothing is overwritten in the meantime: the refusal comes before
+// the first byte is staged.
+//
+// A regular file that cannot be *read* is an error, and that one does belong
+// here. The bytes are the operator's, they exist, and writing over a file
+// because cairn could not open it is the deletion this whole mechanism exists
+// to stop.
+//
+// files is not modified: the merged content goes into a fresh slice, so a
+// caller still holds the render it passed in.
+func mergeWithDisk(root Root, files []File, how map[string]comparison) ([]File, error) {
+	if len(how) == 0 {
+		return files, nil
+	}
+	out := slices.Clone(files)
+	for i, f := range out {
+		merge := how[f.Path].merge
+		if merge == nil {
+			continue
+		}
+		dest, err := root.Path(f.Path)
+		if err != nil {
+			return nil, err
+		}
+		// A path cairn cannot inspect, and anything there that is not a
+		// regular file, is checkDestination's to speak about — see above.
+		info, err := os.Lstat(dest)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		existing, err := os.ReadFile(dest)
+		if err != nil {
+			return nil, fmt.Errorf("install: read %s to merge into it: %w", f.Path, err)
+		}
+		out[i].Content = merge(f.Content, existing)
+	}
+	return out, nil
 }
 
 // writeFiles writes files beneath root: every file into a staging directory

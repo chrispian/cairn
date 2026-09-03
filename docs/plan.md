@@ -641,7 +641,8 @@ manifest spelled it with, and the operator's key order is kept.
   CLAUDE.md              ← the template declared for CLAUDE.md, no marker
   settings.json          ← spec.settings + spec.access.directories, laid out,
                            no marker (JSON has no comments); no scope, which
-                           belongs to one session and this file is read by all
+                           belongs to one session and this file is read by all;
+                           merged by key, so a key Cairn does not declare stays
   skills/                ← spec.skills, directory trees
 ```
 
@@ -692,19 +693,64 @@ Four things are deliberately absent:
 Both layers run the **same renderers**. A second renderer per artifact is two
 renderings that drift; the prior tree carried them and they did.
 
-### Cairn owns four things in `~/.claude`, not the directory
+### In a home the harness also owns, Cairn claims what it declares and nothing else
 
-`install --check` reports against an explicit claim: the exact file paths its
-renderers can produce, plus the directories it fills whole (`skills/`).
-**Anything else in that directory is invisible to it, whatever it is.**
+`~/.claude` is not Cairn's directory. The harness keeps session state,
+credentials, caches and one directory per project in it; the operator keeps
+skills and subagent definitions they wrote by hand; Cairn plants three files
+and fills the skill directories its profile names. So:
 
-This is not a convenience. `settings.local.json`, `.credentials.json`,
-`projects/`, `todos/` and `history.jsonl` all live there and Cairn renders none
-of them; a sweep that called them orphans would make `--check` exit non-zero
-forever, which is a gate configured not to gate. Narrowing the claim to the
-subtree instead would lose the orphan worth finding: a `settings.json` left by
-a profile that stopped declaring one is a path Cairn claims, so Cairn reports
-it.
+> **Cairn writes what it declares, reports on what it declares, and leaves
+> everything else alone — including the parts of an artifact it shares.**
+
+That is one rule, and it has been arrived at three times from three
+directions. Stated once, with its three instances under it:
+
+| artifact | claim |
+| --- | --- |
+| `~/.claude/agents/` | **Never claimed.** Claiming the directory would report every hand-written definition as an orphan, so `spec.subagents` is not rendered into this layer at all. |
+| `~/.claude/skills/` | **Claimed by name.** The directories `spec.install.skills` names are swept whole; a skill the operator wrote sits beside them and is reported as unclaimed rather than as drift. (`install.Renderer.Fills`) |
+| `~/.claude/settings.json` | **Claimed by key.** Every key the render declares is Cairn's, at every depth; every key it does not is carried through — its name and every token of its value byte for byte, neither re-encoded — and never reported. (`install.Renderer.Merge`) |
+
+The failure avoided is the same one each time, and it has two edges. A claim
+wider than the declaration turns `--check` into a gate configured not to gate:
+`settings.local.json`, `.credentials.json`, `projects/`, `todos/` and
+`history.jsonl` all live in that directory, and a sweep that called them
+orphans would exit non-zero forever. Narrowing the claim to *what one render
+produced* loses the orphan worth finding — a `settings.json` left by a profile
+that stopped declaring one is a path Cairn claims, so Cairn reports it. The
+claim therefore comes from the renderer registration and the profile's
+declarations, never from a render's output.
+
+**Claiming `settings.json` by key changes `install` as well as `--check`, and
+it has to change both.** Render-and-overwrite deletes whatever the harness or
+the operator put in that file, and it did: the live document held a `model`
+key that `agent-setup/profiles/base.md` declines to declare on purpose, and an
+install ate it. Nothing renders that key, so nothing would ever put it back —
+the check was quiet afterwards, which is worse than noisy. So `install` merges
+its render into what is there rather than replacing it, and the question
+`--check` answers becomes *would an install change this file?* A key Cairn
+never declared is then neither written nor reported.
+
+What that costs is stated rather than hidden. Cairn can no longer promise the
+file's exact contents — it already could not, since the harness rewrites them
+— and it can no longer remove a key it stopped declaring, because nothing
+distinguishes one from a key the harness wrote. Two documents differing only in
+where a declared key sits now read as the same, because Cairn does not reorder
+a file it only partly owns. And "carried through" is about members, not about
+the file: the whole document is laid out again on the way back to disk, so
+whitespace *inside* an undeclared value moves even though none of its
+characters do.
+
+A document the merge cannot read member by member — not JSON, not an object, or
+declaring one key twice — is not merged at all: the render overwrites it and
+`--check` reports it. A file Cairn cannot parse is not a file it can claim part
+of, and silently collapsing a duplicate key in the document that carries the
+permission mode is not a repair.
+
+**The fence is the installed layer.** A boot directory is created fresh and
+refuses to plant over anything, so Cairn owns that whole file there and nothing
+about it changes — which is why the golden trees do not move.
 
 `--check` reports and repairs nothing. It exits non-zero when out of sync.
 
@@ -787,7 +833,9 @@ and a hand-spelled document still comes back out with its own characters. That
 is also why `--check` normalizes both sides through the same function before
 comparing: a check that reported the harness's own layout as drift on every run
 would stop meaning anything, and one that forgave more than whitespace would
-stop being a check.
+stop being a check. Layout is all that normalizing decides. *Which* keys the
+comparison answers for is a separate question, settled by the claim in §5 —
+the keys Cairn declares, and no others.
 
 This drops the prior tree's `bootdir/settings.go` and its 636 lines of tests,
 its closed `PermissionMode` enum, and its `access[] → Read(path/**)` translator.
