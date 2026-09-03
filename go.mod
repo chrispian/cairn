@@ -5,7 +5,7 @@ go 1.26.7
 require (
 	github.com/hollis-labs/agentkit v0.5.1
 	github.com/hollis-labs/go-agent-wrapper v0.8.1
-	github.com/hollis-labs/go-providers v0.24.0
+	github.com/hollis-labs/go-providers v0.25.0
 	github.com/hollis-labs/go-sqlite v0.1.0
 	gopkg.in/yaml.v3 v3.0.1
 )

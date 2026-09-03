@@ -31,6 +31,11 @@ type merger interface {
 // of its own; see [Spec.InstallSkills], which decodes it under the same name.
 const installSkillsKey = "skills"
 
+// accessDirectoriesKey is the member of [SpecKeyAccess] that names the
+// directories an instance is granted. Like installSkillsKey it is the one
+// member of its key with a rule of its own; see [Spec.AccessDirectories].
+const accessDirectoriesKey = "directories"
+
 // specMergers is the explicit table of keyed collections: the manifest keys
 // whose members compose by key, and the key each one composes by. Every key
 // that is not in this table replaces whole, closest-wins.
@@ -43,10 +48,6 @@ const installSkillsKey = "skills"
 // would quietly reach inside keys this package has never heard of and break
 // the promise that they survive the cascade byte for byte. So a key earns a
 // merge rule by being named here, and nothing else does.
-//
-// spec.access is not in the table because spec.access does not exist yet. When
-// it arrives its directories compose as objectByKey{sub: {"directories":
-// listOfIDs{}}} and no machinery here has to change.
 var specMergers = map[string]merger{
 	// Maps, keyed by the destination path or the boot-relative path.
 	SpecKeyTemplates: objectByKey{},
@@ -62,6 +63,13 @@ var specMergers = map[string]merger{
 	// collection of their own. Any other member of it replaces whole, so a
 	// future install-only key needs no decision here to behave predictably.
 	SpecKeyInstall: objectByKey{sub: map[string]merger{installSkillsKey: listOfIDs{}}},
+
+	// The access namespace composes the same way, and its directories are
+	// keyed by the path: a chain whose profiles each name directories grants
+	// the union of them. Replacing instead would mean a profile could only
+	// reach what its closest declaring ancestor reached, so extending a
+	// profile to add one directory would silently drop the rest.
+	SpecKeyAccess: objectByKey{sub: map[string]merger{accessDirectoriesKey: listOfIDs{}}},
 
 	// Lists of objects, keyed by the "name" field each member carries.
 	// spec.mcp is a list of agentlaunch.MCPServerSpec, not an object of
@@ -82,6 +90,32 @@ var specMergers = map[string]merger{
 // collections existed and every unknown key still has.
 func mergeSpecKey(key string, older, newer json.RawMessage) (json.RawMessage, error) {
 	return mergeAt(key, specMergers[key], older, newer)
+}
+
+// MergeSettings folds an overlay onto a composed settings document under the
+// rule [specMergers] composes [SpecKeySettings] by: a member the overlay
+// declares replaces the one beneath it, a member it does not mention stands,
+// and both compose at every depth.
+//
+// It exists because the cascade is no longer the last thing to contribute to
+// that document. bootdir.RenderSettings adds the directories an instance is
+// granted, and folding them in through the key's own rule is what keeps one
+// document from being composed two ways: a merge written beside the renderer
+// would have to rediscover on its own that touching one nested key must leave
+// that key's siblings standing.
+//
+// An overlay carrying nothing leaves composed exactly as it was, bytes
+// included — this is the one place a null does not clear. Clearing is what a
+// profile does to an ancestor's key, and the overlay here is not a profile: a
+// renderer with nothing to contribute must leave the operator's document
+// alone, not empty it. A composed value carrying nothing returns the overlay,
+// so a profile that declared no settings at all still receives what cairn
+// grants it.
+func MergeSettings(composed, overlay json.RawMessage) (json.RawMessage, error) {
+	if isUndeclared(overlay) {
+		return composed, nil
+	}
+	return mergeAt(SpecKeySettings, specMergers[SpecKeySettings], composed, overlay)
 }
 
 // mergeAt applies m, guarding the cases where there is nothing to compose.

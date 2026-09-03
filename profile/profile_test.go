@@ -167,6 +167,40 @@ func TestSpecInstallSkills(t *testing.T) {
 	}
 }
 
+// TestSpecAccessDirectories covers the access key the settings renderer reads,
+// and the same three shapes the install key has to survive: declared, declared
+// without directories, and no access key at all.
+//
+// The paths come back exactly as the manifest wrote them. Expanding here would
+// mean a stored profile answering a question it has no home directory and no
+// environment to answer, and it would cost the caller the declared form a
+// diagnostic quotes.
+func TestSpecAccessDirectories(t *testing.T) {
+	t.Parallel()
+
+	s := spec(t, map[string]string{
+		SpecKeyAccess: `{"directories":["~/dev/nanite","$WORK/docs"]}`,
+	})
+	dirs, err := s.AccessDirectories()
+	if err != nil {
+		t.Fatalf("AccessDirectories() = error %v", err)
+	}
+	if want := []string{"~/dev/nanite", "$WORK/docs"}; !slices.Equal(dirs, want) {
+		t.Errorf("AccessDirectories() = %v, want the manifest's own spelling %v", dirs, want)
+	}
+
+	for name, manifest := range map[string]Spec{
+		"access without directories": spec(t, map[string]string{SpecKeyAccess: `{"other":1}`}),
+		"an empty access":            spec(t, map[string]string{SpecKeyAccess: `{}`}),
+		"no access key":              spec(t, map[string]string{SpecKeySkills: `["review"]`}),
+	} {
+		got, err := manifest.AccessDirectories()
+		if err != nil || got != nil {
+			t.Errorf("AccessDirectories() with %s = %v, %v; want nil, nil", name, got, err)
+		}
+	}
+}
+
 func TestSpecSettingsAreCarriedVerbatim(t *testing.T) {
 	t.Parallel()
 
@@ -390,6 +424,10 @@ func TestSpecAccessorsOnAnEmptyManifest(t *testing.T) {
 		if err != nil || installed != nil {
 			t.Errorf("InstallSkills() = %v, %v; want nil, nil", installed, err)
 		}
+		granted, err := s.AccessDirectories()
+		if err != nil || granted != nil {
+			t.Errorf("AccessDirectories() = %v, %v; want nil, nil", granted, err)
+		}
 		dir, err := s.SkillsDir()
 		if err != nil || dir != "" {
 			t.Errorf("SkillsDir() = %q, %v; want \"\", nil", dir, err)
@@ -437,6 +475,12 @@ func TestSpecMalformedValueNamesItsKey(t *testing.T) {
 			key:   SpecKeyInstall,
 			value: `["commit"]`,
 			call:  func(s Spec) error { _, err := s.InstallSkills(); return err },
+		},
+		{
+			name:  "access is not an object",
+			key:   SpecKeyAccess,
+			value: `["~/dev"]`,
+			call:  func(s Spec) error { _, err := s.AccessDirectories(); return err },
 		},
 		{
 			name:  "skills_dir is not a string",

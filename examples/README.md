@@ -71,7 +71,7 @@ What lands:
 <boot-dir>/
   <spec.templates>       your text, markers substituted; any path, any number
   .mcp.json              spec.mcp
-  .claude/settings.json  spec.settings, laid out
+  .claude/settings.json  spec.settings, laid out, plus the access grant
   .claude/skills/        spec.skills, whole directory trees
   .claude/agents/<id>.md spec.subagents, one per named profile
   <spec.trees>           source directories, copied whole
@@ -293,6 +293,46 @@ definition is frontmatter and nothing else.
 A `files` entry at `.claude/agents/<id>.md` is a duplicate path, and refuses.
 Neither wins.
 
+### The access grant
+
+`spec.access.directories` is a list of paths — `$VAR` and `~/` expand — naming
+what the agent may reach beyond the directory it works in. **The scope is
+granted without being declared**; these add to it.
+
+```json
+"access": {"directories": ["~/dev/hollis-labs/apps/nanite"]}
+```
+
+It is neutral: it names directories, not one harness's permission key. Cairn
+hands the paths to the provider adapter that owns the harness's spelling for
+them, so for Claude Code they land at `permissions.additionalDirectories` in
+the settings document beside whatever the profile declared there. Two profiles
+in a chain that each name directories grant the union.
+
+**Every path is checked before it is granted**, and each of these is a refusal
+that names what you wrote and what it expanded to:
+
+```
+spec.access.directories declares "..", which is not an absolute path
+spec.access.directories declares "$ROOT/docs", which expanded to "/docs", which does not exist
+```
+
+Relative is the one that matters. The harness reads this file from inside the
+boot directory, so a `..` granted verbatim is the boot root — every other
+session's boot directory for that profile. Absolute, existing, and then
+symlink-resolved, which is what the scope already gets.
+
+**Do not declare `permissions.additionalDirectories` under `spec.settings`.**
+That was the only way to grant a directory before this key existed; it is now
+the key cairn writes the grant into, and a document declaring it by hand is
+refused by name rather than quietly overwritten. Move it here — it is the only
+spelling that composes with the scope, unions across a chain, and gets the
+checks above.
+
+It is the one key cairn contributes to that document. Everything else under
+`spec.settings` is still the operator's own, unread — see the section below for
+the tier that decides whether the harness honours any of it.
+
 ### The settings tier, and why `boot.sh` passes `--settings`
 
 A `settings.json` that merely sits in the boot directory is read as
@@ -314,6 +354,15 @@ Passing `--settings <boot-dir>/.claude/settings.json` promotes the file to
 This is deliberately the launcher's job. Cairn writes the file and prints a
 path; whoever owns the invocation decides what tier it lands in. Cairn taking
 it over would mean Cairn owning the launch, which is a different product.
+
+**Whether the same downgrade reaches the access grant is not yet known.** The
+warning above names `defaultMode` and the `autoMode` rules; `additionalDirectories`
+lives under the same `permissions` object, and nothing observed so far says
+whether the tier rule gates that object or only those keys. If it gates the
+object, a bare `claude` in a boot directory is granted nothing and `--settings`
+is what makes the grant real. Until someone has watched a session either reach
+its scope or fail to, `boot.sh` keeps passing both `--add-dir` and `--settings`,
+which is correct under either answer.
 
 ## 4. The installed layer
 

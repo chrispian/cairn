@@ -127,6 +127,29 @@ func Render(lay *Layer) ([]File, error) {
 // install time, because a scope belongs to one session and this layer is read
 // by all of them.
 //
+// The zero Scope withholds the scope and nothing else. The settings document
+// this layer renders still grants spec.access.directories, because the two
+// declarations answer different questions: those directories are what every
+// session of this profile needs, standing and independent of where any one of
+// them works, while a scope is the one thing that is true of a single session.
+// Granting the scope here would hand one session's working directory to every
+// session on the machine; withholding the directories here would mean an
+// operator's declared access reached a disposable boot directory and never the
+// layer the harness actually reads for every session.
+//
+// That has a consequence in this layer that it does not have in a boot
+// directory, and it is the reason the paragraph above is not the whole
+// argument. A boot directory is written fresh into a path nothing else owns.
+// This layer is written into a home the harness owns, and the settings document
+// is a file the operator may have written by hand — so a profile whose manifest
+// is one access.directories line and no settings key now makes `cairn install`
+// claim a file it previously left alone. The claim is the one plan §7 already
+// makes: the path set comes from the renderer registration rather than from
+// what one render produced, so this artifact was always cairn's to write. What
+// changed is the trigger, and an operator who added a directory to a profile
+// would not otherwise expect their settings document to be the thing that
+// moved.
+//
 // Sections carries what the caller resolved, which for this layer is the kinds
 // in [github.com/chrispian/cairn/slots.DeterministicKinds] and no others. That
 // is what makes an installed template worth writing — shared prose composes

@@ -99,6 +99,23 @@ const (
 	// cascade composed it and laid out for reading.
 	SpecKeySettings = "settings"
 
+	// SpecKeyAccess holds what a materialized instance is granted beyond the
+	// directory it works in. Its "directories" are manifest paths, expanded
+	// like every other one.
+	//
+	// It is neutral, and that is the point of the key existing at all: it
+	// names directories rather than one harness's permission field, and the
+	// renderer for each provider maps it onto whatever that harness reads.
+	// The alternative was for a profile to write the harness's own key into
+	// spec.settings, which is a declaration that cannot be carried to a
+	// second provider and cannot be composed with the scope.
+	//
+	// The scope is granted without being declared — an instance works there —
+	// and these add to it. It is a nested object for the reason
+	// [SpecKeyInstall] is: the next question about what an instance may reach
+	// has somewhere to go without another top-level name.
+	SpecKeyAccess = "access"
+
 	// SpecKeyFiles maps boot-directory-relative paths to their contents.
 	SpecKeyFiles = "files"
 
@@ -243,6 +260,27 @@ func (s Spec) InstallSkills() ([]string, error) {
 		return nil, err
 	}
 	return installed.Skills, nil
+}
+
+// AccessDirectories returns the paths under [SpecKeyAccess]'s "directories",
+// spelled as the manifest wrote them. A manifest declaring no access key, and
+// one declaring it without directories, both return nil and no error — the key
+// is not obliged to exist, and one that does is not obliged to name a
+// directory.
+//
+// Expansion is the caller's. A stored profile has no home directory and no
+// environment, and [ExpandPath] needs both; the renderer that grants these has
+// them on its instance, and it is also the one that knows what the paths are
+// for. Returning them raw is what lets a diagnostic quote what the operator
+// wrote rather than what an unset variable made of it.
+func (s Spec) AccessDirectories() ([]string, error) {
+	var access struct {
+		Directories []string `json:"directories"`
+	}
+	if err := s.decode(SpecKeyAccess, &access); err != nil {
+		return nil, err
+	}
+	return access.Directories, nil
 }
 
 // SkillsDir returns the directory under [SpecKeySkillsDir] that skill names

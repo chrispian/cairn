@@ -261,6 +261,8 @@ rather than after it.
 | `subagents` | list of ids | the id |
 | `install` | object | member name |
 | `install.skills` | list of ids | the id |
+| `access` | object | member name |
+| `access.directories` | list of paths | the path |
 | `settings` | object | every key at every depth |
 | `mcp` | list of objects | the `name` field |
 
@@ -269,6 +271,9 @@ leaf declaring `install: {"skills": [...]}` keeps an ancestor's `install`
 members it did not mention. `skills` is the one member of it with a rule of its
 own — the nested row above — and every other member replaces whole, so an
 install-only key added later behaves predictably without a decision here.
+`access` is the same shape for the same reason, and its `directories` union
+because a leaf extending a profile to reach one more directory must keep the
+ones its ancestor reached — replacing would make extending take access away.
 
 Everything else replaces whole: `provider`, `model`, `skills_dir`, `abstract`,
 `subagent`, every scalar column — and every key `spec` carries that Cairn has
@@ -281,13 +286,9 @@ That last one is why the rule is a **table and not an inference**. A rule like
 opaque `subagent` declaration, or from an unknown key's list, and would reach
 inside both — which would end the promise that a key this repository has never
 heard of survives the cascade byte for byte. A key earns a merge by being named
-in the table above, which is `profile.specMergers`' nine top-level entries plus
-the one rule that table nests under `install`. Nothing else does.
-
-The keyed-merge ADR's table also names `access.directories`; this one does not,
-because `spec.access` does not exist yet. It arrives with the neutral access
-declaration, and when it does its `directories` compose as a list of ids under
-an object-keyed `access` — one table entry, no new machinery.
+in the table above, which is `profile.specMergers`' ten top-level entries plus
+the two rules that table nests, one under `install` and one under `access`.
+Nothing else does.
 
 **A deviation worth recording, because a document elsewhere said otherwise.**
 The keyed-merge architecture document's §1.2 table originally had `mcp` as *an
@@ -401,6 +402,17 @@ at or inside the scope directory. Checked, with a test.
 The rest of the prior scope validation — rejecting `/etc`, `/usr`, `/var`,
 `$HOME`, the filesystem root — is dropped as premature. See §1, single user.
 
+**The scope is also granted to the harness**, which is the second thing it now
+is and the reason `scope.Parse` insisting the directory exist earns its keep
+twice. A boot directory's settings document carries the resolved scope under
+the access grant of §6, so a session launched in one reaches its scope without
+a flag. Nothing about the working directory changes; what changed is that the
+value now leaves cairn in a file as well as in a printed path.
+
+`spec.access.directories` adds to it — see §6 — and the installed layer takes
+those and never the scope, because a scope is true of one session and that
+layer is read by all of them.
+
 ---
 
 ## 5. Output contract
@@ -409,7 +421,7 @@ The rest of the prior scope validation — rejecting `/etc`, `/usr`, `/var`,
 <boot-dir>/
   <spec.templates>       ← text with markers, substituted; any path, any number
   .mcp.json              ← spec.mcp
-  .claude/settings.json  ← spec.settings, laid out
+  .claude/settings.json  ← spec.settings, laid out, + the access grant
   .claude/skills/        ← spec.skills, directory trees
   .claude/agents/<id>.md ← spec.subagents, one per named profile
   <spec.trees>           ← source directories, copied whole
@@ -595,7 +607,9 @@ manifest spelled it with, and the operator's key order is kept.
 ~/.claude/
   AGENTS.md              ← the template declared for AGENTS.md, + a provenance comment
   CLAUDE.md              ← the template declared for CLAUDE.md, no marker
-  settings.json          ← spec.settings, laid out, no marker (JSON has no comments)
+  settings.json          ← spec.settings + spec.access.directories, laid out,
+                           no marker (JSON has no comments); no scope, which
+                           belongs to one session and this file is read by all
   skills/                ← spec.skills, directory trees
 ```
 
@@ -690,11 +704,46 @@ multi-file skill.
 
 `spec.settings` is written into the provider settings file as the cascade
 composed it. Cairn does not model permission modes, does not validate tool
-names, does not translate access grants into permission rules, and makes no
-claim about what the harness does with what it writes.
+names, does not read a rule the operator wrote, and makes no claim about what
+the harness does with what it writes.
 
 If a rendered rule turns out not to enforce, that is a finding about the
 harness, not a Cairn defect.
+
+**The one key Cairn contributes is the access grant**, and it is a mapping
+rather than a judgement. `spec.access.directories` is a neutral declaration —
+paths, with the resolved scope granted on top of them without anything having
+to declare it — and the harness's spelling for those paths comes from the
+provider adapter that owns its schema, not from a table here: cairn builds an
+adapter carrying the directories and nothing else and merges the document it
+returns. So cairn never names `permissions.additionalDirectories` and holds no
+value for any other key in that document.
+
+**A document that declares the granted key by hand is refused, not
+overwritten** (`bootdir.ErrGrantConflict`). Declaring the harness's key under
+`spec.settings` was the only way to grant a directory before `spec.access`
+existed, so a profile still doing it would otherwise lose its grants on
+upgrade — silently, since the render succeeds either way. Two sources for one
+value is the ambiguity the neutral declaration exists to remove; unioning them
+would let a grant reach the file through a channel that gets none of the
+checks below. The refusal names the key it found and the key to move it to.
+The conflict is detected by walking the *fragment's* own keys against the
+stored document, so cairn still names none of them and looks nowhere the
+adapter's answer does not already sit.
+
+**A declared directory is checked before it is granted.** Expanded, then
+refused unless it is absolute, refused unless it names an existing directory,
+then symlink-resolved — the four steps `scope.Parse` performs on the scope,
+because the scope is one of these grants and two spellings of one directory
+must not arrive as two. The absolute check is the load-bearing one: the harness
+reads this file from inside the boot directory, so a relative `..` granted
+verbatim is the boot root and every other session's boot directory under it.
+A grant that widens by accident is the one outcome this key must never produce.
+
+What it costs is stated in `bootdir.RenderSettings`: a document cairn
+contributes to is composed rather than carried, so its keys come back sorted at
+the levels the merge touched. A document cairn contributes nothing to is still
+the operator's bytes.
 
 The one edit is layout. Every JSON artifact cairn writes — `.mcp.json` and the
 settings document — is indented two spaces per level, because the operator

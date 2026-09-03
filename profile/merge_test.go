@@ -386,6 +386,136 @@ func TestResolveInstallSkillsMergeAndSiblingsReplace(t *testing.T) {
 	}
 }
 
+// TestResolveAccessDirectoriesUnion covers the access namespace, which
+// composes the way the install one does and for a reason of its own: a leaf
+// extending a profile to reach one more directory must keep the ones the
+// ancestor reached, or extending would silently take access away.
+func TestResolveAccessDirectoriesUnion(t *testing.T) {
+	t.Parallel()
+
+	l := fakeLoader{
+		"root": {ID: "root", Spec: spec(t, map[string]string{
+			SpecKeyAccess: `{"directories":["~/dev/one","$WORK/two"],"elsewhere":{"kept":1}}`,
+		})},
+		"leaf": {ID: "leaf", Extends: "root", Spec: spec(t, map[string]string{
+			SpecKeyAccess: `{"directories":["~/dev/one","/srv/three"],"elsewhere":{"replaced":1}}`,
+		})},
+	}
+
+	got := resolveOK(t, l, "leaf")
+
+	dirs, err := got.Spec.AccessDirectories()
+	if err != nil {
+		t.Fatalf("AccessDirectories() = error %v", err)
+	}
+	// Sorted by path, which is what keying a list by its member means here.
+	// The duplicate is one member: the two profiles named one directory.
+	if want := []string{"$WORK/two", "/srv/three", "~/dev/one"}; !slices.Equal(dirs, want) {
+		t.Errorf("AccessDirectories() = %v, want %v", dirs, want)
+	}
+	var namespace struct {
+		Elsewhere map[string]int `json:"elsewhere"`
+	}
+	if err := json.Unmarshal(got.Spec[SpecKeyAccess], &namespace); err != nil {
+		t.Fatalf("the merged access key does not decode: %v", err)
+	}
+	if _, kept := namespace.Elsewhere["kept"]; kept {
+		t.Errorf("access.elsewhere = %v, want the leaf's whole — a member with no rule replaces", namespace.Elsewhere)
+	}
+}
+
+// TestMergeSettingsLeavesAnEmptyOverlayAlone is the one place a null does not
+// clear, and the reason it does not is that the overlay is a renderer's
+// contribution rather than a profile's declaration. A renderer with nothing to
+// add must hand back the operator's document untouched — bytes included, since
+// what comes out of here is written into a file they read — where a profile
+// declaring null means "clear what my ancestor said".
+func TestMergeSettingsLeavesAnEmptyOverlayAlone(t *testing.T) {
+	t.Parallel()
+
+	composed := json.RawMessage(pythonSpelling)
+	for _, overlay := range []json.RawMessage{nil, json.RawMessage("null"), json.RawMessage("  ")} {
+		got, err := MergeSettings(composed, overlay)
+		if err != nil {
+			t.Fatalf("MergeSettings(_, %q) = error %v", overlay, err)
+		}
+		if !bytes.Equal(got, composed) {
+			t.Errorf("MergeSettings(_, %q) = %s, want the stored bytes %s", overlay, got, composed)
+		}
+	}
+}
+
+// TestMergeSettingsComposesRatherThanReplaces pins what an overlay may and may
+// not do to the document it lands on. It adds its own key at whatever depth it
+// declares one, and it leaves every sibling of that key standing — which is
+// what stops a renderer contributing one permission from writing over the mode
+// the operator declared beside it.
+func TestMergeSettingsComposesRatherThanReplaces(t *testing.T) {
+	t.Parallel()
+
+	composed := json.RawMessage(`{"apiKeyHelper":"/bin/helper","permissions":{"defaultMode":"auto"}}`)
+	overlay := json.RawMessage(`{"permissions":{"additionalDirectories":["/srv/work"]}}`)
+
+	got, err := MergeSettings(composed, overlay)
+	if err != nil {
+		t.Fatalf("MergeSettings() = error %v", err)
+	}
+	var document struct {
+		APIKeyHelper string `json:"apiKeyHelper"`
+		Permissions  struct {
+			DefaultMode           string   `json:"defaultMode"`
+			AdditionalDirectories []string `json:"additionalDirectories"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(got, &document); err != nil {
+		t.Fatalf("the merged document does not decode: %v", err)
+	}
+	if document.APIKeyHelper != "/bin/helper" {
+		t.Errorf("apiKeyHelper = %q, want the operator's %q", document.APIKeyHelper, "/bin/helper")
+	}
+	if document.Permissions.DefaultMode != "auto" {
+		t.Errorf("permissions.defaultMode = %q, want the operator's %q — an overlay keeps its key's siblings",
+			document.Permissions.DefaultMode, "auto")
+	}
+	if want := []string{"/srv/work"}; !slices.Equal(document.Permissions.AdditionalDirectories, want) {
+		t.Errorf("permissions.additionalDirectories = %v, want %v", document.Permissions.AdditionalDirectories, want)
+	}
+}
+
+// TestMergeSettingsReplacesAtTheSameKey is the other half of the rule, and it
+// is pinned because it is the reason a caller cannot simply merge and hope.
+//
+// Composing siblings is what the deep merge does; at one key it replaces, and
+// an array is not a keyed collection so two lists do not union. So an overlay
+// carrying a key the document already declares silently discards the
+// operator's value — which is why bootdir.RenderSettings refuses that case
+// before it gets here rather than relying on this function to preserve
+// anything. If this ever started unioning, that guard would be the thing to
+// revisit, and this test is what would say so.
+func TestMergeSettingsReplacesAtTheSameKey(t *testing.T) {
+	t.Parallel()
+
+	composed := json.RawMessage(`{"permissions":{"additionalDirectories":["/operator/declared"]}}`)
+	overlay := json.RawMessage(`{"permissions":{"additionalDirectories":["/granted"]}}`)
+
+	got, err := MergeSettings(composed, overlay)
+	if err != nil {
+		t.Fatalf("MergeSettings() = error %v", err)
+	}
+	var document struct {
+		Permissions struct {
+			AdditionalDirectories []string `json:"additionalDirectories"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(got, &document); err != nil {
+		t.Fatalf("the merged document does not decode: %v", err)
+	}
+	if want := []string{"/granted"}; !slices.Equal(document.Permissions.AdditionalDirectories, want) {
+		t.Errorf("permissions.additionalDirectories = %v, want the overlay's %v — a merge at one key replaces, and the caller is what stops it mattering",
+			document.Permissions.AdditionalDirectories, want)
+	}
+}
+
 // TestResolveNullAtAMemberRemovesIt covers member-level clearing, which has a
 // natural spelling for the map-shaped collections and none for the list-shaped
 // ones — see the package's own note and docs/plan.md §3.

@@ -122,12 +122,15 @@ func TestRenderProducesTheOutputContract(t *testing.T) {
 		"# reviewer\n\n## repo\n\nthe assembled slot content\n"; got != want {
 		t.Errorf("the instruction file holds\n%q\nwant\n%q", got, want)
 	}
-	stored, declared := inst.Profile.Spec.Settings()
-	if !declared {
-		t.Fatal("the manifest declares settings, but the spec reports none")
-	}
-	if got, want := string(fileByPath(t, files, ".claude/settings.json").Content), string(IndentJSON(stored)); got != want {
-		t.Errorf("the settings document holds %q, want the stored document laid out %q", got, want)
+	// The settings document is the operator's stored one plus the single thing
+	// cairn contributes to it: this instance works in a scope, so the harness
+	// is told it may reach it. The expectation is spelled out rather than
+	// composed through the merge under test, so a change in what cairn grants
+	// fails here instead of agreeing with itself.
+	wantSettings := "{\n  \"model\": \"opus\",\n  \"permissions\": {\n    \"additionalDirectories\": [\n      \"" +
+		inst.Scope + "\"\n    ]\n  }\n}\n"
+	if got := string(fileByPath(t, files, ".claude/settings.json").Content); got != wantSettings {
+		t.Errorf("the settings document holds\n%s\nwant\n%s", got, wantSettings)
 	}
 }
 

@@ -45,6 +45,9 @@
     ]
   },
   "permissions": {
+    "additionalDirectories": [
+      "@FIXTURE@/scope"
+    ],
     "defaultMode": "auto"
   },
   "skipAutoPermissionPrompt": true,

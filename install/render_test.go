@@ -266,6 +266,56 @@ func TestRenderSettingsCarriesNoGeneratedMarker(t *testing.T) {
 	}
 }
 
+// TestRenderSettingsGrantAccessAndNeverAScope is the layer's half of the
+// access decision, and both halves of it matter.
+//
+// The directories a profile declares are a standing fact — what every session
+// of this profile needs — so they belong in the layer every session reads.
+// Withholding them here would mean a declared directory reached a disposable
+// boot directory and never the file the harness loads for the rest of them.
+//
+// A scope is the opposite: it is true of one session, and granting it here
+// would hand one session's working directory to every session on the machine.
+// [Layer] therefore carries no scope to give and [layerInstance] leaves the
+// instance's zero, which is asserted directly — a field that quietly acquired
+// a value would grant it without anything else changing.
+func TestRenderSettingsGrantAccessAndNeverAScope(t *testing.T) {
+	// A real directory: a granted path must name one, so a plausible-looking
+	// absolute string would assert the refusal rather than the grant.
+	shared, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve the fixture directory: %v", err)
+	}
+	lay := fixtureLayer(t, profile.Resolved{
+		ID:       "base",
+		Provider: profile.ProviderClaude,
+		Spec: fixtureSpec(t, `{"settings": {"model": "opus"},
+			"access": {"directories": [`+strconv.Quote(shared)+`]}}`),
+	})
+
+	files, err := Render(lay)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	settings := renderedFile(t, files, ".claude/settings.json")
+	var document struct {
+		Permissions struct {
+			AdditionalDirectories []string `json:"additionalDirectories"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(settings.Content, &document); err != nil {
+		t.Fatalf(".claude/settings.json does not decode: %v", err)
+	}
+	if want := []string{shared}; !slices.Equal(document.Permissions.AdditionalDirectories, want) {
+		t.Errorf("permissions.additionalDirectories = %v, want %v",
+			document.Permissions.AdditionalDirectories, want)
+	}
+	if inst := layerInstance(lay, ClaudeLayout()); inst.Scope != "" {
+		t.Errorf("the installed layer's instance carries the scope %q, and this layer is read by every session",
+			inst.Scope)
+	}
+}
+
 // TestBootDirectoryInstructionFileCarriesNoGeneratedMarker guards the marker
 // against leaking into package bootdir.
 //

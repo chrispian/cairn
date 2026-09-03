@@ -104,8 +104,20 @@ type Layer struct {
 	// here — see [layerInstance].
 	Sections map[string]string
 
-	// Env answers an environment variable named in a manifest path — here, the
-	// skills directory. Carried for the reason [bootdir.Instance].Env is.
+	// Env answers an environment variable named in a manifest path — the
+	// skills directory, and each of spec.access.directories. Carried for the
+	// reason [bootdir.Instance].Env is.
+	//
+	// It is the one input to this layer that the operator's shell decides, and
+	// that matters here in a way it does not for a boot directory. [Check]
+	// re-renders and diffs against disk, so a manifest path holding a variable
+	// makes the comparison depend on the environment the check ran from:
+	// installed with it set and checked with it unset reports the file
+	// modified with no source change. An access directory is the likeliest
+	// place for that, since a grant fails closed and the drift is the only
+	// signal. Nothing here prevents it — a renderer is handed a lookup and asks
+	// no questions about it — so a profile that wants an installed layer worth
+	// checking spells its paths out or uses "~/".
 	Env profile.Expander
 
 	// Values are the instance values a template may substitute, keyed by the
