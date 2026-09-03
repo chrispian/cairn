@@ -78,8 +78,9 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs := flag.NewFlagSet("cairn show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		scopeFlag = fs.String("scope", "", "the scope to report, as a path or a scope alias")
-		dbFlag    = fs.String("db", "", "the database path")
+		scopeFlag   = fs.String("scope", "", "the scope to report, as a path or a scope alias")
+		dbFlag      = fs.String("db", "", "the database path")
+		profileFlag = fs.String("profile", "", profileFlagUsage)
 	)
 	target, rest := splitTarget(args)
 	if err := fs.Parse(rest); err != nil {
@@ -97,6 +98,34 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 
 	home, _ := os.UserHomeDir()
+
+	// The profile bundle is reported for the reason the scope is: no part of
+	// the resolved manifest depends on it. A variable is expanded when a value
+	// is read, and this command reads none — spec is printed as the profiles
+	// stored it, which is the promise [specNote] makes — so the flag is kept by
+	// making the bundle one of the reported facts rather than an input to them.
+	//
+	// It is refused here rather than reported unresolved, which is the opposite
+	// of what an unresolvable --scope gets, because the two are refused for
+	// different reasons. A scope may arrive from the binding, stored by an
+	// operator who is not the one running this command, and refusing the whole
+	// document over it makes show least usable exactly when something is
+	// already wrong. --profile is always typed on this command line, and one
+	// that names nothing costs a retype — where a bundle root reported as
+	// though it were there would send an operator to a `cairn boot` that
+	// resolves nothing, having just read a document that said it would.
+	profileRoot, err := resolveProfileRoot(*profileFlag, home)
+	if err != nil {
+		return err
+	}
+	// With no flag, what a boot would expand the variable to is whatever the
+	// environment holds, and it is reported exactly as it is held. Only the
+	// flag's value is resolved, because only the flag's value is cairn's to
+	// resolve: tidying a variable cairn passes through untouched would name a
+	// directory no expansion will produce.
+	if profileRoot == "" {
+		profileRoot = os.Getenv(envProfileRoot)
+	}
 
 	st, err := openStore(ctx, *dbFlag, home)
 	if err != nil {
@@ -154,7 +183,7 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 
-	_, err = fmt.Fprint(stdout, showDocument(resolved, scopeDir, declared))
+	_, err = fmt.Fprint(stdout, showDocument(resolved, scopeDir, profileRoot, declared))
 	return err
 }
 
@@ -197,6 +226,11 @@ func declaringProfiles(ctx context.Context, l profile.Loader, resolved *profile.
 // nothing after it. A varying set of lines would leave the reader unable to
 // tell a field that resolved to nothing from a field this command forgot.
 //
+// The last two are the instance's rather than the cascade's: what a boot of
+// this target would work in, and what it would expand $CAIRN_PROFILE_ROOT to.
+// Neither changes a single value above them — that is why they are at the
+// bottom, and why they are reported at all.
+//
 // Resolved.Body is the field left out, and it is left out rather than
 // forgotten. It is the one thing the cascade concatenates instead of composing
 // by key — see profile.Resolve — so it is not what the merge rule made
@@ -207,7 +241,7 @@ func declaringProfiles(ctx context.Context, l profile.Loader, resolved *profile.
 // Keys are sorted, and so are the members of every collection the cascade
 // composed — see profile.sortedValues, which says why that order is
 // deterministic and why nothing may read meaning into it.
-func showDocument(resolved *profile.Resolved, scopeDir string, declared map[string][]string) string {
+func showDocument(resolved *profile.Resolved, scopeDir, profileRoot string, declared map[string][]string) string {
 	var b strings.Builder
 
 	fields := [][2]string{
@@ -219,6 +253,7 @@ func showDocument(resolved *profile.Resolved, scopeDir string, declared map[stri
 		{"model", resolved.Model},
 		{"abstract", strconv.FormatBool(resolved.Abstract)},
 		{"scope", scopeDir},
+		{"profile root", profileRoot},
 	}
 	width := 0
 	for _, f := range fields {

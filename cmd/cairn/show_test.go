@@ -47,9 +47,9 @@ func TestShow(t *testing.T) {
 		// which makes it the profile most worth reading.
 		out, _ := show(t, "base")
 		for _, want := range []string{
-			"profile      base",
-			"chain        base",
-			"abstract     true",
+			"profile       base",
+			"chain         base",
+			"abstract      true",
 			"spec.settings",
 			"spec.templates",
 			"somethingCairnHasNeverHeardOf", // an unknown key shows like any other
@@ -62,7 +62,7 @@ func TestShow(t *testing.T) {
 
 	t.Run("the chain is walked ancestor-first", func(t *testing.T) {
 		out, errOut := show(t, "engineer")
-		if !strings.Contains(out, "chain        base -> engineer") {
+		if !strings.Contains(out, "chain         base -> engineer") {
 			t.Errorf("the chain is not reported ancestor-first:\n%s", out)
 		}
 		// The document is the whole output. Everything a boot reports on
@@ -190,7 +190,7 @@ func TestShow(t *testing.T) {
 
 		// The binding declares it, so showing the binding shows it.
 		out, _ := show(t, "engineer")
-		if !strings.Contains(out, "scope        "+declared+"\n") {
+		if !strings.Contains(out, "scope         "+declared+"\n") {
 			t.Errorf("the binding's scope is not reported as %s:\n%s", declared, out)
 		}
 		// A profile with no binding declares none, and the field says so by
@@ -203,10 +203,10 @@ func TestShow(t *testing.T) {
 		other := filepath.Join(home, "elsewhere")
 		mustMkdir(t, other)
 		out, _ = show(t, "engineer", "--scope", other)
-		if !strings.Contains(out, "scope        "+canonical(t, other)+"\n") {
+		if !strings.Contains(out, "scope         "+canonical(t, other)+"\n") {
 			t.Errorf("--scope was not reported:\n%s", out)
 		}
-		if strings.Contains(out, "scope        "+declared+"\n") {
+		if strings.Contains(out, "scope         "+declared+"\n") {
 			t.Errorf("--scope did not override the binding's:\n%s", out)
 		}
 	})

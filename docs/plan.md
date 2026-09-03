@@ -384,6 +384,35 @@ on the instance the way the operator's home is, so a renderer has no hidden
 input and a caller that supplies none expands nothing rather than silently
 reaching for the process's.
 
+That is what makes `--profile <dir>` a flag and not a feature. A **profile
+bundle** is a directory holding `profiles/`, `bindings/`, `templates/` and
+`skills/`, and `--profile` seeds `$CAIRN_PROFILE_ROOT` with its root — so a
+profile says `$CAIRN_PROFILE_ROOT/templates/agents.md` and the bundle relocates
+without a value being edited. Expansion did not change to allow it: the flag
+wraps the lookup the composition root already hands down, and everything below
+sees one more variable. The bundle holds **handles, not content** — a profile
+names where a template lives and the file stays the source of truth — and Cairn
+opens no part of the bundle itself, only the paths a profile names inside it.
+
+It reaches every value the lookup does, not only the sources a resolver reads:
+`spec.skills_dir`, `spec.trees` and `spec.access.directories` expand it too,
+through the lookup carried on the rendered instance. The third of those is worth
+saying out loud — a granted directory is written into the harness's settings
+document, so the bundle root decides part of what a launched agent may read.
+
+The root is made absolute where the operator typed it, because a relative one is
+not the same path to everything that reads it: a slot, template or files source
+re-resolves it against the scope, while `spec.trees` and `spec.skills_dir`
+refuse it outright as not absolute. It must name an existing directory, for the
+reason the install root must, and nothing is required inside it — the check is
+on the flag only, since a variable Cairn passes through untouched is not
+Cairn's to vet. Symlinks are left alone, unlike a scope's: nothing compares this
+path for identity, and resolving it would put a spelling into diagnostics that
+the operator never wrote. It loses to nothing and wins over
+`$CAIRN_PROFILE_ROOT` itself, matching `--db` and `--boot-root`. Profiles and
+bindings still come from the store: the bundle is read from, not resolved out
+of, until the catalog becomes the store.
+
 `spec` is JSON, so slot entries use `agentcontext.SlotSpec`'s **JSON** tags.
 `SlotSource.Kind` is `json:"kind"` and `yaml:"type"` — a slot copied out of a
 Tether boot profile will say `type:` and fail with "unknown slot kind". Write
@@ -776,6 +805,10 @@ cairn install <binding|profile> --check             re-render, diff against disk
 cairn show <binding|profile> [--scope <path>]       print what the profile resolves to
 ```
 
+All three take `--profile <dir>`, naming a profile bundle. `boot` and `install`
+seed `$CAIRN_PROFILE_ROOT` with its root; `show` seeds nothing and reports it —
+see §3.
+
 `install` takes the same argument as `boot`, and there is no default. A
 well-known id like `base` would mean Cairn knowing the name of a profile it
 does not ship; a reserved binding is the same magic with indirection. Unlike
@@ -800,8 +833,12 @@ rather than to its caller. Like `install` and unlike `boot`, `show` accepts an
 because scope is an instance value and no part of the resolved manifest depends
 on it; a scope that does not resolve is reported on stderr rather than refused,
 since the containment guard that refusal exists for guards a write `show` never
-makes. There is no `--provider` yet: `spec.settings` is one document rather
-than one per provider, so there is nothing for it to select.
+makes. `--profile` is reported the same way and for the same reason — `show`
+reads no value, so it expands nothing — but a `--profile` that names no
+directory is refused rather than reported, because unlike a scope it is always
+typed on the command line being run. There is no `--provider` yet:
+`spec.settings` is one document rather than one per provider, so there is
+nothing for it to select.
 
 Profile authoring is out of MVP scope — the operator writes rows directly, or
 via a later `cairn profile import/export`. That command is a convenience, not a

@@ -50,6 +50,11 @@ flags for show:
 
 flags for all three:
   --db <path>            the database; defaults to $CAIRN_DB, else $XDG_CONFIG_HOME/agents/cairn.db
+  --profile <dir>        a profile bundle. For boot and install, $CAIRN_PROFILE_ROOT expands
+                         to this directory in every manifest value that names somewhere to
+                         read from, so a profile says $CAIRN_PROFILE_ROOT/templates/agents.md
+                         and the bundle relocates without edits. show expands nothing and
+                         reports it. Wins over the variable when both are set
 
 cairn install is human-executed. Every agent working under ~/.claude that runs
 it rewrites its own live configuration mid-session.
@@ -119,9 +124,10 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	fs := flag.NewFlagSet("cairn install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		check    = fs.Bool("check", false, "re-render, diff against disk, report drift, write nothing")
-		dbFlag   = fs.String("db", "", "the database path")
-		rootFlag = fs.String("root", "", "the directory the installed layer is written beneath")
+		check       = fs.Bool("check", false, "re-render, diff against disk, report drift, write nothing")
+		dbFlag      = fs.String("db", "", "the database path")
+		rootFlag    = fs.String("root", "", "the directory the installed layer is written beneath")
+		profileFlag = fs.String("profile", "", profileFlagUsage)
 	)
 	target, rest := splitTarget(args)
 	if err := fs.Parse(rest); err != nil {
@@ -139,6 +145,15 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}
 
 	home, _ := os.UserHomeDir()
+
+	// The environment every value in this manifest expands against, built once
+	// and handed to everything below. --profile is the only thing that varies
+	// it; see [environment].
+	profileRoot, err := resolveProfileRoot(*profileFlag, home)
+	if err != nil {
+		return err
+	}
+	env := environment(profileRoot)
 
 	st, err := openStore(ctx, *dbFlag, home)
 	if err != nil {
@@ -175,7 +190,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// install.layerInstance — so a template's slot markers substitute nothing
 	// in this layer.
 	templates, err := slots.ResolveEntries(ctx, resolved.Spec, profile.SpecKeyTemplates,
-		slots.Options{Env: os.Getenv})
+		slots.Options{Env: env})
 	if err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
@@ -185,7 +200,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// commands and report drift on every invocation.
 	assembled, err := slots.Assemble(ctx, resolved.Spec, slots.Options{
 		Deterministic: true,
-		Env:           os.Getenv,
+		Env:           env,
 		Provenance: agentcontext.ProvenanceInput{
 			LineageAlias: target,
 			ProfileID:    resolved.ID,
@@ -195,7 +210,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
 	if assembled != nil {
-		expansions, err := slots.Expansions(resolved.Spec, profile.SpecKeySlots, os.Getenv)
+		expansions, err := slots.Expansions(resolved.Spec, profile.SpecKeySlots, env)
 		if err != nil {
 			return fmt.Errorf("profile %q: %w", resolved.ID, err)
 		}
@@ -222,7 +237,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		Root:      root,
 		Profile:   resolved,
 		Home:      home,
-		Env:       os.Getenv,
+		Env:       env,
 		Templates: templates,
 		Sections:  sections,
 		Values: instanceValues(map[string]string{
@@ -315,11 +330,12 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs := flag.NewFlagSet("cairn boot", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		scopeFlag = fs.String("scope", "", "the directory the instance works in, as a path or a scope alias")
-		dbFlag    = fs.String("db", "", "the database path")
-		rootFlag  = fs.String("boot-root", "", "where boot directories are planted")
-		sessFlag  = fs.String("session", "", "the session segment")
-		jsonFlag  = fs.Bool("json", false, "print one JSON object describing the boot instead of the bare path")
+		scopeFlag   = fs.String("scope", "", "the directory the instance works in, as a path or a scope alias")
+		dbFlag      = fs.String("db", "", "the database path")
+		rootFlag    = fs.String("boot-root", "", "where boot directories are planted")
+		sessFlag    = fs.String("session", "", "the session segment")
+		jsonFlag    = fs.Bool("json", false, "print one JSON object describing the boot instead of the bare path")
+		profileFlag = fs.String("profile", "", profileFlagUsage)
 	)
 	target, rest := splitTarget(args)
 	if err := fs.Parse(rest); err != nil {
@@ -337,6 +353,15 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 
 	home, _ := os.UserHomeDir()
+
+	// The environment every value in this manifest expands against, built once
+	// and handed to everything below. --profile is the only thing that varies
+	// it; see [environment].
+	profileRoot, err := resolveProfileRoot(*profileFlag, home)
+	if err != nil {
+		return err
+	}
+	env := environment(profileRoot)
 
 	st, err := openStore(ctx, *dbFlag, home)
 	if err != nil {
@@ -398,11 +423,12 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// Slots resolve here rather than inside a renderer: resolving one runs
 	// commands and makes requests, and a renderer may do neither.
 	assembled, err := slots.Assemble(ctx, resolved.Spec, slots.Options{
-		// The one place cairn reads the environment. Everything below is
-		// handed the lookup rather than reaching for it, so a renderer and a
+		// The lookup, handed down rather than reached for, so a renderer and a
 		// resolver expand the same manifest the same way and neither has a
-		// hidden input.
-		Env: os.Getenv,
+		// hidden input. What an environment answers is decided in one place —
+		// [environment] — and nowhere below; the reads themselves happen
+		// wherever a value is expanded, through the closure it returned.
+		Env: env,
 		// Scope is the instance's working directory, and the workdir is what
 		// workdir-relative slot paths resolve against. They are the same
 		// directory, and joining them is this composition root's call to make
@@ -428,7 +454,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		// else. Without this a slot written "$AGENT_DOCS/process.md" with the
 		// variable unset reports a failure to open "/process.md", and the
 		// operator searches for a path nobody typed.
-		expansions, err := slots.Expansions(resolved.Spec, profile.SpecKeySlots, os.Getenv)
+		expansions, err := slots.Expansions(resolved.Spec, profile.SpecKeySlots, env)
 		if err != nil {
 			return fmt.Errorf("profile %q: %w", resolved.ID, err)
 		}
@@ -447,7 +473,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// source that fails fails the boot: a missing section is degraded context,
 	// a missing file is a hole at a path the profile promised.
 	planted, err := slots.ResolveFiles(ctx, resolved.Spec,
-		slots.Options{Workdir: scopeDir, Env: os.Getenv})
+		slots.Options{Workdir: scopeDir, Env: env})
 	if err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
@@ -456,7 +482,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// reason: a profile keeps its prose in a file more often than in the
 	// database, and reading one is I/O.
 	templates, err := slots.ResolveEntries(ctx, resolved.Spec, profile.SpecKeyTemplates,
-		slots.Options{Workdir: scopeDir, Env: os.Getenv})
+		slots.Options{Workdir: scopeDir, Env: env})
 	if err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
@@ -474,7 +500,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		Dir:       dir,
 		Layout:    layout,
 		Home:      home,
-		Env:       os.Getenv,
+		Env:       env,
 		Profile:   resolved,
 		Scope:     scopeDir,
 		Files:     planted,
