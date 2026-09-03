@@ -23,7 +23,11 @@
 # usage:
 #   capture.sh [--out <dir>] [--force]
 #
-#   --out <dir>   where the tree goes; defaults to <repo>/testdata/goldens/trees
+#   --out <dir>   where the tree goes; defaults to <repo>/testdata/goldens/trees.
+#                 The capture record is written BESIDE it, as
+#                 <dir>/../agent-setup.commit — see "the capture record" below
+#                 for why it cannot live inside the tree. Give --out a
+#                 directory of its own rather than a shared one.
 #   --force       clear a non-empty --out first
 #
 # environment:
@@ -57,7 +61,11 @@ while [ $# -gt 0 ]; do
 		shift
 		;;
 	-h | --help)
-		sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		# Everything from line 2 to the end of the header block, found rather
+		# than hardcoded: a line range silently truncates the moment the header
+		# grows, and it did exactly that once.
+		awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' \
+			"${BASH_SOURCE[0]}"
 		exit 0
 		;;
 	*)
@@ -74,6 +82,32 @@ done
 	echo "capture.sh: no profiles under $AGENT_SETUP — set AGENT_SETUP" >&2
 	exit 1
 }
+
+# --- what upstream was, at capture time ------------------------------------
+#
+# These trees are a function of two repositories and only one of them is this
+# one. Recording which agent-setup commit they came from is what lets verify.sh
+# tell an operator whose change a diff is, rather than leaving them to work it
+# out from the diff itself.
+#
+# A checkout that is not a git repository is not an error: AGENT_SETUP can
+# legitimately be an rsynced copy, and such a capture is still valid. It just
+# cannot be attributed, and the record says so rather than inventing a sha.
+#
+# Which is why the toplevel is checked rather than HEAD read directly. `git -C
+# <dir> rev-parse HEAD` walks UP to an enclosing repository, so an rsynced copy
+# living anywhere inside another checkout would record THAT repository's HEAD —
+# a sha with nothing to do with the profiles, written down as though it were
+# one. That is the sha this comment promises not to invent.
+if AGENT_SETUP_TOP=$(git -C "$AGENT_SETUP" rev-parse --show-toplevel 2>/dev/null) &&
+	[ "$(cd "$AGENT_SETUP_TOP" 2>/dev/null && pwd -P)" = "$(cd "$AGENT_SETUP" && pwd -P)" ]; then
+	AGENT_SETUP_COMMIT=$(git -C "$AGENT_SETUP" rev-parse HEAD)
+	if [ -n "$(git -C "$AGENT_SETUP" status --porcelain 2>/dev/null)" ]; then
+		AGENT_SETUP_COMMIT="$AGENT_SETUP_COMMIT-dirty"
+	fi
+else
+	AGENT_SETUP_COMMIT=unknown
+fi
 
 # --- the output root -------------------------------------------------------
 #
@@ -303,6 +337,30 @@ for f in "$OUT"/stderr/*.txt; do
 	echo "capture.sh: $(basename "$f" .txt) wrote to stderr:" >&2
 	sed 's/^/  /' "$f" >&2
 done
+
+# --- the capture record ----------------------------------------------------
+#
+# Written beside the tree rather than inside it, and the placement is
+# load-bearing twice over. verify.sh diffs the tree, so a record inside it
+# would itself be a diff every time upstream moved — reporting the drift as
+# drift, which is the confusion this exists to end. And verify.sh re-runs this
+# script into a scratch directory: a record written to a fixed path in the repo
+# would be clobbered by the very run that needs to read it.
+#
+# Travelling with $OUT means the record always describes the tree beside it —
+# and it means --out writes one file outside the directory it names, which is
+# why the usage block above says to give --out a directory of its own.
+printf '%s\n' \
+	'# The agent-setup commit these golden trees were captured from.' \
+	'#' \
+	'# capture.sh writes this; verify.sh compares it against $AGENT_SETUP HEAD so' \
+	'# that a failing gate says whose change the diff is. A "-dirty" suffix means' \
+	'# the capture came from a tree with uncommitted edits, so the sha does not' \
+	'# fully describe it. "unknown" means AGENT_SETUP is not a git checkout.' \
+	'#' \
+	'# See README.md, "Whose change is this diff?".' \
+	"$AGENT_SETUP_COMMIT" \
+	>"$(dirname "$OUT")/agent-setup.commit"
 
 files=$(find "$OUT" -type f | wc -l | tr -d ' ')
 bytes=$(find "$OUT" -type f -exec cat {} + | wc -c | tr -d ' ')

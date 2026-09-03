@@ -1,0 +1,9 @@
+# The agent-setup commit these golden trees were captured from.
+#
+# capture.sh writes this; verify.sh compares it against $AGENT_SETUP HEAD so
+# that a failing gate says whose change the diff is. A "-dirty" suffix means
+# the capture came from a tree with uncommitted edits, so the sha does not
+# fully describe it. "unknown" means AGENT_SETUP is not a git checkout.
+#
+# See README.md, "Whose change is this diff?".
+d710775eb56b2d4759a490fee37adba69720fe06

@@ -5,6 +5,7 @@ alters rendering shows up as a diff there — which is the point.
 
     testdata/goldens/verify.sh        # re-render, diff against trees/, exit 1 on drift
     testdata/goldens/capture.sh       # re-render into trees/ (accept the new bytes)
+    testdata/goldens/agent-setup.commit  # which agent-setup commit trees/ came from
 
 `testdata` is the directory name on purpose: the Go toolchain ignores it, so
 none of this reaches a build or a test binary.
@@ -27,8 +28,32 @@ migration rests on:
 - In CI, likewise. **These goldens are not a CI check** and adding them to one
   would need the profiles vendored or pinned first.
 - When `agent-setup` moves on, `verify.sh` reports a diff that is about the
-  profiles rather than about cairn. Read the diff before believing it is a
-  regression here.
+  profiles rather than about cairn. It says so rather than leaving you to work
+  it out — see below.
+
+## Whose change is this diff?
+
+`capture.sh` records the `agent-setup` commit it captured from, in
+`agent-setup.commit` beside `trees/`. `verify.sh` compares that against
+`$AGENT_SETUP`'s HEAD and names the case before printing the diff:
+
+- **upstream moved** — a stale fixture, not your change. Re-baseline. Read the
+  diff first: additions mean upstream gained something, and a removal should be
+  paired with an addition at the same key. An **unpaired removal** means cairn
+  stopped rendering something, which is yours and is a regression.
+- **upstream unchanged** — the diff is your change.
+- **upstream dirty** — HEAD does not describe what was captured, so the diff is
+  attributable to no commit at all. This is not hypothetical: on 2026-09-03
+  cairn's gate was for a real window a function of another session's
+  uncommitted edits in the shared checkout.
+
+The record sits beside `trees/` rather than inside it, because a record inside
+the tree would itself be a diff every time upstream moved — reporting the drift
+as drift — and because `verify.sh` re-runs `capture.sh` into a scratch
+directory, which would clobber a record kept at a fixed path in the repo.
+
+None of this pins anything. `capture.sh` still seeds from live `agent-setup`;
+the record only makes the resulting diff legible.
 
 Everything cairn controls *is* pinned — see the table below. The profiles,
 templates and skills are the one input that lives somewhere else, and the
@@ -116,5 +141,7 @@ it and not whatever stale `cairn` is on `$PATH`.
 `AGENT_SETUP` overrides where the profiles, templates and skills come from; it
 defaults to `~/dev/projects/agent-setup`.
 
-Re-capturing rewrites `trees/`. Read the diff before committing it — a golden
-that changed without an intended reason is the finding, not the noise.
+Re-capturing rewrites `trees/`, and `agent-setup.commit` beside it. Read the
+diff before committing it — a golden that changed without an intended reason is
+the finding, not the noise. `verify.sh` will have told you which case you are
+in; see "Whose change is this diff?" above.
