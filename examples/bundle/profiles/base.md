@@ -19,6 +19,7 @@ description: The floor every profile extends.
 provider: claude
 spec:
   skills_dir: $CAIRN_PROFILE_ROOT/skills
+  prompts_dir: $CAIRN_PROFILE_ROOT/prompts
 
   settings:
     permissions: { defaultMode: acceptEdits }

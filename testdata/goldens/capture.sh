@@ -10,8 +10,9 @@
 # Everything the render can reach is staged into one throwaway fixture root and
 # every non-deterministic input is pinned:
 #
-#   $FIX/home    a fixture HOME holding templates/ and skills/, staged the same
-#                way `make install-system` stages the real ~/.config/agents
+#   $FIX/home    a fixture HOME holding templates/, skills/ and prompts/, staged
+#                the same way `make install-system` stages the real
+#                ~/.config/agents
 #   $FIX/scope   a git repo built from literals, so the git slots print the
 #                same two blocks on every machine
 #   $FIX/bin     the cairn built from this working tree, first on PATH, because
@@ -83,6 +84,16 @@ done
 	echo "capture.sh: no profiles under $AGENT_SETUP — set AGENT_SETUP" >&2
 	exit 1
 }
+# prompts/ is checked where templates/ and skills/ are not, because it is the
+# one an AGENT_SETUP checkout can legitimately predate: the profiles began
+# declaring spec.prompts after the directory existed here. Without this the
+# staging rsync below dies on an exit code rather than saying which directory
+# is missing and why.
+[ -d "$AGENT_SETUP/prompts" ] || {
+	echo "capture.sh: no prompts/ under $AGENT_SETUP — the profiles declare" >&2
+	echo "  spec.prompts, so this checkout predates them. Update it." >&2
+	exit 1
+}
 
 # --- what upstream was, at capture time ------------------------------------
 #
@@ -143,6 +154,8 @@ rsync -a --delete --delete-excluded --exclude='.DS_Store' \
 	"$AGENT_SETUP/templates/" "$FIX/home/.config/agents/templates/"
 rsync -a --delete --delete-excluded --exclude='.DS_Store' \
 	"$AGENT_SETUP/skills/" "$FIX/home/.config/agents/skills/"
+rsync -a --delete --delete-excluded --exclude='.DS_Store' \
+	"$AGENT_SETUP/prompts/" "$FIX/home/.config/agents/prompts/"
 
 # 2. the fixture scope: a git repo whose every input is a literal.
 #

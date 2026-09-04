@@ -133,6 +133,7 @@ A profile bundle is a directory, and the directory is the whole store.
   scopes.yaml  scope aliases, for as long as the alias registry lasts
   templates/   the documents profiles name
   skills/      one directory per skill
+  prompts/     one flat .md file per prompt
 ```
 
 `--profile <dir>` names it; without the flag Cairn reads
@@ -475,6 +476,7 @@ layer is read by all of them.
   .mcp.json              ← spec.mcp
   .claude/settings.json  ← spec.settings, laid out, + the access grant
   .claude/skills/        ← spec.skills, directory trees
+  .claude/commands/boot/ ← spec.prompts, one substituted file per prompt
   .claude/agents/<id>.md ← spec.subagents, one per named profile
   <spec.trees>           ← source directories, copied whole
   <spec.files>           ← arbitrary paths
@@ -788,6 +790,38 @@ Directories are not, so `~/.claude` lands 0700 or 0755 depending on the shell
 `install` ran from. Left alone deliberately per §1 — single user, own home. If
 it is ever made explicit, 0700 is the right value, not 0755: that directory
 sits beside `.credentials.json`.
+
+### Prompts are skills for content
+
+`spec.prompts` names flat `.md` files under `spec.prompts_dir`, planted at
+`.claude/commands/boot/<name>.md`. Everything about the declaration is
+`spec.skills`: it cascades and composes by id through the same table of keyed
+collections, it resolves against a directory the manifest names because Cairn
+ships no content of its own, and `--prompt <a,b,c>` adds to it exactly as
+`--skill` does. Nothing here is a second mechanism.
+
+**A prompt is a template**, and that is the one difference from a skill: its
+text goes through the same `Substitute` `spec.templates` uses, so it carries
+`cairn:slot` and `cairn:value` markers and reaches the boot directory knowing
+its scope, its session and its profile. There is no new source kind and no
+second parser. There are deliberately **no conditionals**: having nowhere to put
+one is what keeps a template a substitution target rather than a program, and a
+prompt that must differ is two prompts, or a slot.
+
+**The `boot/` namespace is required, not incidental.** A subdirectory of the
+harness's commands directory genuinely namespaces the command rather than
+flattening it — verified by experiment, with the bare name answering "Unknown
+command" as the control — so a prompt Cairn planted is addressed as Cairn's and
+cannot collide with a command written by hand beside it.
+
+**Cairn plants the file and stops.** There is no delivery mechanism, no
+auto-fire and no `prompt_path` in `--json`: the operator types `/boot:<name>`,
+and Cairn's seam stays "write the files, print the path". A prompt therefore
+appears in no installed layer either — `install` renders what every session on
+the machine loads, and a per-launch prompt has no meaning there, which is the
+same reason `install` takes none of the composition flags.
+
+---
 
 ### Skills are directories, deliberately
 

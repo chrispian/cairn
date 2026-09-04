@@ -53,6 +53,12 @@ flags for boot and show:
                          equivalent and composing. Additive only: nothing in cairn removes
                          a member of a collection keyed by its own id, so a session that
                          wants fewer skills boots a different profile
+  --prompt <a,b,c>       a prompt the boot directory carries, added to the ones the profile
+                         resolves to, planted as a command the operator invokes by name:
+                         /boot:<name>. Comma-separated and repeatable, the two forms
+                         equivalent and composing. Additive only, for the reason --skill is.
+                         Cairn plants the file and prints the boot directory; nothing
+                         fires a prompt, and a person types the command
   --set <slot>=<value>   an inline literal for a named slot, merged last. Repeatable. It
                          replaces a declared slot of that name whole, section included,
                          exactly as a part declaring that slot would
@@ -65,11 +71,12 @@ flags for boot:
   --json                 print one JSON object describing the boot instead of the bare path
   --save-as <name>       write this composition to the bundle as a new binding of that
                          name, so the same boot is reachable by name. The parts, the
-                         skills and the scope are saved as they were written; --set values
-                         are not, because a binding names what to compose and an inline
-                         value is content — each one dropped is named on stderr, and this
-                         boot still has it. A composition holding a path member is
-                         refused rather than saved short — whether the path was typed as
+                         skills, the prompts and the scope are saved as they were
+                         written; --set values are not, because a binding names what to
+                         compose and an inline value is content — each one dropped is
+                         named on stderr, and this boot still has it. A composition
+                         holding a path member is refused rather than saved short —
+                         whether the path was typed as
                          --with or came from the binding being composed onto: a binding
                          must be reproducible by name, and a path is a handle to
                          something that may not be there later. A relative --scope is
@@ -201,22 +208,23 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// The binding's composition is deliberately not replayed, and neither is
 	// its scope. install renders the machine-wide layer every session loads,
 	// and a per-launch composition has no meaning there — which is the same
-	// reason install takes none of --with, --skill or --set.
+	// reason install takes none of --with, --skill, --prompt or --set.
 	tgt, err := lookup(ctx, cat, target)
 	if err != nil {
 		return err
 	}
 	profileID := tgt.profileID
-	if len(tgt.parts) > 0 || len(tgt.skills) > 0 {
+	if len(tgt.parts) > 0 || len(tgt.skills) > 0 || len(tgt.prompts) > 0 {
 		// Said out loud rather than left to be noticed. The decision above is
 		// the right one and the silence was not: `cairn show <binding>` and
 		// `cairn boot <binding>` both report a composition that this command
 		// renders nothing of, so an operator comparing the two has no way to
 		// tell a deliberate omission from a bug.
 		_, _ = fmt.Fprintf(stderr,
-			"cairn: binding %q composes %d part(s) and %d skill(s), and install renders none of "+
-				"them — the installed layer is what every session loads, not one launch.\n",
-			tgt.name, len(tgt.parts), len(tgt.skills))
+			"cairn: binding %q composes %d part(s), %d skill(s) and %d prompt(s), and install "+
+				"renders none of them — the installed layer is what every session loads, "+
+				"not one launch.\n",
+			tgt.name, len(tgt.parts), len(tgt.skills), len(tgt.prompts))
 	}
 	// No abstract check. The installed layer is normally rendered from the
 	// abstract root of the cascade, and refusing one here would refuse the
@@ -375,10 +383,12 @@ type bootTarget struct {
 	// profileID is the profile the composition resolves from.
 	profileID string
 
-	// parts and skills are the composition the binding saved, empty for a
-	// profile named directly. They are as the binding's file spells them.
-	parts  []string
-	skills []string
+	// parts, skills and prompts are the composition the binding saved, empty
+	// for a profile named directly. They are as the binding's file spells
+	// them.
+	parts   []string
+	skills  []string
+	prompts []string
 
 	// scope is the declared scope, an alias or a path, before --scope
 	// overrides it and before either is resolved.
@@ -394,7 +404,8 @@ func lookup(ctx context.Context, cat *catalog.Catalog, name string) (bootTarget,
 	b, err := cat.Binding(name)
 	switch {
 	case err == nil:
-		return bootTarget{name: b.Name, profileID: b.ProfileID, parts: b.Parts, skills: b.Skills, scope: b.Scope}, nil
+		return bootTarget{name: b.Name, profileID: b.ProfileID, parts: b.Parts,
+			skills: b.Skills, prompts: b.Prompts, scope: b.Scope}, nil
 	case !errors.Is(err, catalog.ErrBindingNotFound):
 		return bootTarget{}, err
 	}
@@ -464,16 +475,16 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	name := tgt.name
 
-	// A binding is a saved composition, so booting one replays it: its parts
-	// and skills go ahead of whatever was typed, which is what makes the file
+	// A binding is a saved composition, so booting one replays it: its parts,
+	// skills and prompts go ahead of whatever was typed, which is what makes the file
 	// --save-as writes a record of the boot rather than a description of it.
 	// A binding that saved its parts and then booted without them would be a
 	// file that lies about what it restores.
 	compose.replay(tgt)
 
 	// The composition resolves through the same call whether or not anything
-	// was composed: --with, --skill and --set contribute nothing when they
-	// were not given, and a second code path for the plain case is a second
+	// was composed: --with, --skill, --prompt and --set contribute nothing
+	// when they were not given, and a second code path for the plain case is a second
 	// place for the two to disagree about what a boot resolves to.
 	resolved, _, err := compose.resolve(ctx, cat, home, env, tgt.profileID)
 	if err != nil {

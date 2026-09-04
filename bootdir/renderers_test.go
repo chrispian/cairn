@@ -209,8 +209,8 @@ func TestRenderersAreRegisteredOnce(t *testing.T) {
 		}
 		seen[renderer.Artifact] = struct{}{}
 	}
-	if len(seen) != 7 {
-		t.Errorf("%d artifacts are registered, want the 7 of the output contract: %v",
+	if len(seen) != 8 {
+		t.Errorf("%d artifacts are registered, want the 8 of the output contract: %v",
 			len(seen), seen)
 	}
 }

@@ -17,8 +17,9 @@ import (
 // claims to save what you just did, and quietly saves less than that, is worse
 // than one that never offered.
 const saveAsFlagUsage = "write this composition to the bundle as a new binding of that name, so " +
-	"the same boot is reachable by name. The parts, the skills and the scope are saved as they " +
-	"were written — except a relative --scope, which is saved as the directory it resolved to, " +
+	"the same boot is reachable by name. The parts, the skills, the prompts and the scope " +
+	"are saved as they were written — except a relative --scope, which is saved as the " +
+	"directory it resolved to, " +
 	"since a binding records no working directory to read one against. --set values are not " +
 	"saved, because a binding names what to compose and an inline value is content: each one " +
 	"dropped is named on stderr, and this boot still has it. A composition holding a path " +
@@ -169,6 +170,7 @@ func newBindingSave(ctx context.Context, name string, cat *catalog.Catalog, t bo
 			ProfileID: t.profileID,
 			Parts:     c.savedParts(),
 			Skills:    c.savedSkills(),
+			Prompts:   c.savedPrompts(),
 			Scope:     saved,
 		},
 		dropped:       dropped,

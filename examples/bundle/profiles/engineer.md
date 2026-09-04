@@ -24,6 +24,11 @@
 #
 # "subagents" names other profiles. Each renders .claude/agents/<id>.md from
 # THAT profile's own spec.subagent — see reviewer.
+#
+# "prompts" names files in ../prompts/. Each is SUBSTITUTED like a template and
+# planted at .claude/commands/boot/<name>.md, so the operator types
+# /boot:handoff. Cairn plants it and stops; nothing fires a prompt. Try
+# `--prompt reset-scope` to add the other one for a single launch.
 id: engineer
 extends: base
 name: Engineer
@@ -31,6 +36,7 @@ description: Implements one task end to end.
 provider: claude
 spec:
   skills: [capture-decision]
+  prompts: [handoff]
   subagents: [reviewer]
 
   templates:

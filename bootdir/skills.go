@@ -141,7 +141,7 @@ func renderSkills(inst *Instance, declared []string, key skillsKey) ([]File, err
 	var files []File
 	for _, raw := range declared {
 		name := strings.TrimSpace(raw)
-		if err := checkSkillName(name, key); err != nil {
+		if err := checkContentName(name, skillKind(key)); err != nil {
 			return nil, err
 		}
 		if _, duplicate := seen[name]; duplicate {
@@ -159,49 +159,31 @@ func renderSkills(inst *Instance, declared []string, key skillsKey) ([]File, err
 	return files, nil
 }
 
-// skillsSource resolves the directory declared skills are copied from.
+// skillKind describes a skill collection for the shared content helpers,
+// under the manifest key that declared it.
 //
-// Variables and a leading "~/" are expanded, the same way a tree's source is
-// and for the same reason: a skills directory is a location on the operator's
-// machine, and writing it out in full in every profile is how it goes stale.
-// Both the environment and home are the instance's rather than the process's,
-// so that this renderer reads nothing outside the instance it was handed.
-//
-// The result must be absolute: a relative path would resolve against whatever
-// directory cairn happened to be invoked from, which is not a property of the
-// profile.
+// It is a function of the key rather than a constant because two keys declare
+// skills — see [skillsKey] — and a diagnostic has to send the operator to the
+// declaration they wrote.
+func skillKind(key skillsKey) contentKind {
+	return contentKind{
+		key:       string(key),
+		dirKey:    profile.SpecKeySkillsDir,
+		plural:    "skills",
+		entry:     "skill directory",
+		nameErr:   ErrSkillName,
+		sourceErr: ErrSkillsSource,
+	}
+}
+
+// skillsSource resolves the directory declared skills are copied from: the
+// value under [profile.SpecKeySkillsDir], put to [contentSource].
 func skillsSource(spec profile.Spec, names []string, key skillsKey, home string, look profile.Expander) (string, error) {
 	declared, err := spec.SkillsDir()
 	if err != nil {
 		return "", err
 	}
-	raw := strings.TrimSpace(declared)
-	if raw == "" {
-		return "", fmt.Errorf(
-			"%w: spec.%s declares %s, but spec.%s is not set and cairn ships no skills of its own",
-			ErrSkillsSource, key, quotedNames(names), profile.SpecKeySkillsDir)
-	}
-	dir, err := profile.ExpandPath(raw, home, look)
-	if err != nil {
-		return "", fmt.Errorf("%w: spec.%s: %w", ErrSkillsSource, profile.SpecKeySkillsDir, err)
-	}
-	named := profile.QuotedExpansion(raw, dir)
-	if !filepath.IsAbs(dir) {
-		return "", fmt.Errorf("%w: spec.%s is %s, which is not an absolute path",
-			ErrSkillsSource, profile.SpecKeySkillsDir, named)
-	}
-	info, err := os.Stat(dir)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return "", fmt.Errorf("%w: spec.%s is %s, which does not exist",
-			ErrSkillsSource, profile.SpecKeySkillsDir, named)
-	case err != nil:
-		return "", fmt.Errorf("stat the skills directory %s: %w", dir, err)
-	case !info.IsDir():
-		return "", fmt.Errorf("%w: spec.%s is %s, which is not a directory",
-			ErrSkillsSource, profile.SpecKeySkillsDir, named)
-	}
-	return dir, nil
+	return contentSource(declared, skillKind(key), names, home, look)
 }
 
 // copySkill returns the skill named name under source as artifacts under
@@ -317,22 +299,6 @@ func CopyTree(source, target string) ([]File, error) {
 	return files, nil
 }
 
-// checkSkillName rejects any name that cannot be one directory beneath the
-// skills source. A name holding a separator would reach outside the source on
-// the way in and outside the skills directory on the way out.
-func checkSkillName(name string, key skillsKey) error {
-	switch {
-	case name == "":
-		return fmt.Errorf("%w: spec.%s holds an empty name", ErrSkillName, key)
-	case name == "." || name == "..":
-		return fmt.Errorf("%w: spec.%s holds %q", ErrSkillName, key, name)
-	case strings.ContainsRune(name, '/'), strings.ContainsRune(name, filepath.Separator):
-		return fmt.Errorf("%w: %q holds a path separator, so it does not name one skill directory",
-			ErrSkillName, name)
-	}
-	return nil
-}
-
 // treeFileMode maps a source file's mode onto the mode its copy is planted
 // with: executable stays executable, everything else is [DefaultFileMode]. The
 // source's exact bits are deliberately not carried through, so that a stray
@@ -342,14 +308,4 @@ func treeFileMode(mode fs.FileMode) fs.FileMode {
 		return ExecFileMode
 	}
 	return DefaultFileMode
-}
-
-// quotedNames renders names as a comma-separated list of quoted values, so
-// that an error can say what the manifest actually declared.
-func quotedNames(names []string) string {
-	quoted := make([]string, 0, len(names))
-	for _, name := range names {
-		quoted = append(quoted, fmt.Sprintf("%q", name))
-	}
-	return strings.Join(quoted, ", ")
 }

@@ -326,10 +326,12 @@ func TestResolveListsOfIDsUnionByID(t *testing.T) {
 	l := fakeLoader{
 		"root": {ID: "root", Spec: spec(t, map[string]string{
 			SpecKeySkills:    `["commit","adr"]`,
+			SpecKeyPrompts:   `["report","triage"]`,
 			SpecKeySubagents: `["reviewer"]`,
 		})},
 		"leaf": {ID: "leaf", Extends: "root", Spec: spec(t, map[string]string{
 			SpecKeySkills:    `["adr","qstatus"]`,
+			SpecKeyPrompts:   `["handoff","report"]`,
 			SpecKeySubagents: `["worker","reviewer"]`,
 		})},
 	}
@@ -343,6 +345,21 @@ func TestResolveListsOfIDsUnionByID(t *testing.T) {
 	// A repeated id is one member, and the result is ordered by key.
 	if want := []string{"adr", "commit", "qstatus"}; !slices.Equal(skills, want) {
 		t.Errorf("Skills() = %v, want %v", skills, want)
+	}
+	prompts, err := got.Spec.Prompts()
+	if err != nil {
+		t.Fatalf("Prompts() = error %v", err)
+	}
+	// "triage" is the whole point of the fixture: it is the ancestor's and the
+	// descendant never names it, so a whole-key replace produces exactly what
+	// the descendant declared and this assertion fails. Without it the union
+	// and the replace agree on this input and the test passes either way —
+	// which is the shape of a test that cannot fail for the reason it exists.
+	//
+	// It is also the real case. base holds the report every role owes, and a
+	// role declaring a prompt of its own would silently drop it.
+	if want := []string{"handoff", "report", "triage"}; !slices.Equal(prompts, want) {
+		t.Errorf("Prompts() = %v, want %v", prompts, want)
 	}
 	named, err := got.Spec.Subagents()
 	if err != nil {

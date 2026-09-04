@@ -15,11 +15,11 @@ cairn install <binding|profile> [--check]             render ~/.claude from the 
 cairn list                                            enumerate the catalog
 ```
 
-`boot` and `show` also take the composition flags — `--with`, `--skill` and
-`--set`, all repeatable — which say what this one launch carries beyond the
-profile it names. See **Composing one launch** under §3. A composition worth
-keeping becomes a **binding**: see **Saving one: `--save-as`** in the same
-section.
+`boot` and `show` also take the composition flags — `--with`, `--skill`,
+`--prompt` and `--set`, all repeatable — which say what this one launch
+carries beyond the profile it names. See **Composing one launch** under §3. A
+composition worth keeping becomes a **binding**: see **Saving one:
+`--save-as`** in the same section.
 
 ---
 
@@ -42,6 +42,7 @@ files, which is the whole store:
   scopes.yaml  scope aliases, if you use them
   templates/   the documents your profiles name
   skills/      one directory per skill
+  prompts/     one flat .md file per prompt
 ```
 
 `--profile <dir>` names it; without the flag cairn reads `$CAIRN_PROFILE_ROOT`,
@@ -58,8 +59,10 @@ seed and nothing to import: edit a file, and the next command reads it.
 It holds an abstract `base`, a concrete `engineer` that extends it, a
 `reviewer` the engineer dispatches and that also boots on its own, a
 `docs-only` part, two scope aliases, three bindings — one of which composes a
-part, which is what `--save-as` writes — and the templates and skill those
-profiles name. Read it — it is the profile-authoring documentation.
+part, which is what `--save-as` writes — and the templates, the skill and the
+prompt `engineer` names — plus a second prompt no profile names, which is
+there to be added with `--prompt`. Read it — it is the profile-authoring
+documentation.
 
 Four things it demonstrates that are easy to get wrong:
 
@@ -107,6 +110,7 @@ What lands:
   .mcp.json              spec.mcp
   .claude/settings.json  spec.settings, laid out, plus the access grant
   .claude/skills/        spec.skills, whole directory trees
+  .claude/commands/boot/ spec.prompts, one substituted file per prompt
   .claude/agents/<id>.md spec.subagents, one per named profile
   <spec.trees>           source directories, copied whole
   <spec.files>           arbitrary paths, literal or resolved
@@ -117,10 +121,10 @@ destinations the example profiles happen to declare. Declare none and you get no
 prose; declare fifty and you get fifty. Cairn composes no heading, no section
 and no ordering of its own.
 
-### Composing one launch: `--with`, `--skill`, `--set`
+### Composing one launch: `--with`, `--skill`, `--prompt`, `--set`
 
-A profile is what a role always is. These three are what one launch is, and
-none of them changes a file in the bundle.
+A profile is what a role always is. These four are what one launch is, and none
+of them changes a file in the bundle.
 
 This runs against the bundle in this directory. `docs-only` is a part that
 ships in it; the second one is a file you write, which is the case the path form
@@ -131,6 +135,7 @@ printf -- '---\nspec:\n  skills: ["capture-decision"]\n---\n' > /tmp/session-par
 
 cairn boot eng --with docs-only --with /tmp/session-part.md \
                --skill capture-decision \
+               --prompt reset-scope \
                --set direction="user-facing docs only, no API reference"
 ```
 
@@ -201,6 +206,25 @@ keyed by its own id: the null that clears a member of an object has nowhere to
 be written in a list. A session that wants *fewer* skills boots a different
 profile.
 
+**`--prompt <a,b,c>`** adds prompts, in every way `--skill` adds skills: same
+two spellings, same merge into `spec.prompts` last and by id, same
+additive-only rule. What differs is what arrives. A skill is a directory the
+harness loads on its own; a prompt is one file planted at
+`.claude/commands/boot/<name>.md`,
+which the operator invokes as `/boot:<name>`.
+
+**A prompt is a template**, so it carries the same `<!-- cairn:slot ... -->` and
+`<!-- cairn:value ... -->` markers a `templates:` entry does and is substituted
+from the same slots and instance values. There is no second syntax, no extra
+source kind, and deliberately nowhere to put a conditional — that is what keeps
+a template a substitution target rather than a program. A prompt that must
+differ is two prompts, or a slot.
+
+**Cairn plants the file and stops.** Nothing fires a prompt at launch: you type
+`/boot:handoff`, or `@<boot-dir>/.claude/commands/boot/handoff.md`. That is why
+the file is worth having — it is content, addressed by name, that survives the
+launch rather than being typed into it.
+
 **`--set <slot>=<value>`** supplies an inline literal for a named slot, merged
 last. It is how a one-off direction reaches a session without authoring a file
 for it. The member replaces a declared slot of that name whole — its `section`
@@ -209,7 +233,7 @@ Cairn gains no `direction` concept from this: it is a slot like any other, and
 cairn goes on owning shape rather than content. A direction worth reusing
 becomes an ordinary part and arrives through `--with`.
 
-**`cairn show` takes all three**, and that is not a convenience. `show` is the
+**`cairn show` takes all four**, and that is not a convenience. `show` is the
 "what will this resolve to" preview; a preview blind to the composition would
 be blind to precisely the part that makes it differ from its base. It names
 every contributor beside each manifest key — the profiles in the chain, the
@@ -221,8 +245,9 @@ spec.skills   engineer, docs-only, --skill
 
 `cairn install` takes none of them. It renders the layer every session on the
 machine loads, and a composition is an instance concern by construction — a
-binding's parts and skills are not replayed there either, for the same reason,
-and `install` says so when the binding it was given composes something.
+binding's parts, skills and prompts are not replayed there either, for the
+same reason, and `install` says so when the binding it was given composes
+something.
 
 ### Saving one: `--save-as`
 
@@ -244,14 +269,14 @@ skills:
 scope: cairn
 ```
 
-That is the whole format. Four keys, all but `profile` optional, in the order a
+That is the whole format. Five keys, all but `profile` optional, in the order a
 composition resolves: the base profile, the parts merged onto its chain, the
-skills merged after those, and the scope — which is not part of the composition
-at all but a fact about the instance. Cairn writes what a person would type, so
-a saved binding and a hand-authored one are the same kind of file; add a
-comment above it and nothing will take it away.
+skills and prompts merged after those, and the scope — which is not part of the
+composition at all but a fact about the instance. Cairn writes what a person
+would type, so a saved binding and a hand-authored one are the same kind of
+file; add a comment above it and nothing will take it away.
 
-**Those four are the whole set, and a key that is not one of them is refused**
+**Those five are the whole set, and a key that is not one of them is refused**
 naming the line and what could have been written instead. YAML would otherwise
 discard it in silence, and `part:` for `parts:` — or `skill:` for `skills:`,
 one character from the flag that fills it — would give you a binding that
@@ -291,9 +316,10 @@ point:
   which flag it arrived on — a binding whose own `parts:` names a path is
   refused too, and the diagnostic says which file to edit.
 
-`--skill` goes the other way and *is* saved, which is the same distinction read
-from the other side: a skill list is **ids**, the same kind of thing a binding
-already holds for its parts, so the reason to drop a `--set` does not transfer.
+`--skill` and `--prompt` go the other way and *are* saved, which is the same
+distinction read from the other side: both lists are **ids**, the same kind of
+thing a binding already holds for its parts, so the reason to drop a `--set`
+does not transfer.
 
 An existing binding is never overwritten — its file may hold a comment nothing
 else carries — so saving over one is a refusal too.

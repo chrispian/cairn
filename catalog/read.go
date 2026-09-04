@@ -134,7 +134,7 @@ func ReadProfile(path string) (*profile.Profile, error) {
 //
 // The field order is the file's order, and the file's order is the order a
 // composition resolves in: the base profile, the parts merged onto its chain,
-// the skills merged after those, and last the scope — which is not part of the
+// the skills and prompts merged after those, and last the scope — which is not part of the
 // composition at all but a fact about the instance. A reader who knows how
 // `cairn boot` works can read the file top to bottom and be reading the same
 // sequence.
@@ -149,6 +149,7 @@ type bindingFile struct {
 	Profile string   `yaml:"profile"`
 	Parts   []string `yaml:"parts,omitempty"`
 	Skills  []string `yaml:"skills,omitempty"`
+	Prompts []string `yaml:"prompts,omitempty"`
 	Scope   string   `yaml:"scope,omitempty"`
 }
 
@@ -173,13 +174,17 @@ func MarshalBinding(b Binding) ([]byte, error) {
 	id := strings.TrimSpace(b.ProfileID)
 	if id == "" {
 		return nil, fmt.Errorf("binding %q names no profile — a binding is a base profile, "+
-			"the parts merged onto it, the skills it carries and a default scope", b.Name)
+			"the parts merged onto it, the skills and prompts it carries and a default scope", b.Name)
 	}
 	parts, err := listOf("binding "+b.Name, "parts", b.Parts)
 	if err != nil {
 		return nil, err
 	}
 	skills, err := listOf("binding "+b.Name, "skills", b.Skills)
+	if err != nil {
+		return nil, err
+	}
+	prompts, err := listOf("binding "+b.Name, "prompts", b.Prompts)
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +195,7 @@ func MarshalBinding(b Binding) ([]byte, error) {
 		Profile: id,
 		Parts:   parts,
 		Skills:  skills,
+		Prompts: prompts,
 		Scope:   strings.TrimSpace(b.Scope),
 	}); err != nil {
 		return nil, fmt.Errorf("render binding %q: %w", b.Name, err)
@@ -224,7 +230,7 @@ func BindingPath(root, name string) (string, error) {
 // written. It exists so that [parseBinding] can name the whole set when it
 // refuses one that is not in it — an operator who mistyped a key needs to see
 // the spelling that would have worked, not only that theirs was not it.
-var bindingKeys = []string{"profile", "parts", "skills", "scope"}
+var bindingKeys = []string{"profile", "parts", "skills", "prompts", "scope"}
 
 // parseBinding reads one binding file, refusing a key the format does not
 // have.
@@ -318,7 +324,7 @@ func readBindings(root string, profiles map[string]profile.Profile) (map[string]
 		id := strings.TrimSpace(declared.Profile)
 		if id == "" {
 			return nil, fmt.Errorf("%s: names no profile — a binding is a base profile, the parts "+
-				"merged onto it, the skills it carries and a default scope", path)
+				"merged onto it, the skills and prompts it carries and a default scope", path)
 		}
 		if _, ok := profiles[id]; !ok {
 			return nil, fmt.Errorf("%s: names profile %q, which %s holds no file for",
@@ -332,18 +338,23 @@ func readBindings(root string, profiles map[string]profile.Profile) (map[string]
 		if err != nil {
 			return nil, err
 		}
+		prompts, err := listOf(path, "prompts", declared.Prompts)
+		if err != nil {
+			return nil, err
+		}
 		out[name] = Binding{
 			Name:      name,
 			ProfileID: id,
 			Parts:     parts,
 			Skills:    skills,
+			Prompts:   prompts,
 			Scope:     strings.TrimSpace(declared.Scope),
 		}
 	}
 	return out, nil
 }
 
-// listOf trims a binding's parts or skills and refuses an entry that names
+// listOf trims one of a binding's lists and refuses an entry that names
 // nothing. A list with no entries comes back nil, which under omitempty is the
 // same as the empty slice it came from — the key is absent either way.
 //

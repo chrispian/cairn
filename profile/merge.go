@@ -79,6 +79,7 @@ var specMergers = map[string]merger{
 
 	// Lists whose member is its own key.
 	SpecKeySkills:    listOfIDs{},
+	SpecKeyPrompts:   listOfIDs{},
 	SpecKeySubagents: listOfIDs{},
 }
 

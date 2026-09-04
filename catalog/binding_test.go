@@ -29,12 +29,18 @@ func TestMarshalBindingWritesWhatAPersonWouldType(t *testing.T) {
 		in:   Binding{Name: "eng", ProfileID: "engineer", Scope: "cairn"},
 		want: "profile: engineer\nscope: cairn\n",
 	}, {
-		name: "parts and skills are block sequences, in composition order",
+		// The key order is the order a composition resolves in, so a reader
+		// can read the file top to bottom and be reading the sequence
+		// `cairn boot` runs. Prompts sit beside skills because they compose
+		// at the same point, and after them because --skill is registered
+		// first.
+		name: "every list is a block sequence, in composition order",
 		in: Binding{
 			Name:      "w2",
 			ProfileID: "writer",
 			Parts:     []string{"docs-only", "nanite-conventions"},
 			Skills:    []string{"qhealth", "adr"},
+			Prompts:   []string{"handoff", "reset-scope"},
 			Scope:     "nanite",
 		},
 		want: "profile: writer\n" +
@@ -44,6 +50,9 @@ func TestMarshalBindingWritesWhatAPersonWouldType(t *testing.T) {
 			"skills:\n" +
 			"  - qhealth\n" +
 			"  - adr\n" +
+			"prompts:\n" +
+			"  - handoff\n" +
+			"  - reset-scope\n" +
 			"scope: nanite\n",
 	}, {
 		// An empty list marshalled as "parts: []" would be a saved binding
@@ -138,6 +147,7 @@ func TestABindingRoundTripsThroughItsOwnFormat(t *testing.T) {
 		ProfileID: "writer",
 		Parts:     []string{"docs-only"},
 		Skills:    []string{"qhealth", "adr"},
+		Prompts:   []string{"handoff"},
 		Scope:     "~/dev/projects/cairn",
 	}
 	text, err := MarshalBinding(want)
@@ -159,7 +169,8 @@ func TestABindingRoundTripsThroughItsOwnFormat(t *testing.T) {
 		t.Fatalf("binding: %v", err)
 	}
 	if got.ProfileID != want.ProfileID || got.Scope != want.Scope ||
-		!slices.Equal(got.Parts, want.Parts) || !slices.Equal(got.Skills, want.Skills) {
+		!slices.Equal(got.Parts, want.Parts) || !slices.Equal(got.Skills, want.Skills) ||
+		!slices.Equal(got.Prompts, want.Prompts) {
 		t.Errorf("the binding read back is %+v, want %+v", *got, want)
 	}
 }
@@ -234,6 +245,7 @@ func TestABindingKeyTheFormatDoesNotHaveIsRefused(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"a singular parts key", "profile: writer\npart:\n  - docs-only\n", `no binding key named "part"`},
 		{"a key named after the flag", "profile: writer\nskill:\n  - q\n", `no binding key named "skill"`},
+		{"the singular of the newest key", "profile: writer\nprompt:\n  - handoff\n", `no binding key named "prompt"`},
 		{"a key from another format", "profile: writer\nwith: [docs-only]\n", `no binding key named "with"`},
 		{"a document that is not a mapping", "- writer\n", "is not a mapping"},
 	} {

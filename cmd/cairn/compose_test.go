@@ -247,7 +247,7 @@ func TestComposeSkill(t *testing.T) {
 	})
 
 	t.Run("a value naming no skill is refused", func(t *testing.T) {
-		var l skillList
+		var l idList
 		if err := l.Set(" , "); err == nil {
 			t.Error("a --skill naming nothing was accepted")
 		}
@@ -493,7 +493,7 @@ func discard() *bytes.Buffer { return &bytes.Buffer{} }
 // start to drift.
 func TestMergeSkillsIsTheCascadesOwnRule(t *testing.T) {
 	spec := profile.Spec{profile.SpecKeySkills: json.RawMessage(`["b","a"]`)}
-	if err := (skillList{"c", "a"}).mergeInto(spec); err != nil {
+	if err := (idList{"c", "a"}).mergeInto(spec, profile.SpecKeySkills, "--skill"); err != nil {
 		t.Fatalf("merge: %v", err)
 	}
 	want, err := profile.Merge(profile.SpecKeySkills,
@@ -563,6 +563,7 @@ func TestInstallDoesNotCompose(t *testing.T) {
 	for _, flag := range [][]string{
 		{"--with", "base"},
 		{"--skill", "adr"},
+		{"--prompt", "handoff"},
 		{"--set", "note=x"},
 	} {
 		args := append([]string{"install", "engineer", "--profile", bundle, "--root", t.TempDir()}, flag...)

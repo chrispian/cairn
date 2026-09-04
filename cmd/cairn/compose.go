@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/chrispian/cairn/bootdir"
 	"github.com/chrispian/cairn/catalog"
 	"github.com/chrispian/cairn/profile"
 	"github.com/hollis-labs/agentkit/agentcontext"
@@ -45,6 +46,14 @@ const (
 		"Additive only: nothing in cairn removes a member of a collection keyed by its own " +
 		"id, so a session that wants fewer skills boots a different profile"
 
+	// The same sentence as --skill, because it is the same rule over the same
+	// kind of collection. What differs is what a prompt is: content a person
+	// invokes by name, planted as a command rather than loaded by the harness.
+	promptFlagUsage = "a prompt the boot directory carries, added to the ones the profile " +
+		"resolves to and planted as /" + bootdir.PromptNamespace + ":<name>. Comma-separated and " +
+		"repeatable, the two forms equivalent and composing. Additive only, for the reason " +
+		"--skill is"
+
 	setFlagUsage = "an inline literal for a named slot, merged last — it replaces a declared " +
 		"slot of that name whole, section included, exactly as a part declaring that slot " +
 		"would. Repeatable"
@@ -60,13 +69,15 @@ const (
 // --set value is a one-off direction for this materialization. A direction
 // worth reusing is an ordinary profile and arrives through --with.
 type composition struct {
-	with   partList
-	skills skillList
-	sets   slotList
+	with    partList
+	skills  idList
+	prompts idList
+	sets    slotList
 
-	// fromBinding is how many leading entries of with and skills the binding
-	// contributed rather than the command line. See [composition.replay].
-	fromBinding struct{ parts, skills int }
+	// fromBinding is how many leading entries of with, skills and prompts the
+	// binding contributed rather than the command line. See
+	// [composition.replay].
+	fromBinding struct{ parts, skills, prompts int }
 
 	// binding is the name of the binding those entries came from, for the
 	// diagnostics that have to say where a part nobody typed came from.
@@ -101,8 +112,12 @@ func (c *composition) replay(t bootTarget) {
 		c.fromBinding.parts = len(t.parts)
 	}
 	if len(t.skills) > 0 {
-		c.skills = append(append(skillList{}, t.skills...), c.skills...)
+		c.skills = append(append(idList{}, t.skills...), c.skills...)
 		c.fromBinding.skills = len(t.skills)
+	}
+	if len(t.prompts) > 0 {
+		c.prompts = append(append(idList{}, t.prompts...), c.prompts...)
+		c.fromBinding.prompts = len(t.prompts)
 	}
 }
 
@@ -140,7 +155,8 @@ func (c *composition) partAtQuoted(i int) string {
 	return fmt.Sprintf("--with %q", c.with[i])
 }
 
-// savedParts and savedSkills are the composition as --save-as records it: what
+// savedParts, savedSkills and savedPrompts are the composition as --save-as
+// records it: what
 // a binding already carried, followed by what was typed onto it, each as it
 // was written.
 //
@@ -148,13 +164,15 @@ func (c *composition) partAtQuoted(i int) string {
 // binding saved from a boot of another binding composes what that boot
 // composed, and there is no second idea of "the composition" for the two to
 // disagree about.
-func (c *composition) savedParts() []string  { return []string(c.with) }
-func (c *composition) savedSkills() []string { return []string(c.skills) }
+func (c *composition) savedParts() []string   { return []string(c.with) }
+func (c *composition) savedSkills() []string  { return []string(c.skills) }
+func (c *composition) savedPrompts() []string { return []string(c.prompts) }
 
-// bind registers the three flags on fs.
+// bind registers the four flags on fs.
 func (c *composition) bind(fs *flag.FlagSet) {
 	fs.Var(&c.with, "with", withFlagUsage)
 	fs.Var(&c.skills, "skill", skillFlagUsage)
+	fs.Var(&c.prompts, "prompt", promptFlagUsage)
 	fs.Var(&c.sets, "set", setFlagUsage)
 }
 
@@ -211,6 +229,12 @@ func (c *composition) contributors() map[string][]string {
 	if len(c.skills) > c.fromBinding.skills {
 		out[profile.SpecKeySkills] = append(out[profile.SpecKeySkills], "--skill")
 	}
+	if n := c.fromBinding.prompts; n > 0 {
+		out[profile.SpecKeyPrompts] = []string{fmt.Sprintf("binding %q", c.binding)}
+	}
+	if len(c.prompts) > c.fromBinding.prompts {
+		out[profile.SpecKeyPrompts] = append(out[profile.SpecKeyPrompts], "--prompt")
+	}
 	if len(c.sets) > 0 {
 		out[profile.SpecKeySlots] = []string{"--set"}
 	}
@@ -223,9 +247,9 @@ func (c *composition) contributors() map[string][]string {
 // same profiles the cascade folded.
 //
 // The order is the whole of the rule. The extends chain resolves, then each
-// part in the order given, then the skills, then the slots: every contributor
-// is closer than the one ahead of it, and the last word belongs to the flag
-// typed at the terminal.
+// part in the order given, then the skills and the prompts, then the slots:
+// every contributor is closer than the one ahead of it, and the last word
+// belongs to the flag typed at the terminal.
 func (c *composition) resolve(ctx context.Context, cat *catalog.Catalog, home string,
 	env profile.Expander, profileID string) (*profile.Resolved, profile.Loader, error) {
 
@@ -237,7 +261,10 @@ func (c *composition) resolve(ctx context.Context, cat *catalog.Catalog, home st
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := c.skills.mergeInto(resolved.Spec); err != nil {
+	if err := c.skills.mergeInto(resolved.Spec, profile.SpecKeySkills, "--skill"); err != nil {
+		return nil, nil, err
+	}
+	if err := c.prompts.mergeInto(resolved.Spec, profile.SpecKeyPrompts, "--prompt"); err != nil {
 		return nil, nil, err
 	}
 	if err := c.sets.mergeInto(resolved.Spec); err != nil {
@@ -411,21 +438,27 @@ func (l *partList) Set(v string) error {
 	return nil
 }
 
-// skillList collects --skill, which is comma-separated and repeatable both.
-// The two forms are equivalent and compose: `--skill a,b --skill c` and
-// `--skill a --skill b,c` are the same three skills, so a launcher composing a
-// list never has to decide which shape cairn wants.
-type skillList []string
+// idList collects a flag naming members of a keyed collection by id, which is
+// comma-separated and repeatable both. The two forms are equivalent and
+// compose: `--skill a,b --skill c` and `--skill a --skill b,c` are the same
+// three skills, so a launcher composing a list never has to decide which shape
+// cairn wants.
+//
+// One type for --skill and --prompt, because they are one flag over two keys.
+// A second copy would be a second chance for the comma form, the empty-value
+// refusal or the merge to differ between two flags an operator reads as a
+// pair.
+type idList []string
 
 // String implements [flag.Value].
-func (l *skillList) String() string { return strings.Join(*l, ",") }
+func (l *idList) String() string { return strings.Join(*l, ",") }
 
 // Set implements [flag.Value].
 //
-// A value that names no skill at all is refused rather than ignored. A flag
+// A value that names nothing at all is refused rather than ignored. A flag
 // that takes a value and does nothing with it is worse than one that says the
 // value was empty.
-func (l *skillList) Set(v string) error {
+func (l *idList) Set(v string) error {
 	before := len(*l)
 	for _, id := range strings.Split(v, ",") {
 		if id = strings.TrimSpace(id); id != "" {
@@ -433,30 +466,32 @@ func (l *skillList) Set(v string) error {
 		}
 	}
 	if len(*l) == before {
-		return errors.New("names no skill")
+		return errors.New("names no id")
 	}
 	return nil
 }
 
-// mergeInto folds the collected ids into spec's skills, last and by id —
-// exactly what a part declaring the same ids would do, through the same table
-// of keyed collections. There are no new merge semantics here and that is the
-// point: skills are one more contributor to a union that already had several.
+// mergeInto folds the collected ids into spec's value for key, last and by id
+// — exactly what a part declaring the same ids would do, through the same
+// table of keyed collections. There are no new merge semantics here and that
+// is the point: a flag is one more contributor to a union that already had
+// several. flag names the flag a diagnostic quotes.
 //
-// Additive, permanently as far as this flag is concerned. See [skillFlagUsage].
-func (l skillList) mergeInto(spec profile.Spec) error {
+// Additive, permanently as far as these flags are concerned. See
+// [skillFlagUsage].
+func (l idList) mergeInto(spec profile.Spec, key, flag string) error {
 	if len(l) == 0 {
 		return nil
 	}
 	raw, err := composedJSON([]string(l))
 	if err != nil {
-		return fmt.Errorf("--skill: %w", err)
+		return fmt.Errorf("%s: %w", flag, err)
 	}
-	merged, err := profile.Merge(profile.SpecKeySkills, spec[profile.SpecKeySkills], raw)
+	merged, err := profile.Merge(key, spec[key], raw)
 	if err != nil {
-		return fmt.Errorf("--skill: %w", err)
+		return fmt.Errorf("%s: %w", flag, err)
 	}
-	spec[profile.SpecKeySkills] = merged
+	spec[key] = merged
 	return nil
 }
 

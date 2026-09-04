@@ -81,6 +81,26 @@ const (
 	// they live. Both skill sets resolve against it.
 	SpecKeySkillsDir = "skills_dir"
 
+	// SpecKeyPrompts holds the names of the prompt files rendered into the
+	// boot directory's commands namespace, one slash-invokable command each.
+	//
+	// It is [SpecKeySkills] for content. A skill is a directory the harness
+	// loads on its own; a prompt is one file a person invokes by name, and the
+	// two are declared, cascaded and composed identically because the question
+	// — which of the bundle's content does this boot directory carry — is the
+	// same one.
+	SpecKeyPrompts = "prompts"
+
+	// SpecKeyPromptsDir holds the directory those prompt names are read from.
+	// Cairn ships no prompts, so a profile declaring one has to say where it
+	// lives — the same rule, for the same reason, as [SpecKeySkillsDir].
+	//
+	// It is a second key rather than a subdirectory of the skills root. The
+	// two are separate collections of separate things, and a profile that
+	// keeps its prompts somewhere else should not have to move its skills to
+	// say so.
+	SpecKeyPromptsDir = "prompts_dir"
+
 	// SpecKeyInstall holds the keys only the installed layer reads. Its
 	// "skills" are the skill directories `cairn install` plants into the
 	// harness's own skills directory, resolved against [SpecKeySkillsDir] the
@@ -254,6 +274,16 @@ func (s Spec) Skills() ([]string, error) {
 	return out, nil
 }
 
+// Prompts returns the prompt names under [SpecKeyPrompts]. A manifest
+// declaring none returns nil and no error.
+func (s Spec) Prompts() ([]string, error) {
+	var out []string
+	if err := s.decode(SpecKeyPrompts, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // InstallSkills returns the skill names under [SpecKeyInstall]'s "skills". A
 // manifest declaring no install key, and one declaring it without skills,
 // both return nil and no error — the key is not obliged to exist, and one
@@ -301,6 +331,18 @@ func (s Spec) AccessDirectories() ([]string, error) {
 func (s Spec) SkillsDir() (string, error) {
 	var out string
 	if err := s.decode(SpecKeySkillsDir, &out); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// PromptsDir returns the directory under [SpecKeyPromptsDir] that prompt names
+// are resolved against. A manifest declaring none returns the empty string and
+// no error; whether that is a problem depends on whether any prompt was
+// declared, which is the prompts renderer's question.
+func (s Spec) PromptsDir() (string, error) {
+	var out string
+	if err := s.decode(SpecKeyPromptsDir, &out); err != nil {
 		return "", err
 	}
 	return out, nil

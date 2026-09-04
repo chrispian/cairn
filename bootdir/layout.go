@@ -41,6 +41,22 @@ const SkillsDirName = ".claude/skills"
 // the skill at all.
 const SkillFileName = "SKILL.md"
 
+// PromptNamespace is the commands subdirectory cairn plants prompts into, and
+// the prefix a planted prompt is invoked by: `/boot:<name>`.
+//
+// The namespace is required rather than incidental. A subdirectory of the
+// commands directory genuinely namespaces the command rather than flattening
+// it — verified against the harness, with the bare name answering "Unknown
+// command" as the control — so a prompt cairn planted is addressed as cairn's
+// and can never collide with a command the operator wrote by hand beside it.
+const PromptNamespace = "boot"
+
+// PromptsDirName is the directory, relative to the boot directory root,
+// declared prompts are planted into, one file per prompt. No provider's
+// BootDirSpec declares it; it is Claude Code's on-disk convention for custom
+// commands, under [PromptNamespace].
+const PromptsDirName = ".claude/commands/" + PromptNamespace
+
 // JSONIndent is one level of indentation in a rendered JSON artifact.
 //
 // Every JSON file cairn writes is laid out rather than compacted, because the
@@ -92,8 +108,8 @@ func (a Artifact) Declared() bool { return a.RelPath != "" }
 // because some of them have side effects on the operator's real home
 // directory.
 //
-// Agents, Skills and Subagents are Cairn's, not the provider's. No BootDirSpec
-// declares any of them.
+// Agents, Skills, Subagents and Prompts are Cairn's, not the provider's. No
+// BootDirSpec declares any of them.
 type Layout struct {
 	// Provider is the harness this layout describes.
 	Provider profile.Provider
@@ -120,6 +136,11 @@ type Layout struct {
 	// one file per named profile. Like SkillsDir it is cairn's, not the
 	// provider's: no BootDirSpec declares it.
 	SubagentsDir string
+
+	// PromptsDir is the directory declared prompts are planted under, one file
+	// per prompt. Like SkillsDir and SubagentsDir it is cairn's, not the
+	// provider's: no BootDirSpec declares it.
+	PromptsDir string
 
 	// CwdPreference is where the harness expects to be invoked, and
 	// ProjectDirArg is its flag pattern for granting access to the scope
@@ -162,6 +183,7 @@ func claudeLayout() (Layout, error) {
 		Settings:      declared[".claude/settings.json"],
 		SkillsDir:     SkillsDirName,
 		SubagentsDir:  SubagentsDirName,
+		PromptsDir:    PromptsDirName,
 		CwdPreference: spec.CwdPreference,
 		ProjectDirArg: spec.ProjectDirArg,
 	}, nil

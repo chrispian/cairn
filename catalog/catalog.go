@@ -111,6 +111,15 @@ type Binding struct {
 	// what you just did is the surprising outcome.
 	Skills []string
 
+	// Prompts are added the same way, by id, as --prompt adds them. Empty for
+	// a binding that adds none.
+	//
+	// It is a separate field from Skills for the reason the manifest keys are
+	// separate: a boot directory carries a set of skills the harness loads and
+	// a set of prompts a person invokes, and a binding that could only say one
+	// of them would be a saved composition that does not save the composition.
+	Prompts []string
+
 	// Scope is where that boot works. It is a scope alias when one exists by
 	// that name and a directory path otherwise, so an operator who has not
 	// declared an alias is not obliged to. Empty means no declared scope.
