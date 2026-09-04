@@ -68,10 +68,14 @@ flags for boot:
                          skills and the scope are saved as they were written; --set values
                          are not, because a binding names what to compose and an inline
                          value is content — each one dropped is named on stderr, and this
-                         boot still has it. A composition holding a --with <path> is
-                         refused rather than saved short: a binding must be reproducible
-                         by name, and a path is a handle to something that may not be
-                         there later. An existing binding is never overwritten
+                         boot still has it. A composition holding a path member is
+                         refused rather than saved short — whether the path was typed as
+                         --with or came from the binding being composed onto: a binding
+                         must be reproducible by name, and a path is a handle to
+                         something that may not be there later. A relative --scope is
+                         saved as the directory it resolved to, since a binding records
+                         no working directory to read one against. An existing binding is
+                         never overwritten
 
 flags for install:
   --check                re-render, diff against disk, report drift, write nothing
@@ -203,6 +207,17 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return err
 	}
 	profileID := tgt.profileID
+	if len(tgt.parts) > 0 || len(tgt.skills) > 0 {
+		// Said out loud rather than left to be noticed. The decision above is
+		// the right one and the silence was not: `cairn show <binding>` and
+		// `cairn boot <binding>` both report a composition that this command
+		// renders nothing of, so an operator comparing the two has no way to
+		// tell a deliberate omission from a bug.
+		_, _ = fmt.Fprintf(stderr,
+			"cairn: binding %q composes %d part(s) and %d skill(s), and install renders none of "+
+				"them — the installed layer is what every session loads, not one launch.\n",
+			tgt.name, len(tgt.parts), len(tgt.skills))
+	}
 	// No abstract check. The installed layer is normally rendered from the
 	// abstract root of the cascade, and refusing one here would refuse the
 	// profile this command mostly exists to render. `cairn boot` is where a
@@ -490,11 +505,9 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// Checked here and written at the end. Every refusal a --save-as can raise
 	// is knowable now, and raising it now is what keeps an operator who
 	// mistyped a binding name from also having a boot directory planted for
-	// them. The scope is saved as it was written — an alias stays an alias,
-	// and a path that expands stays the value that expands — for the same
-	// reason a part is: a binding that recorded this machine's expansion of it
-	// would be a binding that worked on this machine.
-	save, err := newBindingSave(strings.TrimSpace(*saveAsFlag), cat.Root(), tgt, &compose, rawScope)
+	// them. Both spellings of the scope go down, because which one is recorded
+	// is a decision rather than a lookup — see [savedScope].
+	save, err := newBindingSave(ctx, strings.TrimSpace(*saveAsFlag), cat, tgt, &compose, rawScope, scopeDir)
 	if err != nil {
 		return err
 	}

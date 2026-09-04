@@ -33,8 +33,20 @@ import (
 // what is in doubt is whether booting that name replays it. So this saves a
 // composition, boots the binding, and diffs the two trees.
 //
-// Two boot roots and one session segment, so the only thing that could differ
-// between the trees is what cairn rendered into them.
+// Two boot roots and one session segment, so nothing outside cairn's rendering
+// can differ between them.
+//
+// **The binding is saved under the profile's own name, and that is load
+// bearing.** A boot directory is planted under the name it was booted by, and
+// that name is also the `binding` instance value a template may substitute —
+// so saving as "eng-docs" and booting that would legitimately differ from
+// booting "engineer", in every artifact carrying the marker. The example
+// bundle's templates happen not to carry it today, which would make an
+// equality assertion pass by fixture accident and fail later for a reason
+// having nothing to do with --save-as. Holding the name fixed removes the
+// class instead of tolerating it, and costs nothing: a binding outranks a
+// profile of the same name, so `cairn boot engineer` afterwards is the
+// binding.
 func TestSaveAsRoundTripsAComposition(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
@@ -48,10 +60,10 @@ func TestSaveAsRoundTripsAComposition(t *testing.T) {
 		"--with", "docs-only",
 		"--skill", "qhealth,adr",
 		"--scope", scopeDir,
-		"--save-as", "eng-docs",
+		"--save-as", "engineer",
 	)
 	replayed := bootTree(t, ctx, filepath.Join(home, "replayed"),
-		"eng-docs",
+		"engineer",
 		"--profile", bundle,
 	)
 
@@ -59,7 +71,221 @@ func TestSaveAsRoundTripsAComposition(t *testing.T) {
 		t.Fatal("the composed boot wrote nothing, so the comparison below would prove nothing")
 	}
 	diffTrees(t, typed, replayed)
+
+	// Equality is only worth something if the composition was observable in
+	// the tree to begin with. The two skills are: they are ids no profile in
+	// the chain declares, so their directories are there because the binding
+	// carried them.
+	for _, id := range []string{"qhealth", "adr"} {
+		if _, ok := replayed[".claude/skills/"+id+"/SKILL.md"]; !ok {
+			t.Errorf("the replayed boot did not plant the skill %q; it planted %v",
+				id, slices.Sorted(maps.Keys(replayed)))
+		}
+	}
+	// The part is not observable in this tree — docs-only contributes a slot
+	// that renders nothing without a --set, and its prose reaches no template
+	// engineer names — so the tree diff alone would pass with parts dropped on
+	// both sides. The chain says what the tree cannot.
+	if out := mustShow(t, ctx, bundle, "engineer"); !strings.Contains(out, "docs-only") {
+		t.Errorf("the saved binding does not resolve through its part:\n%s", out)
+	}
 }
+
+// TestSaveAsUnderANewNameDiffersOnlyByThatName is the other half of the test
+// above: it says what a save under a different name legitimately changes, so
+// that the equality asserted there is understood rather than assumed.
+//
+// The boot directory is planted under the name it was booted by and that name
+// is the `binding` value, so the two boots differ wherever a template
+// substitutes it — and nowhere else. The example bundle's templates carry no
+// such marker, so one is added here rather than waited for.
+func TestSaveAsUnderANewNameDiffersOnlyByThatName(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := exampleBundle(t, home)
+	scopeDir := filepath.Join(home, "scope")
+	mustMkdir(t, scopeDir)
+	tmpl := filepath.Join(bundle, "templates", "engineer.md")
+	writeFile(t, tmpl, read(t, bundle, "templates/engineer.md")+
+		"\nBooted as <!-- cairn:value binding -->.\n", 0o644)
+
+	typed := bootTree(t, ctx, filepath.Join(home, "typed"),
+		"engineer", "--profile", bundle, "--with", "docs-only",
+		"--scope", scopeDir, "--save-as", "eng-docs")
+	replayed := bootTree(t, ctx, filepath.Join(home, "replayed"), "eng-docs", "--profile", bundle)
+
+	if got := changedFiles(t, typed, replayed); !slices.Equal(got, []string{"AGENTS.md"}) {
+		t.Fatalf("the two boots differ in %v, want only the file carrying the binding marker", got)
+	}
+	if !strings.Contains(typed["AGENTS.md"], "Booted as engineer.") {
+		t.Errorf("the composed boot does not name itself:\n%s", typed["AGENTS.md"])
+	}
+	if !strings.Contains(replayed["AGENTS.md"], "Booted as eng-docs.") {
+		t.Errorf("the replayed boot does not name itself:\n%s", replayed["AGENTS.md"])
+	}
+	// And that one substitution is the whole of the difference.
+	if strings.ReplaceAll(typed["AGENTS.md"], "as engineer.", "as eng-docs.") != replayed["AGENTS.md"] {
+		t.Errorf("the two renderings differ by more than the binding's name:\n%s\n---\n%s",
+			typed["AGENTS.md"], replayed["AGENTS.md"])
+	}
+}
+
+// TestARelativeScopeIsSavedAsTheDirectoryItResolvedTo is the one value a
+// binding cannot record as written.
+//
+// Everything else in a composition still means the same thing tomorrow. A
+// relative scope is anchored to the working directory of the process that
+// typed it, a binding records no working directory, and booting the same
+// binding from somewhere else would silently resolve somewhere else — which is
+// the failure this whole design refuses elsewhere by refusing a path member.
+// Here there is a sound answer, because the boot already resolved it.
+func TestARelativeScopeIsSavedAsTheDirectoryItResolvedTo(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := exampleBundle(t, home)
+	scopeDir := filepath.Join(home, "scope")
+	mustMkdir(t, scopeDir)
+
+	// A relative --scope has to be relative to the test process's own working
+	// directory, which is the package directory; a directory of its own under
+	// it, removed afterwards, is the only way to write one honestly.
+	rel := filepath.Join("testdata", "relative-scope-probe")
+	mustMkdir(t, rel)
+	t.Cleanup(func() { _ = os.RemoveAll(rel) })
+	abs, err := filepath.Abs(rel)
+	if err != nil {
+		t.Fatalf("absolute path of %s: %v", rel, err)
+	}
+	abs, err = filepath.EvalSymlinks(abs)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", rel, err)
+	}
+
+	var stderr bytes.Buffer
+	bootTreeErr(t, ctx, &stderr, filepath.Join(home, "runtime"),
+		"engineer", "--profile", bundle, "--scope", rel, "--save-as", "here")
+
+	if got, want := read(t, bundle, "bindings/here.yaml"),
+		fmt.Sprintf("profile: engineer\nscope: %s\n", abs); got != want {
+		t.Errorf("the saved binding is\n%q\nwant\n%q", got, want)
+	}
+	// And it is not silent, because the value the operator typed is not the
+	// value that was written.
+	if !strings.Contains(stderr.String(), "is relative, so "+abs+" was saved instead") {
+		t.Errorf("the substitution was not reported:\n%s", stderr.String())
+	}
+
+	// An alias, by contrast, is a name and stays one.
+	writeScopes(t, bundle, map[string]string{"here-alias": scopeDir})
+	bootTree(t, ctx, filepath.Join(home, "runtime2"),
+		"engineer", "--profile", bundle, "--scope", "here-alias", "--save-as", "aliased")
+	if got, want := read(t, bundle, "bindings/aliased.yaml"),
+		"profile: engineer\nscope: here-alias\n"; got != want {
+		t.Errorf("the saved binding is\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestSaveAsSaysWhenItShadowsAProfile.
+//
+// A binding outranks a profile of the same name at every lookup, which is
+// deliberate. Creating that shadow is not wrong; doing it without a word is,
+// because from then on `cairn boot <name>` means something else and nothing in
+// the output would have hinted at it — including for an abstract profile,
+// which refuses to boot until a binding of its name quietly makes it succeed.
+func TestSaveAsSaysWhenItShadowsAProfile(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := exampleBundle(t, home)
+	scopeDir := filepath.Join(home, "scope")
+	mustMkdir(t, scopeDir)
+
+	var stderr bytes.Buffer
+	bootTreeErr(t, ctx, &stderr, filepath.Join(home, "runtime"),
+		"engineer", "--profile", bundle, "--scope", scopeDir, "--save-as", "reviewer")
+	if !strings.Contains(stderr.String(), `a profile is also named reviewer`) {
+		t.Errorf("the shadow was not reported:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "`cairn boot reviewer` now boots this binding") {
+		t.Errorf("the report does not say what changed:\n%s", stderr.String())
+	}
+
+	// A name the bundle has no profile for says nothing, because nothing
+	// changed meaning. A diagnostic that fires on the ordinary case is noise.
+	var quiet bytes.Buffer
+	bootTreeErr(t, ctx, &quiet, filepath.Join(home, "runtime2"),
+		"engineer", "--profile", bundle, "--scope", scopeDir, "--save-as", "not-a-profile")
+	if strings.Contains(quiet.String(), "a profile is also named") {
+		t.Errorf("a save that shadows nothing reported a shadow:\n%s", quiet.String())
+	}
+}
+
+// TestSaveAsIntoABundleWithNoBindingsDirectory. A bundle with profiles and no
+// bindings is a legitimate bundle — the catalog reads one without complaint —
+// so the first --save-as in such a bundle is the thing that makes the
+// directory.
+func TestSaveAsIntoABundleWithNoBindingsDirectory(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := exampleBundle(t, home)
+	scopeDir := filepath.Join(home, "scope")
+	mustMkdir(t, scopeDir)
+	if err := os.RemoveAll(filepath.Join(bundle, "bindings")); err != nil {
+		t.Fatalf("remove the bindings directory: %v", err)
+	}
+
+	bootTree(t, ctx, filepath.Join(home, "runtime"),
+		"engineer", "--profile", bundle, "--scope", scopeDir, "--save-as", "first")
+	if got, want := read(t, bundle, "bindings/first.yaml"),
+		fmt.Sprintf("profile: engineer\nscope: %s\n", scopeDir); got != want {
+		t.Errorf("the saved binding is\n%q\nwant\n%q", got, want)
+	}
+	// And it boots, which is what says the directory is the one the catalog
+	// reads rather than one beside it.
+	bootTree(t, ctx, filepath.Join(home, "runtime2"), "first", "--profile", bundle)
+}
+
+// TestInstallRendersNoneOfABindingsComposition pins the decision, in both
+// directions.
+//
+// install renders the machine-wide layer every session loads, so a per-launch
+// composition has no meaning there — the same reason it takes none of --with,
+// --skill or --set. Nothing else asserts this, and an install that quietly
+// started replaying a binding's parts would render a different ~/.claude with
+// no test to notice.
+func TestInstallRendersNoneOfABindingsComposition(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := exampleBundle(t, home)
+
+	install := func(root, target string, stderr io.Writer) map[string]string {
+		t.Helper()
+		mustMkdir(t, root)
+		if err := run(ctx, []string{"install", target, "--profile", bundle, "--root", root},
+			discard(), stderr); err != nil {
+			t.Fatalf("install %s: %v", target, err)
+		}
+		return treeOf(t, root)
+	}
+
+	var stderr bytes.Buffer
+	// "docs" is the example bundle's binding that composes a part.
+	composed := install(filepath.Join(home, "composed"), "docs", &stderr)
+	plain := install(filepath.Join(home, "plain"), "engineer", discard())
+	if len(plain) == 0 {
+		t.Fatal("install wrote nothing, so the comparison below would prove nothing")
+	}
+	if !maps.Equal(composed, plain) {
+		t.Errorf("installing a binding that composes a part differs from installing its profile:\n%v",
+			changedFiles(t, composed, plain))
+	}
+	// Said out loud, because `show` and `boot` both report a composition this
+	// command renders nothing of.
+	if !strings.Contains(stderr.String(), "install renders none of them") {
+		t.Errorf("install did not say the binding's composition was not replayed:\n%s", stderr.String())
+	}
+}
+
+// exampleBundle copies examples/bundle
 
 // TestSaveAsRoundTripsSkillsAndDropsSets covers the two behaviours that look
 // alike at the flag level and are not alike.
@@ -418,6 +644,25 @@ func TestABindingsPartIsNamedByItsBinding(t *testing.T) {
 			t.Fatalf("show: %v", err)
 		}
 		want := "cairn: binding \"absorbed\": part base: already in the chain, contributed nothing\n"
+		if got := stderr.String(); got != want {
+			t.Errorf("stderr is %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a part the binding and the flag both name", func(t *testing.T) {
+		// The fold keeps a part where it FIRST landed, which is the binding's
+		// position, so the binding is what the report has to name. Keying the
+		// spelling by the part's id and letting the later write win would
+		// replace a correct answer with a plausible one, and the plausible one
+		// sends the reader to a flag that is not why the part is there.
+		writeFile(t, filepath.Join(bundle, "bindings", "dup.yaml"),
+			"profile: engineer\nparts:\n  - docs-only\n", 0o644)
+		var stderr bytes.Buffer
+		if err := runShow(ctx, []string{"dup", "--with", "docs-only", "--profile", bundle},
+			discard(), &stderr); err != nil {
+			t.Fatalf("show: %v", err)
+		}
+		want := "cairn: binding \"dup\": part docs-only: already in the chain, contributed nothing\n"
 		if got := stderr.String(); got != want {
 			t.Errorf("stderr is %q, want %q", got, want)
 		}

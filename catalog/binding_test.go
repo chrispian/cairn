@@ -49,7 +49,7 @@ func TestMarshalBindingWritesWhatAPersonWouldType(t *testing.T) {
 		// that reads differently from every hand-authored one beside it, for
 		// no reason its reader could see.
 		name: "an empty list is absent rather than empty",
-		in:   Binding{Name: "w", ProfileID: "writer", Parts: []string{}, Skills: []string{"  "}},
+		in:   Binding{Name: "w", ProfileID: "writer", Parts: []string{}},
 		want: "profile: writer\n",
 	}, {
 		// The scope key is where a value that YAML reads as something else
@@ -179,6 +179,23 @@ func TestBindingPathRefusesANameThatIsNotAFileName(t *testing.T) {
 	}
 	if want := filepath.Join("/bundle", BindingsDir, "eng-docs.yaml"); got != want {
 		t.Errorf("BindingPath returned %q, want %q", got, want)
+	}
+}
+
+// TestABindingListEntryThatNamesNothingIsRefusedOnWriteToo is the other half
+// of the test below, and the half that is easy to leave out.
+//
+// A marshaller that quietly dropped what the parser refuses would be the
+// write-side version of the same silent difference — one fewer part in the
+// file than the caller asked for — in the one package that owns both sides.
+func TestABindingListEntryThatNamesNothingIsRefusedOnWriteToo(t *testing.T) {
+	for _, in := range []Binding{
+		{Name: "w", ProfileID: "writer", Parts: []string{"docs-only", "  "}},
+		{Name: "w", ProfileID: "writer", Skills: []string{""}},
+	} {
+		if _, err := MarshalBinding(in); err == nil {
+			t.Errorf("MarshalBinding(%+v) wrote a list with an entry that names nothing", in)
+		}
 	}
 }
 

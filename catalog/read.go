@@ -171,15 +171,24 @@ type bindingFile struct {
 func MarshalBinding(b Binding) ([]byte, error) {
 	id := strings.TrimSpace(b.ProfileID)
 	if id == "" {
-		return nil, fmt.Errorf("binding %q names no profile — a binding is a profile plus a scope", b.Name)
+		return nil, fmt.Errorf("binding %q names no profile — a binding is a base profile, "+
+			"the parts merged onto it, the skills it carries and a default scope", b.Name)
+	}
+	parts, err := listOf("binding "+b.Name, "parts", b.Parts)
+	if err != nil {
+		return nil, err
+	}
+	skills, err := listOf("binding "+b.Name, "skills", b.Skills)
+	if err != nil {
+		return nil, err
 	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(bindingFile{
 		Profile: id,
-		Parts:   trimmed(b.Parts),
-		Skills:  trimmed(b.Skills),
+		Parts:   parts,
+		Skills:  skills,
 		Scope:   strings.TrimSpace(b.Scope),
 	}); err != nil {
 		return nil, fmt.Errorf("render binding %q: %w", b.Name, err)
@@ -204,26 +213,10 @@ func BindingPath(root, name string) (string, error) {
 		return "", fmt.Errorf("%w: no name was given", ErrBindingName)
 	case strings.ContainsRune(n, '/'), strings.ContainsRune(n, filepath.Separator):
 		return "", fmt.Errorf("%w: %q holds a path separator, and a binding is named by its file", ErrBindingName, n)
-	case n == "." || n == "..", strings.HasPrefix(n, "."):
+	case strings.HasPrefix(n, "."):
 		return "", fmt.Errorf("%w: %q begins with a dot, and a binding is named by its file", ErrBindingName, n)
 	}
 	return filepath.Join(root, BindingsDir, n+bindingExt), nil
-}
-
-// trimmed returns in with every entry trimmed and every empty one dropped, or
-// nil when nothing survives — so that an empty list marshals away under
-// omitempty rather than as "parts: []".
-func trimmed(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, v := range in {
-		if v = strings.TrimSpace(v); v != "" {
-			out = append(out, v)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 // readBindings reads every binding file in the bundle's bindings directory.
@@ -261,7 +254,8 @@ func readBindings(root string, profiles map[string]profile.Profile) (map[string]
 		name := strings.TrimSuffix(entry.Name(), bindingExt)
 		id := strings.TrimSpace(declared.Profile)
 		if id == "" {
-			return nil, fmt.Errorf("%s: names no profile — a binding is a profile plus a scope", path)
+			return nil, fmt.Errorf("%s: names no profile — a binding is a base profile, the parts "+
+				"merged onto it, the skills it carries and a default scope", path)
 		}
 		if _, ok := profiles[id]; !ok {
 			return nil, fmt.Errorf("%s: names profile %q, which %s holds no file for",
@@ -287,12 +281,17 @@ func readBindings(root string, profiles map[string]profile.Profile) (map[string]
 }
 
 // listOf trims a binding's parts or skills and refuses an entry that names
-// nothing.
+// nothing. It returns nil for a list that had no entries at all, so an empty
+// one marshals away under omitempty rather than as "parts: []".
 //
 // An empty entry is refused rather than dropped for the reason every other
 // empty value in cairn is: a list item that is there and means nothing is a
 // typo, and silently composing one fewer part than the file appears to name is
 // the kind of difference nobody goes looking for.
+//
+// Both halves of the format go through it, which is the point. A marshaller
+// that dropped what the parser refuses would be the write-side version of the
+// same silent difference, in the one package that owns both sides.
 //
 // What is NOT checked is whether a part names a profile the bundle holds. The
 // profile key above is checked, and the difference is that a part may be a

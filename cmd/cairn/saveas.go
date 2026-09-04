@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/chrispian/cairn/catalog"
 )
@@ -17,7 +20,8 @@ const saveAsFlagUsage = "write this composition to the bundle as a new binding o
 	"the same boot is reachable by name. The parts, the skills and the scope are saved as " +
 	"they were written; --set values are not, because a binding names what to compose and " +
 	"an inline value is content — each one dropped is named on stderr, and this boot still " +
-	"has it. A composition holding a --with <path> is refused rather than saved short"
+	"has it. A composition holding a path member is refused rather than saved short, whether " +
+	"the path was typed as --with or came from the binding being composed onto"
 
 // bindingSave is a --save-as: a binding checked before the boot runs and
 // written after it succeeds.
@@ -37,6 +41,52 @@ type bindingSave struct {
 
 	// dropped names the --set slots this binding does not carry.
 	dropped []string
+
+	// declaredScope is the scope as it was written, when that differs from
+	// what was saved. See [savedScope] — a relative scope is the one value
+	// that cannot be recorded as written, and the operator hears about it.
+	declaredScope string
+
+	// shadows says a profile of this name already exists, so the binding now
+	// decides what `cairn boot <name>` means.
+	shadows bool
+}
+
+// savedScope decides what a binding records for its scope, and reports whether
+// that is something other than what was written.
+//
+// Everything else in a saved composition is recorded verbatim, because every
+// other spelling still means the same directory tomorrow: an alias resolves
+// through the bundle's own registry, and "~/dev/x" and "/dev/x" name one place
+// from anywhere. A **relative** scope does not. It is anchored to the working
+// directory of the process that typed it, a binding records no working
+// directory, and nothing downstream can tell that the value moved — booting
+// the same binding from somewhere else silently resolves somewhere else, or
+// fails.
+//
+// So the relative case is the one place "as written" would record a value that
+// is not true anywhere but here, and what is saved instead is the directory
+// this boot actually used. That is not the alias hazard in reverse: an alias
+// is a name and stays one, while a relative path was never a name at all.
+//
+// Absolutized rather than refused because, unlike a path member, there is a
+// sound answer — the boot resolved it, and the resolution is exactly what the
+// binding is meant to reproduce. It is still said out loud.
+func savedScope(cat *catalog.Catalog, raw, resolved string) (value string, absolutized bool) {
+	trimmed := strings.TrimSpace(raw)
+	switch {
+	case trimmed == "":
+		return "", false
+	case !pathLike(trimmed):
+		// A bare word is an alias when the bundle declares one, and a
+		// relative path when it does not — the same fork resolveScope takes.
+		if _, err := cat.Scope(trimmed); err == nil {
+			return trimmed, false
+		}
+	case strings.HasPrefix(trimmed, "~"), filepath.IsAbs(trimmed):
+		return trimmed, false
+	}
+	return resolved, true
 }
 
 // newBindingSave checks that the composition just resolved can be saved as
@@ -46,10 +96,13 @@ type bindingSave struct {
 // they are refusals rather than reports because each one leaves the operator
 // with a binding that is not what they asked for. The fourth behaviour — a
 // --set — is not a refusal at all, and is reported at [bindingSave.write].
-func newBindingSave(name, root string, t bootTarget, c *composition, scope string) (*bindingSave, error) {
+func newBindingSave(ctx context.Context, name string, cat *catalog.Catalog, t bootTarget,
+	c *composition, rawScope, scopeDir string) (*bindingSave, error) {
+
 	if name == "" {
 		return nil, nil
 	}
+	root := cat.Root()
 	path, err := catalog.BindingPath(root, name)
 	if err != nil {
 		return nil, fmt.Errorf("--save-as: %w", err)
@@ -88,6 +141,25 @@ func newBindingSave(name, root string, t bootTarget, c *composition, scope strin
 	for _, s := range c.sets {
 		dropped = append(dropped, s.name)
 	}
+
+	// A binding of this name will outrank a profile of it at every lookup —
+	// see [lookup], where that precedence is deliberate. Creating it is not,
+	// on its own, wrong: an operator may well mean to boot their own
+	// composition under a name the bundle also has a profile for. What would
+	// be wrong is doing it without saying so, because from here on `cairn boot
+	// <name>` means something else and nothing in the output would have hinted
+	// at it.
+	_, err = cat.Profile(ctx, name)
+	shadows := err == nil
+	if err != nil && !errors.Is(err, catalog.ErrProfileNotFound) {
+		return nil, err
+	}
+
+	saved, absolutized := savedScope(cat, rawScope, scopeDir)
+	declared := ""
+	if absolutized {
+		declared = strings.TrimSpace(rawScope)
+	}
 	return &bindingSave{
 		path: path,
 		binding: catalog.Binding{
@@ -95,9 +167,11 @@ func newBindingSave(name, root string, t bootTarget, c *composition, scope strin
 			ProfileID: t.profileID,
 			Parts:     c.savedParts(),
 			Skills:    c.savedSkills(),
-			Scope:     scope,
+			Scope:     saved,
 		},
-		dropped: dropped,
+		dropped:       dropped,
+		declaredScope: declared,
+		shadows:       shadows,
 	}, nil
 }
 
@@ -139,6 +213,18 @@ func (s *bindingSave) write(stderr io.Writer) error {
 	}
 
 	_, _ = fmt.Fprintf(stderr, "cairn: --save-as %s: wrote %s\n", s.binding.Name, s.path)
+	if s.declaredScope != "" {
+		_, _ = fmt.Fprintf(stderr,
+			"cairn: --save-as %s: --scope %q is relative, so %s was saved instead — a binding "+
+				"records no working directory to read it against.\n",
+			s.binding.Name, s.declaredScope, s.binding.Scope)
+	}
+	if s.shadows {
+		_, _ = fmt.Fprintf(stderr,
+			"cairn: --save-as %s: a profile is also named %s, and a binding outranks one — "+
+				"`cairn boot %s` now boots this binding.\n",
+			s.binding.Name, s.binding.Name, s.binding.Name)
+	}
 	for _, name := range s.dropped {
 		_, _ = fmt.Fprintf(stderr,
 			"cairn: --save-as %s: --set %s was not saved — a binding names what to compose and an "+

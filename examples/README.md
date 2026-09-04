@@ -221,7 +221,8 @@ spec.skills   engineer, docs-only, --skill
 
 `cairn install` takes none of them. It renders the layer every session on the
 machine loads, and a composition is an instance concern by construction — a
-binding's parts and skills are not replayed there either, for the same reason.
+binding's parts and skills are not replayed there either, for the same reason,
+and `install` says so when the binding it was given composes something.
 
 ### Saving one: `--save-as`
 
@@ -255,6 +256,13 @@ comment above it and nothing will take it away.
 keeps its declared spelling: a binding that recorded one machine's expansion is
 a binding that works on one machine.
 
+**With one exception: a relative `--scope` is saved as the directory it
+resolved to**, and cairn says so. An alias, a `~/` path and an absolute path
+all still name the same place tomorrow; a relative path is anchored to the
+working directory of the shell that typed it, and a binding records no working
+directory. Saved verbatim it would resolve somewhere else from somewhere else,
+silently.
+
 **A `--with` typed onto a binding lands after the binding's own parts**, which
 is closest-wins with the terminal closest — the same rule the `extends` chain
 follows. So `cairn boot eng-docs --with x --save-as eng-docs-x` grows the
@@ -267,13 +275,15 @@ point:
   gets the value; the binding does not. A `--set` carries *content*, and
   content in the catalog is the seam this design keeps clean. A direction worth
   reusing is an ordinary part and arrives through `--with`.
-- **A `--with <path>` is a refusal, not a drop**, and the diagnostic names the
+- **A path member is a refusal, not a drop**, and the diagnostic names the
   path. The two look alike and are not: a `--set` can be dropped soundly
   because nothing is lost but reuse, while dropping a path member would
   silently change what the binding composes. Inlining the file's content
   instead would turn a handle into content, which is the thing the bundle's
   shape rests on not doing. Put the part in `profiles/` and name it, or boot
-  without `--save-as`.
+  without `--save-as`. The refusal is about what the composition holds, not
+  which flag it arrived on — a binding whose own `parts:` names a path is
+  refused too, and the diagnostic says which file to edit.
 
 `--skill` goes the other way and *is* saved, which is the same distinction read
 from the other side: a skill list is **ids**, the same kind of thing a binding
@@ -281,6 +291,11 @@ already holds for its parts, so the reason to drop a `--set` does not transfer.
 
 An existing binding is never overwritten — its file may hold a comment nothing
 else carries — so saving over one is a refusal too.
+
+Saving under a name the bundle already has a *profile* for is allowed, and
+reported. A binding outranks a profile of the same name at every lookup, so
+`cairn boot <name>` means the binding from then on; that is a fine thing to
+want and a bad thing to find out later.
 
 ### Templates and markers
 

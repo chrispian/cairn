@@ -281,7 +281,7 @@ func (c *composition) load(ctx context.Context, cat *catalog.Catalog, home strin
 				}
 				return nil, nil, err
 			}
-			c.named[raw] = named
+			nameOnce(c.named, raw, named)
 			parts = append(parts, raw)
 			continue
 		}
@@ -319,10 +319,22 @@ func (c *composition) load(ctx context.Context, cat *catalog.Catalog, home strin
 		// either way.
 		p.ID = expanded
 		loader.paths[expanded] = p
-		c.named[expanded] = named
+		nameOnce(c.named, expanded, named)
 		parts = append(parts, expanded)
 	}
 	return loader, parts, nil
+}
+
+// nameOnce records how to refer to a part, keeping the first spelling.
+//
+// One id can arrive twice — a binding names a part and the operator names it
+// again — and the fold keeps it where it first landed, which is the binding's
+// position. So the first spelling is the one that describes what happened, and
+// the later write would replace a correct answer with a plausible one.
+func nameOnce(named map[string]string, id, as string) {
+	if _, ok := named[id]; !ok {
+		named[id] = as
+	}
 }
 
 // partIsPath reports whether a --with value names a file rather than a profile
