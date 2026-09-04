@@ -64,12 +64,92 @@ type composition struct {
 	skills skillList
 	sets   slotList
 
-	// written maps the id a part was loaded under back to the --with value the
-	// operator typed. The two differ for a path — the id is the expansion — and
-	// a diagnostic quotes what was written, so the pair is kept here rather
-	// than reconstructed by whoever needs to name one.
-	written map[string]string
+	// fromBinding is how many leading entries of with and skills the binding
+	// contributed rather than the command line. See [composition.replay].
+	fromBinding struct{ parts, skills int }
+
+	// binding is the name of the binding those entries came from, for the
+	// diagnostics that have to say where a part nobody typed came from.
+	binding string
+
+	// named maps the id a part was loaded under back to how a diagnostic
+	// should refer to it: the --with the operator typed, or the binding that
+	// carried it. The id and the written form differ for a path — the id is
+	// the expansion — and a diagnostic quotes what was written, so the pair is
+	// kept here rather than reconstructed by whoever needs to name one.
+	named map[string]string
 }
+
+// replay puts the composition a binding saved ahead of the one typed at the
+// terminal.
+//
+// Ahead, because the terminal has the last word. Everything else in cairn
+// resolves closest-wins with the operator's own flags last — the extends
+// chain, then each --with in order, then --skill, then --set — and a binding
+// is a saved composition rather than a fourth kind of thing. So booting a
+// saved binding and typing what it holds are the same resolution, which is
+// what makes --save-as a round trip rather than an approximation.
+//
+// It records where each entry came from because the diagnostics do. A part a
+// binding names can be absorbed by the chain, or name a profile the bundle no
+// longer holds, and telling the operator to look at a --with they never typed
+// would send them to the wrong file.
+func (c *composition) replay(t bootTarget) {
+	c.binding = t.name
+	if len(t.parts) > 0 {
+		c.with = append(append(partList{}, t.parts...), c.with...)
+		c.fromBinding.parts = len(t.parts)
+	}
+	if len(t.skills) > 0 {
+		c.skills = append(append(skillList{}, t.skills...), c.skills...)
+		c.fromBinding.skills = len(t.skills)
+	}
+}
+
+// partAt names the part at index i of with the way a diagnostic should: the
+// flag the operator typed, or the binding that carried a part they did not.
+//
+// The two spellings differ in one thing only, which is what the reader would
+// have to change to change the value. Everything downstream prints whichever
+// of them it is handed and knows about neither.
+func (c *composition) partAt(i int) string {
+	if i < c.fromBinding.parts {
+		return fmt.Sprintf("binding %q: part %s", c.binding, c.with[i])
+	}
+	return "--with " + c.with[i]
+}
+
+// sourceOf names where the part at index i came from, without the value: the
+// diagnostic it serves goes on to name the value itself, and saying it twice
+// in one sentence reads as two different values.
+func (c *composition) sourceOf(i int) string {
+	if i < c.fromBinding.parts {
+		return fmt.Sprintf("binding %q", c.binding)
+	}
+	return "--with"
+}
+
+// partAtQuoted is [composition.partAt] with the value quoted, for the
+// diagnostics where it is a path: a value whose leading or trailing space, or
+// whose emptiness after expansion, is the thing being reported reads as
+// nothing at all unquoted.
+func (c *composition) partAtQuoted(i int) string {
+	if i < c.fromBinding.parts {
+		return fmt.Sprintf("binding %q: part %q", c.binding, c.with[i])
+	}
+	return fmt.Sprintf("--with %q", c.with[i])
+}
+
+// savedParts and savedSkills are the composition as --save-as records it: what
+// a binding already carried, followed by what was typed onto it, each as it
+// was written.
+//
+// They are the same slices the resolution walks, which is the point — a
+// binding saved from a boot of another binding composes what that boot
+// composed, and there is no second idea of "the composition" for the two to
+// disagree about.
+func (c *composition) savedParts() []string  { return []string(c.with) }
+func (c *composition) savedSkills() []string { return []string(c.skills) }
 
 // bind registers the three flags on fs.
 func (c *composition) bind(fs *flag.FlagSet) {
@@ -100,11 +180,11 @@ func (c *composition) bind(fs *flag.FlagSet) {
 // silence it replaced.
 func (c *composition) reportAbsorbedParts(stderr io.Writer, resolved *profile.Resolved) {
 	for _, id := range resolved.AlreadyFolded {
-		named := id
-		if raw, ok := c.written[id]; ok {
-			named = raw
+		named := "--with " + id
+		if from, ok := c.named[id]; ok {
+			named = from
 		}
-		_, _ = fmt.Fprintf(stderr, "cairn: --with %s: already in the chain, contributed nothing\n", named)
+		_, _ = fmt.Fprintf(stderr, "cairn: %s: already in the chain, contributed nothing\n", named)
 	}
 }
 
@@ -121,8 +201,15 @@ func (c *composition) reportAbsorbedParts(stderr io.Writer, resolved *profile.Re
 // would have to change to change the value.
 func (c *composition) contributors() map[string][]string {
 	out := map[string][]string{}
-	if len(c.skills) > 0 {
-		out[profile.SpecKeySkills] = []string{"--skill"}
+	// A binding contributes skills the same way the flag does and is named
+	// the same way, because it is the same question: a reader asking who put
+	// this skill here has to be sent to the file they would edit, and for a
+	// replayed binding that file is not the profile and there is no flag.
+	if n := c.fromBinding.skills; n > 0 {
+		out[profile.SpecKeySkills] = []string{fmt.Sprintf("binding %q", c.binding)}
+	}
+	if len(c.skills) > c.fromBinding.skills {
+		out[profile.SpecKeySkills] = append(out[profile.SpecKeySkills], "--skill")
 	}
 	if len(c.sets) > 0 {
 		out[profile.SpecKeySlots] = []string{"--set"}
@@ -180,20 +267,21 @@ func (c *composition) load(ctx context.Context, cat *catalog.Catalog, home strin
 		return loader, nil, nil
 	}
 
-	c.written = make(map[string]string, len(c.with))
+	c.named = make(map[string]string, len(c.with))
 	parts := make([]string, 0, len(c.with))
-	for _, raw := range c.with {
+	for i, raw := range c.with {
+		named := c.partAt(i)
 		if !partIsPath(raw) {
 			// A name. It is a catalog id or it is nothing, and "or it is
 			// nothing" is where the operator who meant a file ends up.
 			if _, err := cat.Profile(ctx, raw); err != nil {
 				if errors.Is(err, catalog.ErrProfileNotFound) {
-					return nil, nil, fmt.Errorf("--with: %s: no profile named %q; if you meant a file, write %q",
-						cat.Root(), raw, "./"+raw)
+					return nil, nil, fmt.Errorf("%s: %s: no profile named %q; if you meant a file, write %q",
+						c.sourceOf(i), cat.Root(), raw, "./"+raw)
 				}
 				return nil, nil, err
 			}
-			c.written[raw] = raw
+			c.named[raw] = named
 			parts = append(parts, raw)
 			continue
 		}
@@ -203,16 +291,17 @@ func (c *composition) load(ctx context.Context, cat *catalog.Catalog, home strin
 		// command already threads down from the composition root, so a part
 		// may be written "$CAIRN_PROFILE_ROOT/parts/docs-only.md" and relocate
 		// with the bundle.
+		quoted := c.partAtQuoted(i)
 		expanded, err := profile.ExpandPath(raw, home, env)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--with %q: %w", raw, err)
+			return nil, nil, fmt.Errorf("%s: %w", quoted, err)
 		}
 		if strings.TrimSpace(expanded) == "" {
-			return nil, nil, fmt.Errorf("--with %q: names no file — a variable in it is not set", raw)
+			return nil, nil, fmt.Errorf("%s: names no file — a variable in it is not set", quoted)
 		}
 		p, err := catalog.ReadProfile(expanded)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--with %q: %w", raw, err)
+			return nil, nil, fmt.Errorf("%s: %w", quoted, err)
 		}
 		// The path is what the part is keyed under, and keying by the id the
 		// file declares is what would let a part read from ./engineer.md
@@ -230,7 +319,7 @@ func (c *composition) load(ctx context.Context, cat *catalog.Catalog, home strin
 		// either way.
 		p.ID = expanded
 		loader.paths[expanded] = p
-		c.written[expanded] = raw
+		c.named[expanded] = named
 		parts = append(parts, expanded)
 	}
 	return loader, parts, nil

@@ -133,15 +133,20 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 
-	_, profileID, declaredScope, err := lookup(ctx, cat, target)
+	tgt, err := lookup(ctx, cat, target)
 	if err != nil {
 		return err
 	}
+	// The binding's own composition is replayed here for the reason this
+	// command takes --with at all: show is the preview of what boot will
+	// resolve to, and a preview blind to the parts a binding names would be
+	// blind to exactly the thing that makes a binding differ from its profile.
+	compose.replay(tgt)
 	// The loader is kept, not discarded: a part read from a file is not in the
 	// catalog, and [declaringProfiles] re-reads every profile in the chain to
 	// say which of them declared each key. Handing it the catalog instead
 	// would fail on exactly the composition this command exists to preview.
-	resolved, loader, err := compose.resolve(ctx, cat, home, environment(bundle), profileID)
+	resolved, loader, err := compose.resolve(ctx, cat, home, environment(bundle), tgt.profileID)
 	if err != nil {
 		return err
 	}
@@ -161,7 +166,7 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// The binding's own name is not reported. lookup returns it and runBoot
 	// needs it to name a directory; nothing here is named after anything, and
 	// the profile line already says what the target resolved to.
-	rawScope := declaredScope
+	rawScope := tgt.scope
 	if strings.TrimSpace(*scopeFlag) != "" {
 		rawScope = *scopeFlag
 	}

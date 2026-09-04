@@ -9,6 +9,7 @@ Four commands and one workflow:
 ```
 cairn boot <binding|profile> [--scope <path|alias>]   materialize a boot dir, print its path
 cairn boot <binding|profile> --json                   ... and describe it for a launcher
+cairn boot <binding|profile> --save-as <name>         ... and save the composition as a binding
 cairn show <binding|profile>                          print what the profile resolves to
 cairn install <binding|profile> [--check]             render ~/.claude from the same source
 cairn list                                            enumerate the catalog
@@ -16,7 +17,9 @@ cairn list                                            enumerate the catalog
 
 `boot` and `show` also take the composition flags — `--with`, `--skill` and
 `--set`, all repeatable — which say what this one launch carries beyond the
-profile it names. See **Composing one launch** under §3.
+profile it names. See **Composing one launch** under §3. A composition worth
+keeping becomes a **binding**: see **Saving one: `--save-as`** in the same
+section.
 
 ---
 
@@ -53,9 +56,10 @@ seed and nothing to import: edit a file, and the next command reads it.
 ```
 
 It holds an abstract `base`, a concrete `engineer` that extends it, a
-`reviewer` the engineer dispatches and that also boots on its own, two scope
-aliases, two bindings, and the templates and skill those profiles name. Read
-it — it is the profile-authoring documentation.
+`reviewer` the engineer dispatches and that also boots on its own, a
+`docs-only` part, two scope aliases, three bindings — one of which composes a
+part, which is what `--save-as` writes — and the templates and skill those
+profiles name. Read it — it is the profile-authoring documentation.
 
 Four things it demonstrates that are easy to get wrong:
 
@@ -216,7 +220,67 @@ spec.skills   engineer, docs-only, --skill
 ```
 
 `cairn install` takes none of them. It renders the layer every session on the
-machine loads, and a composition is an instance concern by construction.
+machine loads, and a composition is an instance concern by construction — a
+binding's parts and skills are not replayed there either, for the same reason.
+
+### Saving one: `--save-as`
+
+A composition you find yourself typing twice is a **binding**. `--save-as`
+writes the one you just booted into `<bundle>/bindings/<name>.yaml`, and
+`cairn boot <name>` replays it:
+
+```console
+$ cairn boot engineer --with docs-only --skill capture-decision \
+                      --scope cairn --save-as eng-docs
+cairn: --save-as eng-docs: wrote /Users/you/.config/agents/bindings/eng-docs.yaml
+
+$ cat ~/.config/agents/bindings/eng-docs.yaml
+profile: engineer
+parts:
+  - docs-only
+skills:
+  - capture-decision
+scope: cairn
+```
+
+That is the whole format. Four keys, all but `profile` optional, in the order a
+composition resolves: the base profile, the parts merged onto its chain, the
+skills merged after those, and the scope — which is not part of the composition
+at all but a fact about the instance. Cairn writes what a person would type, so
+a saved binding and a hand-authored one are the same kind of file; add a
+comment above it and nothing will take it away.
+
+**Values are saved as they were written.** `--scope cairn` saves the alias
+`cairn`, not the directory it resolves to today, for the same reason a part
+keeps its declared spelling: a binding that recorded one machine's expansion is
+a binding that works on one machine.
+
+**A `--with` typed onto a binding lands after the binding's own parts**, which
+is closest-wins with the terminal closest — the same rule the `extends` chain
+follows. So `cairn boot eng-docs --with x --save-as eng-docs-x` grows the
+composition rather than replacing it.
+
+Two things `--save-as` does not do, and the difference between them is the
+point:
+
+- **A `--set` is dropped, and each one is named on stderr.** This run still
+  gets the value; the binding does not. A `--set` carries *content*, and
+  content in the catalog is the seam this design keeps clean. A direction worth
+  reusing is an ordinary part and arrives through `--with`.
+- **A `--with <path>` is a refusal, not a drop**, and the diagnostic names the
+  path. The two look alike and are not: a `--set` can be dropped soundly
+  because nothing is lost but reuse, while dropping a path member would
+  silently change what the binding composes. Inlining the file's content
+  instead would turn a handle into content, which is the thing the bundle's
+  shape rests on not doing. Put the part in `profiles/` and name it, or boot
+  without `--save-as`.
+
+`--skill` goes the other way and *is* saved, which is the same distinction read
+from the other side: a skill list is **ids**, the same kind of thing a binding
+already holds for its parts, so the reason to drop a `--set` does not transfer.
+
+An existing binding is never overwritten — its file may hold a comment nothing
+else carries — so saving over one is a refusal too.
 
 ### Templates and markers
 

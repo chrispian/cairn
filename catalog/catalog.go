@@ -6,10 +6,16 @@
 // so there is nothing to seed, nothing to migrate, and no second copy of the
 // operator's profiles to keep in step with the first.
 //
-// Reading is all this package does. It creates no directory and no file, and
-// it does not treat an absent bundle as a starting state to be conjured: a
-// read that finds nothing says what it was looking for and where, which is the
-// one thing a command pointed at the wrong bundle needs to hear.
+// Reading is almost all this package does. It creates no directory and no
+// file, and it does not treat an absent bundle as a starting state to be
+// conjured: a read that finds nothing says what it was looking for and where,
+// which is the one thing a command pointed at the wrong bundle needs to hear.
+//
+// The exception is [MarshalBinding], which renders a binding to bytes and
+// hands them back. It is here because the parser is here and a format with two
+// owners drifts; it is not a write, because deciding that a file may be
+// created is the composition root's call and `--save-as` is where that is
+// made.
 package catalog
 
 import (
@@ -58,6 +64,10 @@ var ErrProfileNotFound = errors.New("profile not found")
 // ErrBindingNotFound reports that no binding file exists for a name.
 var ErrBindingNotFound = errors.New("binding not found")
 
+// ErrBindingName reports a name that cannot be a binding's, because it cannot
+// be the base name of a file in the bindings directory.
+var ErrBindingName = errors.New("not a binding name")
+
 // ErrScopeNotFound reports that the scope registry names no such alias.
 var ErrScopeNotFound = errors.New("scope alias not found")
 
@@ -65,8 +75,13 @@ var ErrScopeNotFound = errors.New("scope alias not found")
 // no home directory is known.
 var ErrNoHome = errors.New("home directory unknown")
 
-// Binding is one file of the bindings directory: a name an operator boots by,
-// the profile it resolves to, and the scope that boot works in.
+// Binding is one file of the bindings directory: a saved composition. A base
+// profile, the parts merged onto it, the skills the boot directory carries,
+// and the scope that boot works in.
+//
+// Sprawl lands here rather than in profiles, which is the whole reason the
+// type has four fields and not one. A composition worth reusing is a few lines
+// of YAML; a profile is a document.
 type Binding struct {
 	// Name is the binding's identity — what `cairn boot` is given. It is the
 	// file's base name, so a binding cannot disagree with what it is called.
@@ -74,6 +89,26 @@ type Binding struct {
 
 	// ProfileID is the profile this binding boots.
 	ProfileID string
+
+	// Parts are the profiles merged after that profile's extends chain
+	// resolves, closest-wins and in this order — exactly what --with names,
+	// and held as the operator wrote them. Empty for a binding that composes
+	// nothing.
+	//
+	// A part is held as written and not as it expands, because what a binding
+	// records has to stay true when the bundle moves. `$CAIRN_PROFILE_ROOT/x.md`
+	// saved as an absolute path would be a binding that worked on one machine.
+	Parts []string
+
+	// Skills are added to the ones the resolved profile carries, by id, the
+	// way --skill adds them. Empty for a binding that adds none.
+	//
+	// Optional, and not the only way to say it: a stable role whose skills
+	// never change declares them in its profile, or in a part this binding
+	// names. The field exists so that a --skill passed at boot survives
+	// --save-as, because a flag vanishing from the thing that claims to save
+	// what you just did is the surprising outcome.
+	Skills []string
 
 	// Scope is where that boot works. It is a scope alias when one exists by
 	// that name and a directory path otherwise, so an operator who has not

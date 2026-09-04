@@ -63,6 +63,15 @@ flags for boot:
                          else ~/.local/state/cairn/boot
   --session <name>       the session segment; defaults to a UTC timestamp and a random suffix
   --json                 print one JSON object describing the boot instead of the bare path
+  --save-as <name>       write this composition to the bundle as a new binding of that
+                         name, so the same boot is reachable by name. The parts, the
+                         skills and the scope are saved as they were written; --set values
+                         are not, because a binding names what to compose and an inline
+                         value is content — each one dropped is named on stderr, and this
+                         boot still has it. A composition holding a --with <path> is
+                         refused rather than saved short: a binding must be reproducible
+                         by name, and a path is a handle to something that may not be
+                         there later. An existing binding is never overwritten
 
 flags for install:
   --check                re-render, diff against disk, report drift, write nothing
@@ -185,10 +194,15 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return err
 	}
 
-	_, profileID, _, err := lookup(ctx, cat, target)
+	// The binding's composition is deliberately not replayed, and neither is
+	// its scope. install renders the machine-wide layer every session loads,
+	// and a per-launch composition has no meaning there — which is the same
+	// reason install takes none of --with, --skill or --set.
+	tgt, err := lookup(ctx, cat, target)
 	if err != nil {
 		return err
 	}
+	profileID := tgt.profileID
 	// No abstract check. The installed layer is normally rendered from the
 	// abstract root of the cascade, and refusing one here would refuse the
 	// profile this command mostly exists to render. `cairn boot` is where a
@@ -330,27 +344,52 @@ func kindList(kinds []agentcontext.SlotSourceKind) string {
 	return strings.Join(quoted, ", ")
 }
 
-// lookup resolves a boot target to the name its boot directory is planted
-// under, the profile it boots, and the scope it declares.
+// bootTarget is what the argument to boot, show or install resolved to: the
+// name a boot directory is planted under, and everything the catalog knows
+// about what that name composes.
+//
+// A profile named directly and a binding naming it produce the same shape,
+// with the composition fields empty for the profile. That is what keeps
+// runBoot from branching on which one it was given: a binding is a saved
+// composition, so replaying one is the same code path as typing it.
+type bootTarget struct {
+	// name is what the boot directory is planted under, and what the
+	// `cairn:value binding` marker fills.
+	name string
+
+	// profileID is the profile the composition resolves from.
+	profileID string
+
+	// parts and skills are the composition the binding saved, empty for a
+	// profile named directly. They are as the binding's file spells them.
+	parts  []string
+	skills []string
+
+	// scope is the declared scope, an alias or a path, before --scope
+	// overrides it and before either is resolved.
+	scope string
+}
+
+// lookup resolves a boot target.
 //
 // A binding is tried first: it is the name an operator boots by, and a profile
 // of the same id is the fallback rather than an ambiguity, because Cairn is a
 // single-operator tool and the operator who named both meant the binding.
-func lookup(ctx context.Context, cat *catalog.Catalog, target string) (name, profileID, declaredScope string, err error) {
-	b, err := cat.Binding(target)
+func lookup(ctx context.Context, cat *catalog.Catalog, name string) (bootTarget, error) {
+	b, err := cat.Binding(name)
 	switch {
 	case err == nil:
-		return b.Name, b.ProfileID, b.Scope, nil
+		return bootTarget{name: b.Name, profileID: b.ProfileID, parts: b.Parts, skills: b.Skills, scope: b.Scope}, nil
 	case !errors.Is(err, catalog.ErrBindingNotFound):
-		return "", "", "", err
+		return bootTarget{}, err
 	}
-	if _, err := cat.Profile(ctx, target); err != nil {
+	if _, err := cat.Profile(ctx, name); err != nil {
 		if errors.Is(err, catalog.ErrProfileNotFound) {
-			return "", "", "", fmt.Errorf("%s: no binding and no profile named %q", cat.Root(), target)
+			return bootTarget{}, fmt.Errorf("%s: no binding and no profile named %q", cat.Root(), name)
 		}
-		return "", "", "", err
+		return bootTarget{}, err
 	}
-	return target, target, "", nil
+	return bootTarget{name: name, profileID: name}, nil
 }
 
 // runBoot materializes one boot directory and prints its path, or --json and
@@ -368,6 +407,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		sessFlag    = fs.String("session", "", "the session segment")
 		jsonFlag    = fs.Bool("json", false, "print one JSON object describing the boot instead of the bare path")
 		profileFlag = fs.String("profile", "", profileFlagUsage)
+		saveAsFlag  = fs.String("save-as", "", saveAsFlagUsage)
 	)
 	var compose composition
 	compose.bind(fs)
@@ -403,16 +443,24 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 
-	name, profileID, declaredScope, err := lookup(ctx, cat, target)
+	tgt, err := lookup(ctx, cat, target)
 	if err != nil {
 		return err
 	}
+	name := tgt.name
+
+	// A binding is a saved composition, so booting one replays it: its parts
+	// and skills go ahead of whatever was typed, which is what makes the file
+	// --save-as writes a record of the boot rather than a description of it.
+	// A binding that saved its parts and then booted without them would be a
+	// file that lies about what it restores.
+	compose.replay(tgt)
 
 	// The composition resolves through the same call whether or not anything
 	// was composed: --with, --skill and --set contribute nothing when they
 	// were not given, and a second code path for the plain case is a second
 	// place for the two to disagree about what a boot resolves to.
-	resolved, _, err := compose.resolve(ctx, cat, home, env, profileID)
+	resolved, _, err := compose.resolve(ctx, cat, home, env, tgt.profileID)
 	if err != nil {
 		return err
 	}
@@ -430,11 +478,23 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
 
-	rawScope := declaredScope
+	rawScope := tgt.scope
 	if strings.TrimSpace(*scopeFlag) != "" {
 		rawScope = *scopeFlag
 	}
 	scopeDir, err := resolveScope(cat, rawScope, home)
+	if err != nil {
+		return err
+	}
+
+	// Checked here and written at the end. Every refusal a --save-as can raise
+	// is knowable now, and raising it now is what keeps an operator who
+	// mistyped a binding name from also having a boot directory planted for
+	// them. The scope is saved as it was written — an alias stays an alias,
+	// and a path that expands stays the value that expands — for the same
+	// reason a part is: a binding that recorded this machine's expansion of it
+	// would be a binding that worked on this machine.
+	save, err := newBindingSave(strings.TrimSpace(*saveAsFlag), cat.Root(), tgt, &compose, rawScope)
 	if err != nil {
 		return err
 	}
@@ -571,6 +631,15 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	if _, err := bootdir.PlantFiles(ctx, dir, files); err != nil {
 		return err
+	}
+
+	// After the boot, because a binding worth reusing is one that booted, and
+	// before the path is printed, because the path is the last thing this
+	// command says.
+	if save != nil {
+		if err := save.write(stderr); err != nil {
+			return fmt.Errorf("the boot directory was written to %s but the binding was not: %w", dir, err)
+		}
 	}
 
 	// Whichever form it takes, this is the whole output of the command, so a

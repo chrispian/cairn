@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -127,11 +128,102 @@ func ReadProfile(path string) (*profile.Profile, error) {
 	return &p, nil
 }
 
-// bindingFile is one binding as its file is written: the profile it boots and
-// the scope that boot works in. The name is the file's, so it is not a field.
+// bindingFile is one binding as its file is written. The name is the file's,
+// so it is not a field.
+//
+// The field order is the file's order, and the file's order is the order a
+// composition resolves in: the base profile, the parts merged onto its chain,
+// the skills merged after those, and last the scope — which is not part of the
+// composition at all but a fact about the instance. A reader who knows how
+// `cairn boot` works can read the file top to bottom and be reading the same
+// sequence.
+//
+// The keys are named after the model and not after the flags that fill them,
+// which is a rule this file already followed: `profile` is the profile a
+// binding boots, while boot's own `--profile` names the bundle directory. So
+// the parts key is "parts" rather than "with" — `with` is a preposition
+// belonging to a command line, and every key here is a noun naming something
+// the binding holds.
 type bindingFile struct {
-	Profile string `yaml:"profile"`
-	Scope   string `yaml:"scope"`
+	Profile string   `yaml:"profile"`
+	Parts   []string `yaml:"parts,omitempty"`
+	Skills  []string `yaml:"skills,omitempty"`
+	Scope   string   `yaml:"scope,omitempty"`
+}
+
+// MarshalBinding renders b as the bytes of its file.
+//
+// It is the one thing this package does that is not reading, and it is
+// deliberately not a write: the bytes are returned and the composition root
+// puts them somewhere. What lives here is the format — which keys, in what
+// order, spelled how — because the parser above is the other half of it and
+// the two drifting is the only way a binding cairn wrote stops being a binding
+// cairn reads.
+//
+// The rendering is what a person would type. Two-space indent, block
+// sequences, no document marker, no generated header: a saved binding sits in
+// the same directory as hand-authored ones, and one that announced itself as
+// machine-written would invite being treated as machine-owned. It carries no
+// timestamp for the same reason, and because git already knows.
+//
+// b.Name is not written. The file's name is the binding's name, so writing it
+// inside would create the one disagreement the layout exists to prevent.
+func MarshalBinding(b Binding) ([]byte, error) {
+	id := strings.TrimSpace(b.ProfileID)
+	if id == "" {
+		return nil, fmt.Errorf("binding %q names no profile — a binding is a profile plus a scope", b.Name)
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(bindingFile{
+		Profile: id,
+		Parts:   trimmed(b.Parts),
+		Skills:  trimmed(b.Skills),
+		Scope:   strings.TrimSpace(b.Scope),
+	}); err != nil {
+		return nil, fmt.Errorf("render binding %q: %w", b.Name, err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("render binding %q: %w", b.Name, err)
+	}
+	return buf.Bytes(), nil
+}
+
+// BindingPath returns the file the binding called name is read from and
+// written to.
+//
+// It is where a name is checked, because the name and the file are the same
+// fact. A name holding a separator would name a file outside the bindings
+// directory, or inside a directory of it that nothing lists — either way, a
+// binding that cannot be booted by the name it was saved under.
+func BindingPath(root, name string) (string, error) {
+	n := strings.TrimSpace(name)
+	switch {
+	case n == "":
+		return "", fmt.Errorf("%w: no name was given", ErrBindingName)
+	case strings.ContainsRune(n, '/'), strings.ContainsRune(n, filepath.Separator):
+		return "", fmt.Errorf("%w: %q holds a path separator, and a binding is named by its file", ErrBindingName, n)
+	case n == "." || n == "..", strings.HasPrefix(n, "."):
+		return "", fmt.Errorf("%w: %q begins with a dot, and a binding is named by its file", ErrBindingName, n)
+	}
+	return filepath.Join(root, BindingsDir, n+bindingExt), nil
+}
+
+// trimmed returns in with every entry trimmed and every empty one dropped, or
+// nil when nothing survives — so that an empty list marshals away under
+// omitempty rather than as "parts: []".
+func trimmed(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // readBindings reads every binding file in the bundle's bindings directory.
@@ -175,7 +267,49 @@ func readBindings(root string, profiles map[string]profile.Profile) (map[string]
 			return nil, fmt.Errorf("%s: names profile %q, which %s holds no file for",
 				path, id, filepath.Join(root, ProfilesDir))
 		}
-		out[name] = Binding{Name: name, ProfileID: id, Scope: strings.TrimSpace(declared.Scope)}
+		parts, err := listOf(path, "parts", declared.Parts)
+		if err != nil {
+			return nil, err
+		}
+		skills, err := listOf(path, "skills", declared.Skills)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = Binding{
+			Name:      name,
+			ProfileID: id,
+			Parts:     parts,
+			Skills:    skills,
+			Scope:     strings.TrimSpace(declared.Scope),
+		}
+	}
+	return out, nil
+}
+
+// listOf trims a binding's parts or skills and refuses an entry that names
+// nothing.
+//
+// An empty entry is refused rather than dropped for the reason every other
+// empty value in cairn is: a list item that is there and means nothing is a
+// typo, and silently composing one fewer part than the file appears to name is
+// the kind of difference nobody goes looking for.
+//
+// What is NOT checked is whether a part names a profile the bundle holds. The
+// profile key above is checked, and the difference is that a part may be a
+// path — the same value --with takes — which cannot be resolved at Open
+// without expanding variables against an environment this package has no
+// business reading. The boot resolves it and says which value failed.
+func listOf(path, key string, in []string) ([]string, error) {
+	out := make([]string, 0, len(in))
+	for i, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil, fmt.Errorf("%s: %s[%d] names nothing", path, key, i)
+		}
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
 }
