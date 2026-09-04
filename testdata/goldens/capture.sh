@@ -17,6 +17,14 @@
 #                same two blocks on every machine
 #   $FIX/bin     the cairn built from this working tree, first on PATH, because
 #                the conductor's `fleet` slot shells out to `cairn list`
+#   $FIX/boot    the boot root the eight boots are planted under, moved into
+#                $OUT once they are rendered. It cannot be $OUT/boot: the
+#                default --out is inside this checkout, and `cairn boot`
+#                refuses a boot root inside a repository that is not the scope
+#                (bootdir.CheckRoot) — correctly, since a boot directory is the
+#                agent's working directory. Staging it here makes the capture
+#                independent of where its output lands, which verify.sh always
+#                was and capture.sh only accidentally was
 #
 # and the session segment is pinned to "golden", which removes the only
 # non-determinism inside cairn itself (bootdir.NewSession's timestamp + random
@@ -243,6 +251,13 @@ render_env=(env -i
 # --- the nine renders ------------------------------------------------------
 mkdir -p "$OUT/stdout" "$OUT/stderr"
 
+# The staged boot root — see the header. Moved to $OUT/boot below, before the
+# tokenizer runs, so what it rewrites is the tree in its final place. `mv` and
+# not `cp`, because a mktemp root on another device makes this a copy, and mv's
+# cross-device fallback duplicates the mode where cp without -p would not — the
+# same executable bit the tokenizer goes out of its way to preserve.
+BOOT=$FIX/boot
+
 # Eight concrete profiles, in sorted order.
 BOOTS=(architect conductor director engineer orchestrator planner reviewer writer)
 
@@ -259,9 +274,11 @@ for id in "${BOOTS[@]}"; do
 		--profile "$AGENT_SETUP" \
 		--scope "$FIX/scope" \
 		--session golden \
-		--boot-root "$OUT/boot" \
+		--boot-root "$BOOT" \
 		>"$OUT/stdout/$id.txt" 2>"$OUT/stderr/$id.txt" || fail "$id"
 done
+
+mv "$BOOT" "$OUT/boot"
 
 # base is abstract: true, and `cairn boot` refuses an abstract profile by
 # design. The installed layer is the only way to render it, and rendering it is
@@ -277,18 +294,24 @@ mkdir -p "$OUT/install/base"
 
 # --- tokenize --------------------------------------------------------------
 #
-# Both roots are per-run paths: $FIX is a mktemp directory and $OUT differs
-# between the capture that wrote the golden and every verification run after
-# it. Left raw, either one guarantees a false diff.
+# All three roots are per-run paths: $FIX is a mktemp directory and $OUT
+# differs between the capture that wrote the golden and every verification run
+# after it. Left raw, any one of them guarantees a false diff.
+#
+# $BOOT is inside $FIX but stands for $OUT/boot, because that is where the tree
+# it rendered now lives. It has to be substituted BEFORE $FIX — which it is,
+# being the longer needle — or the paths a boot directory records about itself
+# would come out as @FIXTURE@/boot.
 #
 # Rewritten in place through the same inode so the mode survives — a planted
 # skill's executable bit is load-bearing. The longer path is replaced first, so
 # that one being a prefix of the other cannot leave a half-substituted path.
-FIX="$FIX" OUT="$OUT" python3 - "$OUT" <<'PY'
+FIX="$FIX" OUT="$OUT" BOOT="$BOOT" python3 - "$OUT" <<'PY'
 import os, sys
 
 root = sys.argv[1]
-subs = [(os.environ["FIX"].encode(), b"@FIXTURE@"),
+subs = [(os.environ["BOOT"].encode(), b"@OUT@/boot"),
+        (os.environ["FIX"].encode(), b"@FIXTURE@"),
         (os.environ["OUT"].encode(), b"@OUT@")]
 subs.sort(key=lambda p: len(p[0]), reverse=True)
 

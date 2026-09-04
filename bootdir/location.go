@@ -33,10 +33,13 @@ const EnvBootRoot = "CAIRN_BOOT_ROOT"
 // Fixed rather than read from $XDG_STATE_HOME, which cairn could pass in as
 // easily as it passes $XDG_CONFIG_HOME to catalog.DefaultRoot. Honoring it
 // fixes nothing this default was wrong about, and a state home pointed at a
-// checkout reopens exactly the same hole — so it waits for the guard that
-// would catch that, and for the pass that gives every path cairn resolves one
-// documented precedence rather than inventing this one's alone. [EnvBootRoot]
-// is what an operator who wants it somewhere else reaches for meanwhile.
+// checkout reopens exactly the same hole. That guard exists now — [CheckRoot],
+// which refuses a boot root inside a repository that is not the scope and does
+// not care which knob pointed it there — so what this constant still waits on
+// is the pass that gives every path cairn resolves one documented precedence,
+// rather than inventing this one's alone. [EnvBootRoot] is what an operator
+// who wants it somewhere else reaches for meanwhile, and [CheckRoot] holds it
+// to the same rule the default already satisfies.
 const DefaultRootRel = ".local/state/cairn/boot"
 
 // SessionLayout is the time layout of a generated session segment. It sorts

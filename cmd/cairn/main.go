@@ -66,7 +66,11 @@ flags for boot and show:
 flags for boot:
   --scope <path>         the directory the instance works in; overrides the binding's
   --boot-root <path>     where boot directories are planted; defaults to $CAIRN_BOOT_ROOT,
-                         else ~/.local/state/cairn/boot
+                         else ~/.local/state/cairn/boot. Refused when it resolves inside a
+                         git repository that is not the scope's: a boot directory is the
+                         agent's working directory, so a boot root inside a foreign
+                         checkout aims every git command the session runs at that
+                         checkout, while the same boot.md's slots report the scope
   --session <name>       the session segment; defaults to a UTC timestamp and a random suffix
   --json                 print one JSON object describing the boot instead of the bare path
   --save-as <name>       write this composition to the bundle as a new binding of that
@@ -581,6 +585,17 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			return err
 		}
 	}
+
+	// Refused here, before a session segment is even minted, because this is a
+	// property of the configuration rather than of this boot: the same flag,
+	// the same variable and the same default answer the same way every time,
+	// so the earliest point the answer is knowable is the right place to say
+	// it. The default satisfies this on its own; the two overrides above are
+	// what it guards, and a launcher setting one is not a hypothetical.
+	if err := bootdir.CheckRoot(bootRoot, scopeDir); err != nil {
+		return err
+	}
+
 	session := *sessFlag
 	if strings.TrimSpace(session) == "" {
 		session, err = bootdir.NewSession(time.Now(), nil)

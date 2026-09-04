@@ -876,6 +876,34 @@ func TestBootRefusals(t *testing.T) {
 			t.Errorf("planting inside the scope = %v, want ErrInsideScope", err)
 		}
 	})
+
+	// The scope here is not a checkout, which is the harder half of the
+	// message to get right: the boot root is still inside a repository the
+	// session's git would find, and the scope is still not it.
+	t.Run("a boot root inside a foreign repository", func(t *testing.T) {
+		foreign := filepath.Join(home, "elsewhere")
+		mustMkdir(t, filepath.Join(foreign, ".git"))
+		var out, errOut bytes.Buffer
+		err := run(ctx, []string{
+			"boot", "engineer",
+			"--profile", bundle,
+			"--boot-root", filepath.Join(foreign, "runtime", "boot"),
+			"--session", "s1",
+		}, &out, &errOut)
+		if !errors.Is(err, bootdir.ErrForeignRepository) {
+			t.Fatalf("planting inside a foreign repository = %v, want ErrForeignRepository", err)
+		}
+		for _, want := range []string{foreign, scopeDir} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal %q does not name %q", err, want)
+			}
+		}
+		// Refused before the session segment is minted, so nothing was
+		// created — including the root itself.
+		if _, statErr := os.Stat(filepath.Join(foreign, "runtime")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("a refused boot left a directory behind: %v", statErr)
+		}
+	})
 }
 
 // TestInstall covers the second command end to end, against a fixture root.
