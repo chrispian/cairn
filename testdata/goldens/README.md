@@ -14,11 +14,11 @@ none of this reaches a build or a test binary.
 
 **They prove byte-identity on this machine, against one working tree, and they
 prove nothing anywhere else.** `capture.sh` reads `~/dev/projects/agent-setup`
-live — the checkout as it stands, not a pinned revision — `rsync`s its
-`templates/` and `skills/` into the fixture home and points cairn at it with
-`--profile`, so the profiles under review are read where they live. `verify.sh`
-re-runs `capture.sh`, so it inherits all of it. `AGENT_SETUP` moves the path;
-nothing moves the dependency.
+live — the checkout as it stands, not a pinned revision — and points cairn at
+it with `--profile`, so the profiles under review, and the templates, skills
+and prompts they name under `$CAIRN_PROFILE_ROOT`, are all read where they
+live. `verify.sh` re-runs `capture.sh`, so it inherits all of it. `AGENT_SETUP`
+moves the path; nothing moves the dependency.
 
 The consequences are worth naming, because this is the proof the whole
 migration rests on:
@@ -112,10 +112,10 @@ Everything the render can reach is staged into one throwaway fixture root:
 | Pinned | Why |
 | --- | --- |
 | `--session golden` | `bootdir.NewSession` is the only nondeterminism inside cairn, and it is used only when `--session` is empty: a UTC timestamp plus a random suffix. |
-| a fixture `HOME` | The profiles read `~/.config/agents/templates/…` and `~/.config/agents/skills`. Staged with the same `rsync` flags `make install-system` uses in agent-setup, so what the render reads is what the installed location holds. |
+| an **empty** fixture `HOME` | It used to hold `.config/agents/{templates,skills,prompts}`, staged with `make install-system`'s own `rsync` flags, because the profiles named that location by absolute path. They name `$CAIRN_PROFILE_ROOT` now and `install-system` is gone, so home supplies nothing — and staging a copy anyway would be worse than unused: a profile that went back to naming a path under home would find it satisfied, and the golden would certify a render no machine can reproduce. Empty, this pins that the bundle is self-contained. |
 | a fixture scope | `director`, `engineer` and `orchestrator` run `git status --short --branch` and `git log --oneline -12` against the scope. The fixture is a git repo built from literals: pinned author and committer identity and dates so the abbreviated hash is stable, `core.abbrev` set rather than left to git's object-count heuristic, and `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` nulled on every invocation so the operator's own gitconfig cannot leak in. No remote, so `git status` prints just the branch line. |
 | `--profile $AGENT_SETUP` | The catalog is the store, so the profiles under review are read out of the checkout rather than seeded into a database first. |
-| `CAIRN_PROFILE_ROOT` in the environment | The `conductor` profile's `fleet` slot shells out to `cairn list`, and cairn's `--profile` flag never reaches a slot's shell. Without the export the slot lists `~/.config/agents` instead — which under the fixture `HOME` holds no profiles, so it fails rather than answering quietly. |
+| `CAIRN_PROFILE_ROOT` in the environment | The `conductor` profile's `fleet` slot shells out to `cairn list`, and cairn's `--profile` flag never reaches a slot's shell. Without the export the slot reads `~/.config/agents` instead — which under the fixture `HOME` does not exist, so it fails rather than answering quietly. |
 | `$FIX/bin` first on `PATH` | The same slot runs `cairn`, by name. Without this it would run whatever cairn is installed on the machine, which is the one thing the harness exists not to test. Losing it fails loudly only for as long as the installed cairn predates `cairn list`; once this one is installed the same loss would render plausible output from the wrong binary. |
 | `TZ=UTC`, `LC_ALL=C`, `XDG_CONFIG_HOME` and `CAIRN_BOOT_ROOT` unset | The environment is built from nothing rather than inherited (`env -i` plus `PATH`), so the operator's shell is not an input. |
 
@@ -147,8 +147,9 @@ the harness must exercise the source in front of it and not whatever stale
 `cairn` is on `$PATH` — and the copy is what lets the `fleet` slot's own
 `cairn list` be that same binary.
 
-`AGENT_SETUP` overrides where the profiles, templates and skills come from; it
-defaults to `~/dev/projects/agent-setup`.
+`AGENT_SETUP` overrides where the bundle comes from — the profiles and the
+templates, skills and prompts they name; it defaults to
+`~/dev/projects/agent-setup`.
 
 Re-capturing rewrites `trees/`, and `agent-setup.commit` beside it. Read the
 diff before committing it — a golden that changed without an intended reason is

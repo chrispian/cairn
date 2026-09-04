@@ -10,9 +10,9 @@
 # Everything the render can reach is staged into one throwaway fixture root and
 # every non-deterministic input is pinned:
 #
-#   $FIX/home    a fixture HOME holding templates/, skills/ and prompts/, staged
-#                the same way `make install-system` stages the real
-#                ~/.config/agents
+#   $FIX/home    an EMPTY fixture HOME. The bundle names $CAIRN_PROFILE_ROOT
+#                for its templates, skills and prompts, so nothing is read out
+#                of home — and an empty one is what proves it.
 #   $FIX/scope   a git repo built from literals, so the git slots print the
 #                same two blocks on every machine
 #   $FIX/bin     the cairn built from this working tree, first on PATH, because
@@ -77,7 +77,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-for tool in rsync git python3; do
+for tool in git python3; do
 	command -v "$tool" >/dev/null 2>&1 || { echo "capture.sh: $tool is not on PATH" >&2; exit 1; }
 done
 [ -d "$AGENT_SETUP/profiles" ] || {
@@ -87,8 +87,8 @@ done
 # prompts/ is checked where templates/ and skills/ are not, because it is the
 # one an AGENT_SETUP checkout can legitimately predate: the profiles began
 # declaring spec.prompts after the directory existed here. Without this the
-# staging rsync below dies on an exit code rather than saying which directory
-# is missing and why.
+# render fails deep in prompt resolution rather than saying which directory is
+# missing and why.
 [ -d "$AGENT_SETUP/prompts" ] || {
 	echo "capture.sh: no prompts/ under $AGENT_SETUP — the profiles declare" >&2
 	echo "  spec.prompts, so this checkout predates them. Update it." >&2
@@ -147,15 +147,19 @@ FIX=$(cd "$(mktemp -d)" && pwd -P)
 cleanup() { rm -rf "$FIX"; }
 trap cleanup EXIT
 
-# 1. the fixture home. Same flags `make install-system` uses in agent-setup, so
-#    what the render reads is what the real installed location holds.
-mkdir -p "$FIX/home/.config/agents"
-rsync -a --delete --delete-excluded --exclude='.DS_Store' \
-	"$AGENT_SETUP/templates/" "$FIX/home/.config/agents/templates/"
-rsync -a --delete --delete-excluded --exclude='.DS_Store' \
-	"$AGENT_SETUP/skills/" "$FIX/home/.config/agents/skills/"
-rsync -a --delete --delete-excluded --exclude='.DS_Store' \
-	"$AGENT_SETUP/prompts/" "$FIX/home/.config/agents/prompts/"
+# 1. the fixture home, and it is EMPTY on purpose.
+#
+#    It used to hold .config/agents/{templates,skills,prompts}, rsynced from
+#    $AGENT_SETUP with `make install-system`'s own flags, because the profiles
+#    named ~/.config/agents by absolute path. They name $CAIRN_PROFILE_ROOT
+#    now, install-system is gone, and staging a copy here would be worse than
+#    unused: a profile that went back to naming a path under home would find it
+#    satisfied, and the golden would certify a render no machine can reproduce.
+#    Empty, the harness proves what the change claims — the bundle is
+#    self-contained, and home supplies nothing.
+#
+#    The directory itself still has to exist, because HOME below points at it.
+mkdir -p "$FIX/home"
 
 # 2. the fixture scope: a git repo whose every input is a literal.
 #
