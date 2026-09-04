@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/chrispian/cairn/profile"
@@ -219,6 +220,68 @@ func BindingPath(root, name string) (string, error) {
 	return filepath.Join(root, BindingsDir, n+bindingExt), nil
 }
 
+// bindingKeys is every key a binding file may hold, in the order they are
+// written. It exists so that [parseBinding] can name the whole set when it
+// refuses one that is not in it — an operator who mistyped a key needs to see
+// the spelling that would have worked, not only that theirs was not it.
+var bindingKeys = []string{"profile", "parts", "skills", "scope"}
+
+// parseBinding reads one binding file, refusing a key the format does not
+// have.
+//
+// The refusal is the whole reason this is not two lines of yaml.Unmarshal. A
+// binding is small, hand-edited, and edited by more than one writer, and an
+// unknown key is silently discarded by every YAML decoder in its default mode
+// — so `part:` for `parts:`, or `skill:` for `skills:` which differs from the
+// flag that fills it by one character, produces a binding that composes
+// nothing, boots cleanly, and says nothing at all. That is the exact failure
+// this format's own rules are written against: a silent drop is worse than a
+// refusal.
+//
+// The keys are checked here rather than through yaml's KnownFields because the
+// diagnostic is the point. KnownFields reports "field part not found in type
+// catalog.bindingFile", which names a Go type the operator cannot see and does
+// not say what they could have written instead.
+func parseBinding(path string, text []byte) (bindingFile, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(text, &doc); err != nil {
+		return bindingFile{}, fmt.Errorf("%s: %w", path, err)
+	}
+	// An empty file parses to nothing at all. It is not refused here — it is a
+	// binding that names no profile, and that refusal below says so in the
+	// vocabulary of the format rather than in the vocabulary of the parser.
+	if doc.Kind == 0 || len(doc.Content) == 0 {
+		return bindingFile{}, nil
+	}
+	body := doc.Content[0]
+	if body.Kind != yaml.MappingNode {
+		return bindingFile{}, fmt.Errorf("%s: is not a mapping — a binding is %s written one per line",
+			path, strings.Join(quoteAll(bindingKeys), ", "))
+	}
+	// Content alternates key, value.
+	for i := 0; i+1 < len(body.Content); i += 2 {
+		key := body.Content[i].Value
+		if !slices.Contains(bindingKeys, key) {
+			return bindingFile{}, fmt.Errorf("%s:%d: no binding key named %q — a binding holds %s",
+				path, body.Content[i].Line, key, strings.Join(quoteAll(bindingKeys), ", "))
+		}
+	}
+	var declared bindingFile
+	if err := body.Decode(&declared); err != nil {
+		return bindingFile{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return declared, nil
+}
+
+// quoteAll quotes each of ss, for a diagnostic listing a closed set.
+func quoteAll(ss []string) []string {
+	out := make([]string, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, strconv.Quote(s))
+	}
+	return out
+}
+
 // readBindings reads every binding file in the bundle's bindings directory.
 // An absent directory is not an error: a bundle with profiles and no bindings
 // boots by profile id.
@@ -247,9 +310,9 @@ func readBindings(root string, profiles map[string]profile.Profile) (map[string]
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
-		var declared bindingFile
-		if err := yaml.Unmarshal(text, &declared); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
+		declared, err := parseBinding(path, text)
+		if err != nil {
+			return nil, err
 		}
 		name := strings.TrimSuffix(entry.Name(), bindingExt)
 		id := strings.TrimSpace(declared.Profile)
@@ -281,8 +344,8 @@ func readBindings(root string, profiles map[string]profile.Profile) (map[string]
 }
 
 // listOf trims a binding's parts or skills and refuses an entry that names
-// nothing. It returns nil for a list that had no entries at all, so an empty
-// one marshals away under omitempty rather than as "parts: []".
+// nothing. A list with no entries comes back nil, which under omitempty is the
+// same as the empty slice it came from — the key is absent either way.
 //
 // An empty entry is refused rather than dropped for the reason every other
 // empty value in cairn is: a list item that is there and means nothing is a

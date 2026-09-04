@@ -54,10 +54,19 @@ func TestSaveAsRoundTripsAComposition(t *testing.T) {
 	scopeDir := filepath.Join(home, "scope")
 	mustMkdir(t, scopeDir)
 
+	// docs-only is the bundle's own part and contributes nothing a boot
+	// directory can show — an empty slot that renders nothing without a --set,
+	// and prose no template engineer names. So a tree comparison built on it
+	// alone would pass whether or not parts were composed, on either side.
+	// This part exists to make the parts half observable in a tree, which is
+	// the only thing the comparison below can see.
+	writeProbePart(t, bundle, "round-trip-part", "round-trip-skill")
+
 	typed := bootTree(t, ctx, filepath.Join(home, "typed"),
 		"engineer",
 		"--profile", bundle,
 		"--with", "docs-only",
+		"--with", "round-trip-part",
 		"--skill", "qhealth,adr",
 		"--scope", scopeDir,
 		"--save-as", "engineer",
@@ -72,22 +81,52 @@ func TestSaveAsRoundTripsAComposition(t *testing.T) {
 	}
 	diffTrees(t, typed, replayed)
 
-	// Equality is only worth something if the composition was observable in
-	// the tree to begin with. The two skills are: they are ids no profile in
-	// the chain declares, so their directories are there because the binding
-	// carried them.
-	for _, id := range []string{"qhealth", "adr"} {
+	// Equality is only worth something if both halves of the composition were
+	// observable to begin with, and each of these ids is planted by exactly
+	// one of them: two by --skill, and the third only because the part the
+	// binding names declares it.
+	for _, id := range []string{"qhealth", "adr", "round-trip-skill"} {
 		if _, ok := replayed[".claude/skills/"+id+"/SKILL.md"]; !ok {
 			t.Errorf("the replayed boot did not plant the skill %q; it planted %v",
 				id, slices.Sorted(maps.Keys(replayed)))
 		}
 	}
-	// The part is not observable in this tree — docs-only contributes a slot
-	// that renders nothing without a --set, and its prose reaches no template
-	// engineer names — so the tree diff alone would pass with parts dropped on
-	// both sides. The chain says what the tree cannot.
-	if out := mustShow(t, ctx, bundle, "engineer"); !strings.Contains(out, "docs-only") {
-		t.Errorf("the saved binding does not resolve through its part:\n%s", out)
+}
+
+// TestABindingIsNotWrittenWhenTheBootFails pins the ordering, which is
+// documented and was otherwise untested.
+//
+// A --save-as is checked before the boot and written after it. The write waits
+// because a binding worth reusing is one that booted: saving first leaves a
+// file behind for a composition that could not render, under a name the
+// operator will later type expecting it to work.
+func TestABindingIsNotWrittenWhenTheBootFails(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := exampleBundle(t, home)
+	scopeDir := filepath.Join(home, "scope")
+	mustMkdir(t, scopeDir)
+	bootRoot := filepath.Join(home, "runtime")
+
+	// A skill id the bundle has no directory for. It passes every --save-as
+	// check — it is an id, not a path, and it is exactly the kind of thing a
+	// binding may hold — and then fails the render, which is the only shape
+	// that tells these two orderings apart.
+	err := run(ctx, []string{
+		"boot", "engineer",
+		"--profile", bundle,
+		"--skill", "not-in-this-bundle",
+		"--scope", scopeDir,
+		"--boot-root", bootRoot,
+		"--session", "s",
+		"--save-as", "leftover",
+	}, discard(), discard())
+	if err == nil {
+		t.Fatal("a boot naming a skill the bundle does not hold succeeded")
+	}
+	nothingUnder(t, filepath.Join(bundle, "bindings", "leftover.yaml"))
+	if got := bindingFiles(t, bundle); slices.Contains(got, "leftover.yaml") {
+		t.Errorf("a binding was left behind for a boot that failed: %v", got)
 	}
 }
 
@@ -798,6 +837,23 @@ func exampleBundle(t *testing.T, into string) string {
 			0o644)
 	}
 	return dst
+}
+
+// writeProbePart adds a part to a copied bundle that declares one skill of its
+// own, and the skill directory that skill needs.
+//
+// It is the smallest thing a part can contribute that a boot directory shows.
+// The bundle's own part contributes nothing visible, which is exactly what
+// makes a tree comparison over it unable to tell a composed boot from an
+// uncomposed one — so a test whose claim is "the same tree" needs a part it
+// can actually see.
+func writeProbePart(t *testing.T, bundle, partID, skillID string) {
+	t.Helper()
+	writeFile(t, filepath.Join(bundle, "profiles", partID+".md"),
+		fmt.Sprintf("---\nid: %s\nspec:\n  skills: [%s]\n---\n", partID, skillID), 0o644)
+	mustMkdir(t, filepath.Join(bundle, "skills", skillID))
+	writeFile(t, filepath.Join(bundle, "skills", skillID, "SKILL.md"),
+		fmt.Sprintf("---\nname: %s\ndescription: Planted only by a part.\n---\n", skillID), 0o644)
 }
 
 // bootTree runs one boot and returns the tree it planted.

@@ -17,11 +17,13 @@ import (
 // claims to save what you just did, and quietly saves less than that, is worse
 // than one that never offered.
 const saveAsFlagUsage = "write this composition to the bundle as a new binding of that name, so " +
-	"the same boot is reachable by name. The parts, the skills and the scope are saved as " +
-	"they were written; --set values are not, because a binding names what to compose and " +
-	"an inline value is content — each one dropped is named on stderr, and this boot still " +
-	"has it. A composition holding a path member is refused rather than saved short, whether " +
-	"the path was typed as --with or came from the binding being composed onto"
+	"the same boot is reachable by name. The parts, the skills and the scope are saved as they " +
+	"were written — except a relative --scope, which is saved as the directory it resolved to, " +
+	"since a binding records no working directory to read one against. --set values are not " +
+	"saved, because a binding names what to compose and an inline value is content: each one " +
+	"dropped is named on stderr, and this boot still has it. A composition holding a path " +
+	"member is refused rather than saved short, whether the path was typed as --with or came " +
+	"from the binding being composed onto"
 
 // bindingSave is a --save-as: a binding checked before the boot runs and
 // written after it succeeds.

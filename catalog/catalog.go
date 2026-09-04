@@ -79,9 +79,10 @@ var ErrNoHome = errors.New("home directory unknown")
 // profile, the parts merged onto it, the skills the boot directory carries,
 // and the scope that boot works in.
 //
-// Sprawl lands here rather than in profiles, which is the whole reason the
-// type has four fields and not one. A composition worth reusing is a few lines
-// of YAML; a profile is a document.
+// Sprawl lands here rather than in profiles, which is the whole reason a
+// binding says four things and not one. A composition worth reusing is a few
+// lines of YAML; a profile is a document. Name is the fifth field and is not
+// one of the four: it is the file's, not something the file declares.
 type Binding struct {
 	// Name is the binding's identity — what `cairn boot` is given. It is the
 	// file's base name, so a binding cannot disagree with what it is called.

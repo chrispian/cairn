@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -217,6 +218,61 @@ func TestABindingListEntryThatNamesNothingIsRefused(t *testing.T) {
 				t.Errorf("the refusal does not name the entry: %v", err)
 			}
 		})
+	}
+}
+
+// TestABindingKeyTheFormatDoesNotHaveIsRefused is the format's own rule turned
+// on the format.
+//
+// Every YAML decoder discards an unknown key by default, so `part:` for
+// `parts:` — or `skill:` for `skills:`, which differs from the flag that fills
+// it by one character — would produce a binding that composes nothing, boots
+// cleanly and says nothing at all. That is the silent drop this whole design
+// refuses everywhere else, in the one file handed to other tools as a
+// contract.
+func TestABindingKeyTheFormatDoesNotHaveIsRefused(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"a singular parts key", "profile: writer\npart:\n  - docs-only\n", `no binding key named "part"`},
+		{"a key named after the flag", "profile: writer\nskill:\n  - q\n", `no binding key named "skill"`},
+		{"a key from another format", "profile: writer\nwith: [docs-only]\n", `no binding key named "with"`},
+		{"a document that is not a mapping", "- writer\n", "is not a mapping"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeProfileFile(t, root, "writer", "---\nid: writer\n---\n")
+			writeProfileFile(t, root, "docs-only", "---\nid: docs-only\n---\n")
+			writeFile(t, filepath.Join(root, BindingsDir, "w.yaml"), tc.body)
+			_, err := Open(root)
+			if err == nil {
+				t.Fatal("a binding holding a key the format does not have was read")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal is %v, want it to carry %q", err, tc.want)
+			}
+			// And it says what could have been written instead, which is the
+			// whole reason this is not yaml's own KnownFields error.
+			for _, key := range bindingKeys {
+				if !strings.Contains(err.Error(), strconv.Quote(key)) {
+					t.Errorf("the refusal does not name the key %q an operator could have written: %v", key, err)
+				}
+			}
+		})
+	}
+}
+
+// TestAnEmptyBindingFileIsRefusedInTheFormatsOwnWords. An empty file is a
+// binding that names no profile, and saying so beats a parser-level complaint
+// about a document with no content.
+func TestAnEmptyBindingFileIsRefusedInTheFormatsOwnWords(t *testing.T) {
+	root := t.TempDir()
+	writeProfileFile(t, root, "writer", "---\nid: writer\n---\n")
+	writeFile(t, filepath.Join(root, BindingsDir, "w.yaml"), "")
+	_, err := Open(root)
+	if err == nil {
+		t.Fatal("an empty binding file was read")
+	}
+	if !strings.Contains(err.Error(), "names no profile") {
+		t.Errorf("the refusal is %v, want it in the vocabulary of the format", err)
 	}
 }
 

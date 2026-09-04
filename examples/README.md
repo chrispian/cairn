@@ -251,6 +251,12 @@ at all but a fact about the instance. Cairn writes what a person would type, so
 a saved binding and a hand-authored one are the same kind of file; add a
 comment above it and nothing will take it away.
 
+**Those four are the whole set, and a key that is not one of them is refused**
+naming the line and what could have been written instead. YAML would otherwise
+discard it in silence, and `part:` for `parts:` — or `skill:` for `skills:`,
+one character from the flag that fills it — would give you a binding that
+composes nothing, boots cleanly and never mentions it.
+
 **Values are saved as they were written.** `--scope cairn` saves the alias
 `cairn`, not the directory it resolves to today, for the same reason a part
 keeps its declared spelling: a binding that recorded one machine's expansion is
