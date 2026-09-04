@@ -5,6 +5,13 @@
 # small, which is why this file looks like every other one and why
 # `cairn show docs-only` and `cairn boot docs-only` both work on it alone.
 #
+# It sits in profiles/parts/ and that is where the convention ends: the
+# directory is where the file lives, not part of what the profile is called.
+# The id below is the whole name, so this is `--with docs-only` and never
+# `--with parts/docs-only`, it shares one global namespace with engineer.md one
+# directory up, and two files claiming one id are refused when the bundle is
+# read rather than one of them quietly winning.
+#
 # It extends base for the same reason engineer does — a part needs a provider
 # and a template to be bootable on its own — and that shared ancestor is
 # exactly the case composition has to get right: folding base a second time

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
@@ -328,7 +329,7 @@ func (c *composition) load(ctx context.Context, cat *catalog.Catalog, home strin
 		}
 		p, err := catalog.ReadProfile(expanded)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", quoted, err)
+			return nil, nil, fmt.Errorf("%s: %w", quoted, hintBareID(ctx, cat, expanded, err))
 		}
 		// The path is what the part is keyed under, and keying by the id the
 		// file declares is what would let a part read from ./engineer.md
@@ -350,6 +351,41 @@ func (c *composition) load(ctx context.Context, cat *catalog.Catalog, home strin
 		parts = append(parts, expanded)
 	}
 	return loader, parts, nil
+}
+
+// hintBareID adds the one hint that turns a part which could not be read into
+// a fix, and returns err untouched when it has none to offer.
+//
+// The mistake it answers is the one catalog.PartsDir creates. A part whose file
+// sits in profiles/parts/ is still named by its bare id — the directory is
+// where the file lives, not part of what the profile is called — so
+// `--with parts/docs-only` is the natural thing to type, is wrong, and without
+// this earns "read the profile parts/docs-only: no such file or directory":
+// true, and no help at all to someone who is looking at the file.
+//
+// It is the mirror of the diagnostic on the other branch of this function,
+// where a bare "x.md" resolves as a name and the refusal says how to spell a
+// file. Both exist because the id-or-path question is decided by spelling
+// alone — see [partIsPath], which explains why it may not be decided by
+// touching the filesystem — so each spelling has exactly one plausible mistake
+// and cairn owes an answer to both.
+//
+// The hint is offered only when the stem names a profile the bundle actually
+// holds, and only for a file that is not there. Guessing at a name nobody has
+// declared would send the operator looking for the wrong problem, and a file
+// that exists but will not parse has a diagnostic of its own that this must
+// not bury.
+func hintBareID(ctx context.Context, cat *catalog.Catalog, path string, err error) error {
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	base := filepath.Base(path)
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	if _, missing := cat.Profile(ctx, stem); missing != nil {
+		return err
+	}
+	return fmt.Errorf("%w; %s holds a profile named %q, and a profile is named by its id "+
+		"wherever its file sits — write %q", err, cat.Root(), stem, stem)
 }
 
 // nameOnce records how to refer to a part, keeping the first spelling.

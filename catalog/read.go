@@ -50,7 +50,19 @@ func checkDir(path string) (string, error) {
 	return dir, nil
 }
 
-// readProfiles reads every profile file in the bundle's profiles directory.
+// readProfiles reads every profile file the bundle holds: the profiles
+// directory, and the immediate contents of [PartsDir] inside it.
+//
+// The two locations fill ONE map, and that is the whole of the feature. A part
+// is not a kind, so there is no second map, no second parser and no second
+// namespace for a lookup to consult — everything downstream of here sees the
+// flat id map it has always seen, and neither the resolver, the composer, the
+// listing nor `--save-as` learns that a subdirectory exists.
+//
+// Order is root first and parts second, which decides nothing. It is not a
+// precedence: a duplicate id is refused rather than resolved, so no traversal
+// order can pick a winner and reordering these two calls would change no
+// outcome but the order of the two paths in the diagnostic.
 func readProfiles(root string) (map[string]profile.Profile, error) {
 	dir := filepath.Join(root, ProfilesDir)
 	entries, err := os.ReadDir(dir)
@@ -62,6 +74,53 @@ func readProfiles(root string) (map[string]profile.Profile, error) {
 	}
 
 	out := make(map[string]profile.Profile, len(entries))
+	// The file each id was read from, kept only so that a duplicate can name
+	// both documents. It is discarded with this function: an id maps to one
+	// profile or the bundle did not open, so nothing downstream has a question
+	// this could answer.
+	at := make(map[string]string, len(entries))
+	if err := readProfileDir(dir, entries, out, at); err != nil {
+		return nil, err
+	}
+
+	// parts is read through the entry the root listing already returned, not
+	// by joining the name and reading it. The difference is symlinks: os.ReadDir
+	// reports the directory entry's own type, so a `parts` that is a symlink to
+	// a directory has IsDir false here and is passed over, where reading the
+	// joined path would have followed it. A bundle is a directory of files that
+	// git reviews, and a link out of the tree is content nobody reviewing the
+	// bundle can see.
+	//
+	// Passed over silently, as every other subdirectory is. See [PartsDir].
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() != PartsDir {
+			continue
+		}
+		sub := filepath.Join(dir, PartsDir)
+		subEntries, err := os.ReadDir(sub)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", sub, err)
+		}
+		if err := readProfileDir(sub, subEntries, out, at); err != nil {
+			return nil, err
+		}
+	}
+
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: neither %s nor %s holds a %s file",
+			ErrNoProfilesDir, dir, filepath.Join(dir, PartsDir), profileExt)
+	}
+	return out, nil
+}
+
+// readProfileDir reads the profile files of one directory into out, recording
+// where each came from in at.
+//
+// It descends into nothing. The root listing's own subdirectories are skipped
+// here and [readProfiles] reaches the one it reads deliberately, so this is
+// the same loop over both locations and neither of them can grow a third by
+// accident.
+func readProfileDir(dir string, entries []os.DirEntry, out map[string]profile.Profile, at map[string]string) error {
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != profileExt {
 			continue
@@ -69,18 +128,21 @@ func readProfiles(root string) (map[string]profile.Profile, error) {
 		path := filepath.Join(dir, entry.Name())
 		text, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", path, err)
+			return fmt.Errorf("read %s: %w", path, err)
 		}
 		p, err := parseProfile(string(text), entry.Name())
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
+			return fmt.Errorf("%s: %w", path, err)
 		}
+		if first, ok := at[p.ID]; ok {
+			return fmt.Errorf("%w: %q is declared by %s and by %s — rename one, "+
+				"since a profile is named by its id wherever the file sits",
+				ErrDuplicateProfileID, p.ID, first, path)
+		}
+		at[p.ID] = path
 		out[p.ID] = p
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("%w: %s holds no %s file", ErrNoProfilesDir, dir, profileExt)
-	}
-	return out, nil
+	return nil
 }
 
 // ReadProfile reads one profile out of a file named directly, instead of out

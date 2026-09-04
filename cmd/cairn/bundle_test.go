@@ -45,6 +45,27 @@ type bundleProfile struct {
 // fixture.
 func writeProfile(t *testing.T, bundle string, p bundleProfile) {
 	t.Helper()
+	writeProfileAt(t, filepath.Join(bundle, catalog.ProfilesDir), p)
+}
+
+// writeNestedProfile writes p into the bundle's profiles/parts directory,
+// which the catalog reads into the same flat namespace as the files above it.
+// It differs from [writeProfile] in one argument and nothing else, which is
+// the point: a nested profile is an ordinary profile, and a fixture that had
+// to say otherwise would be testing a distinction cairn does not make.
+//
+// It is not [writePart], which writes a file OUTSIDE the bundle for the path
+// form of --with. The two are the two halves of that flag: a catalog id that
+// happens to live in a subdirectory, and a file that has no catalog entry at
+// all.
+func writeNestedProfile(t *testing.T, bundle string, p bundleProfile) {
+	t.Helper()
+	writeProfileAt(t, filepath.Join(bundle, catalog.ProfilesDir, catalog.PartsDir), p)
+}
+
+// writeProfileAt writes p into dir, at the file name its id obliges.
+func writeProfileAt(t *testing.T, dir string, p bundleProfile) {
+	t.Helper()
 	var b strings.Builder
 	b.WriteString("---\n")
 	writeFrontmatter(&b, "id", p.ID)
@@ -71,7 +92,6 @@ func writeProfile(t *testing.T, bundle string, p bundleProfile) {
 		b.WriteString("\n" + p.Body + "\n")
 	}
 
-	dir := filepath.Join(bundle, catalog.ProfilesDir)
 	mustMkdir(t, dir)
 	writeFile(t, filepath.Join(dir, p.ID+".md"), b.String(), 0o644)
 }

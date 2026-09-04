@@ -761,3 +761,190 @@ func TestReadProfileReadsAFileOutsideTheBundle(t *testing.T) {
 		t.Error("the catalog accepted a profile whose id and file name disagree")
 	}
 }
+
+// TestPartsIsReadIntoOneNamespace covers the one subdirectory of the profiles
+// directory that is also read.
+//
+// What is asserted throughout is that nothing downstream can tell. A file
+// under profiles/parts/ is an ordinary profile with an ordinary id, in the
+// same flat map as the files beside it — so the interesting assertions are all
+// about sameness, and the only new behaviour is the collision that flat
+// directory made impossible.
+func TestPartsIsReadIntoOneNamespace(t *testing.T) {
+	const engineer = "---\nid: engineer\nname: Engineer\nprovider: claude\n---\n"
+	const docsOnly = "---\nid: docs-only\nname: Docs only\nprovider: claude\n---\n"
+
+	t.Run("a nested profile is catalogued under its bare id", func(t *testing.T) {
+		root := t.TempDir()
+		writeProfileFile(t, root, "engineer", engineer)
+		writePartFile(t, root, "docs-only", docsOnly)
+
+		cat, err := Open(root)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		// One namespace and one order. The listing is sorted by id, so a
+		// nested profile sorts among the root ones rather than after them —
+		// there is nowhere in the output where the two locations are visible.
+		if got, want := ids(cat.Profiles()), []string{"docs-only", "engineer"}; !slices.Equal(got, want) {
+			t.Errorf("the catalog lists %v, want %v", got, want)
+		}
+		// Looked up by the bare id, and by nothing else: an id holds no
+		// separator, so the directory cannot be part of the name.
+		if _, err := cat.Profile(t.Context(), "docs-only"); err != nil {
+			t.Errorf("a nested profile is not reachable by its id: %v", err)
+		}
+		if _, err := cat.Profile(t.Context(), PartsDir+"/docs-only"); !errors.Is(err, ErrProfileNotFound) {
+			t.Errorf("a nested profile answered to a path-ish id: %v", err)
+		}
+	})
+
+	t.Run("a binding may name a nested profile", func(t *testing.T) {
+		// The referential check at Open reads the same map, so a binding
+		// naming a part needs nothing said about it anywhere. This is here
+		// because that check is the one place a second namespace would have
+		// had to be taught, and would not have been.
+		root := t.TempDir()
+		writePartFile(t, root, "docs-only", docsOnly)
+		writeFile(t, filepath.Join(root, BindingsDir, "docs.yaml"), "profile: docs-only\n")
+
+		cat, err := Open(root)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		b, err := cat.Binding("docs")
+		if err != nil {
+			t.Fatalf("load the binding: %v", err)
+		}
+		if b.ProfileID != "docs-only" {
+			t.Errorf("the binding boots %q, want docs-only", b.ProfileID)
+		}
+	})
+
+	t.Run("two files claiming one id are refused, naming both", func(t *testing.T) {
+		// The failure a flat directory made impossible: an id is its file's
+		// stem, and one directory holds one docs-only.md. Two can.
+		root := t.TempDir()
+		writeProfileFile(t, root, "docs-only", docsOnly)
+		writePartFile(t, root, "docs-only", docsOnly)
+
+		_, err := Open(root)
+		if !errors.Is(err, ErrDuplicateProfileID) {
+			t.Fatalf("Open with a duplicate id = %v, want ErrDuplicateProfileID", err)
+		}
+		// Both paths, because the fix is to rename one of them and the reader
+		// has to be told which two files are in question. Neither is quietly
+		// preferred: a winner would leave the loser on disk, edited and
+		// committed and never taking effect.
+		for _, want := range []string{
+			filepath.Join(root, ProfilesDir, "docs-only"+profileExt),
+			filepath.Join(root, ProfilesDir, PartsDir, "docs-only"+profileExt),
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal does not name %s: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("only parts is read, and only one level of it", func(t *testing.T) {
+		// Naming exactly one directory is what keeps the layout of the bundle
+		// from becoming part of its meaning. The cost is that the others stay
+		// ignored silently, which is asserted here rather than left to be
+		// discovered: these are not broken profiles and are not reported as
+		// any kind of profile at all.
+		root := t.TempDir()
+		writeProfileFile(t, root, "engineer", engineer)
+		writeFile(t, filepath.Join(root, ProfilesDir, "roles", "hidden"+profileExt),
+			"---\nid: hidden\nname: Hidden\nprovider: claude\n---\n")
+		writeFile(t, filepath.Join(root, ProfilesDir, PartsDir, "deeper", "buried"+profileExt),
+			"---\nid: buried\nname: Buried\nprovider: claude\n---\n")
+
+		cat, err := Open(root)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		if got, want := ids(cat.Profiles()), []string{"engineer"}; !slices.Equal(got, want) {
+			t.Errorf("the catalog lists %v, want %v — nothing but parts is read", got, want)
+		}
+	})
+
+	t.Run("a parts symlink is not followed", func(t *testing.T) {
+		// A bundle is a directory of files git reviews, and a link out of the
+		// tree is content nobody reviewing the bundle can see. The entry's own
+		// type is what decides it, which is why readProfiles reads parts
+		// through the listing rather than by joining the name.
+		root := t.TempDir()
+		writeProfileFile(t, root, "engineer", engineer)
+		outside := t.TempDir()
+		writeFile(t, filepath.Join(outside, "docs-only"+profileExt), docsOnly)
+		if err := os.Symlink(outside, filepath.Join(root, ProfilesDir, PartsDir)); err != nil {
+			t.Skipf("symlinks are not available here: %v", err)
+		}
+
+		cat, err := Open(root)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		if got, want := ids(cat.Profiles()), []string{"engineer"}; !slices.Equal(got, want) {
+			t.Errorf("the catalog lists %v, want %v — a symlinked parts was followed", got, want)
+		}
+	})
+
+	t.Run("a bundle whose profiles are all nested is a bundle", func(t *testing.T) {
+		root := t.TempDir()
+		writePartFile(t, root, "docs-only", docsOnly)
+
+		cat, err := Open(root)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		if got, want := ids(cat.Profiles()), []string{"docs-only"}; !slices.Equal(got, want) {
+			t.Errorf("the catalog lists %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a bundle with a profile in neither place names both", func(t *testing.T) {
+		// The "cairn was pointed somewhere that is not a bundle" diagnostic,
+		// which now has two directories to have looked in and has to say so:
+		// an operator whose only profiles are nested must not be told cairn
+		// looked at the root and stopped.
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, ProfilesDir, "README.txt"), "not a profile\n")
+
+		_, err := Open(root)
+		if !errors.Is(err, ErrNoProfilesDir) {
+			t.Fatalf("Open = %v, want ErrNoProfilesDir", err)
+		}
+		for _, want := range []string{
+			filepath.Join(root, ProfilesDir),
+			filepath.Join(root, ProfilesDir, PartsDir),
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal does not name %s: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("a nested profile is held to the rules a root one is", func(t *testing.T) {
+		// parseProfile, unchanged and reached by the same call. The id and the
+		// file name are one fact written twice wherever the file sits, which
+		// is also what makes the duplicate above the only collision possible.
+		root := t.TempDir()
+		writePartFile(t, root, "docs-only", "---\nid: something-else\nname: X\nprovider: claude\n---\n")
+
+		_, err := Open(root)
+		if err == nil {
+			t.Fatal("a nested profile disagreeing with its file name was accepted")
+		}
+		if !strings.Contains(err.Error(), "rename one to match the other") {
+			t.Errorf("the refusal is not the catalog's own: %v", err)
+		}
+	})
+}
+
+// writePartFile writes one profile file into the bundle's profiles/parts
+// directory.
+func writePartFile(t *testing.T, root, id, text string) {
+	t.Helper()
+	writeFile(t, filepath.Join(root, ProfilesDir, PartsDir, id+profileExt), text)
+}

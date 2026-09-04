@@ -129,6 +129,8 @@ A profile bundle is a directory, and the directory is the whole store.
 ```
 <bundle>/
   profiles/    one markdown file per profile — YAML frontmatter, then prose
+    parts/     the same, for the small reusable ones — one global id namespace,
+               an organizational convention rather than a second kind
   bindings/    one YAML file per binding, named after the binding
   scopes.yaml  scope aliases, for as long as the alias registry lasts
   templates/   the documents profiles name
@@ -987,8 +989,8 @@ reasoning instead of by looking.
 
 1. **Module skeleton** — `go.mod` with the adopted modules. `cmd/cairn`
    with flag parsing that errors honestly on every unimplemented path.
-2. **Catalog** — read `<bundle>/profiles/*.md` and `<bundle>/bindings/*.yaml`
-   into memory, convert each profile's YAML manifest into the JSON `spec` the
+2. **Catalog** — read `<bundle>/profiles/*.md`, `<bundle>/profiles/parts/*.md`
+   and `<bundle>/bindings/*.yaml` into memory, convert each profile's YAML manifest into the JSON `spec` the
    rest of the tree decodes, and refuse a bundle that is not there. It was a
    sqlite store until the catalog replaced it; the shape of what is loaded did
    not change.

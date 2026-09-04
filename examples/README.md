@@ -39,6 +39,7 @@ files, which is the whole store:
 ```
 <bundle>/
   profiles/    one markdown file per profile, YAML frontmatter and prose
+    parts/     the same, for the small reusable ones — one flat namespace
   bindings/    one YAML file per binding, named after the binding
   scopes.yaml  scope aliases, if you use them
   templates/   the documents your profiles name
@@ -152,11 +153,80 @@ any other profile's.
 
 A part is named by catalog id **or by path**, because generated,
 instance-scoped composition content otherwise has nowhere to live: a file
-outside `profiles/` has no name. **A value holding a path separator, or
+outside the bundle has no name. **A value holding a path separator, or
 beginning with `.`, `~` or `$`, is a path; anything else is a catalog id.** So
 a part in the current directory is `./part.md` — a bare `part.md` is a *name*,
 and cairn says so when no profile has it. `$VAR` and `~/` expand as they do in
 every other value that names somewhere to read from.
+
+#### `profiles/parts/`
+
+A bundle accumulates small profiles that exist to be composed, and a flat
+`profiles/` puts them in the same list as the roles. So one subdirectory is
+also read:
+
+```
+profiles/
+  engineer.md          →  engineer
+  parts/docs-only.md   →  docs-only
+```
+
+**It is an organizational convention and nothing else.** Both files are
+ordinary profiles in one global id namespace — same parser, same frontmatter,
+same merge rules — and the directory is where the file sits, not part of what
+the profile is called:
+
+```console
+$ cairn show docs-only            # not "parts/docs-only"
+$ cairn boot engineer --with docs-only
+$ cairn boot docs-only            # a part is bootable on its own, as ever
+```
+
+A binding stores `parts: [docs-only]`, and `--save-as` writes that — a nested
+part is catalogued content reachable by name, so it is saved by id like any
+other and none of the path rules below apply to it.
+
+Writing `--with parts/docs-only` holds a separator, so it is read as a **path**
+and fails. Cairn checks whether the stem names a profile and says so rather
+than leaving you with "no such file":
+
+```console
+$ cairn boot engineer --with parts/docs-only
+cairn: --with "parts/docs-only": read the profile parts/docs-only: open
+parts/docs-only: no such file or directory; ~/.config/agents holds a profile
+named "docs-only", and a profile is named by its id wherever its file sits —
+write "docs-only"
+```
+
+**One directory, one level.** `profiles/parts/deeper/x.md` is not read, and
+neither is `profiles/roles/x.md` — reading every subdirectory would make the
+layout of the bundle part of its meaning, so a folder made for tidiness would
+join the catalog and a folder of notes would be read as profiles. The cost is
+that the others stay ignored *silently*, exactly as a README beside the
+profiles is: they are not broken profiles and cairn does not report them as
+any kind of profile at all.
+
+A `parts` that is a **symlink** is passed over for the same reason — a bundle
+is a directory of files git reviews, and a link out of the tree is content
+nobody reviewing the bundle can see.
+
+**Two files claiming one id is refused**, naming both, when the bundle is read:
+
+```console
+$ cairn list
+cairn: two profiles claim one id: "docs-only" is declared by
+~/.config/agents/profiles/docs-only.md and by
+~/.config/agents/profiles/parts/docs-only.md — rename one, since a profile is
+named by its id wherever the file sits
+```
+
+That was impossible while `profiles/` was flat: an id must equal its file's
+stem, and one directory holds one `docs-only.md`. Two can. It is refused rather
+than resolved by precedence, because a rule like "the root wins" is silent
+shadowing — the losing file stays on disk, gets edited and committed, and never
+takes effect. Note that this fails at **open**, so every command fails until it
+is fixed; a tool writing into the bundle should check the id before writing the
+file, not after.
 
 A part named by path is **not** held to being named after the id it declares.
 That rule is the catalog's, whose map is keyed by the declared id while the
@@ -316,8 +386,8 @@ point:
   because nothing is lost but reuse, while dropping a path member would
   silently change what the binding composes. Inlining the file's content
   instead would turn a handle into content, which is the thing the bundle's
-  shape rests on not doing. Put the part in `profiles/` and name it, or boot
-  without `--save-as`. The refusal is about what the composition holds, not
+  shape rests on not doing. Put the part in `profiles/` or `profiles/parts/`
+  and name it by id, or boot without `--save-as`. The refusal is about what the composition holds, not
   which flag it arrived on — a binding whose own `parts:` names a path is
   refused too, and the diagnostic says which file to edit.
 

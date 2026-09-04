@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chrispian/cairn/catalog"
 	"github.com/chrispian/cairn/profile"
 )
 
@@ -1047,6 +1048,150 @@ func TestAWithThatContributedNothingSaysSo(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(strings.TrimSpace(stdout.String()), "AGENTS.md")); err != nil {
 			t.Errorf("the boot directory was not written: %v", err)
+		}
+	})
+}
+
+// TestANestedProfileIsAnOrdinaryProfile covers profiles/parts/ from the
+// commands' side.
+//
+// The catalog's own tests assert that the file is read into the flat id map.
+// What is asserted here is the consequence that made it worth doing: every
+// surface a root profile has, a nested one has, reached by the same bare id —
+// so a bundle can organize its small reusable profiles into a directory
+// without any of them becoming a second kind of thing that each command would
+// have to learn.
+func TestANestedProfileIsAnOrdinaryProfile(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := filepath.Join(home, "bundle")
+	skillsDir := filepath.Join(home, "skills")
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	writeSkill(t, skillsDir)
+	seed(t, bundle, skillsDir, scopeDir)
+
+	// The part's own skill, on disk: --save-as boots before it saves, and a
+	// boot renders spec.skills into the directory rather than taking the
+	// profile's word for it.
+	mustMkdir(t, filepath.Join(skillsDir, "docs-review"))
+	writeFile(t, filepath.Join(skillsDir, "docs-review", "SKILL.md"), "# docs review\n", 0o644)
+
+	// The one difference from the fixture beside it in TestComposeWith: the
+	// file goes one directory down. Everything below names it "docs-only".
+	writeNestedProfile(t, bundle, bundleProfile{
+		ID:      "docs-only",
+		Extends: "base",
+		Name:    "Docs only",
+		Body:    "docs-only persona",
+		Spec:    map[string]string{"skills": `["docs-review"]`},
+	})
+
+	t.Run("it is shown and composed by its bare id", func(t *testing.T) {
+		// Directly: a part is bootable and inspectable on its own, which is
+		// the property that makes "there is no fragment kind" true rather
+		// than merely claimed.
+		out := mustShow(t, ctx, bundle, "docs-only")
+		if !strings.Contains(out, "chain         base -> docs-only") {
+			t.Errorf("a nested profile does not resolve its own chain:\n%s", out)
+		}
+		// And as a part, where it lands in the chain after the target's and
+		// names itself in the contributor column.
+		out = mustShow(t, ctx, bundle, "engineer", "--with", "docs-only")
+		if !strings.Contains(out, "chain         base -> engineer -> docs-only") {
+			t.Errorf("a nested profile does not compose as a part:\n%s", out)
+		}
+		if got, want := declarersOfOrFail(t, out, "skills"), "engineer, docs-only"; got != want {
+			t.Errorf("spec.skills is declared by %q, want %q", got, want)
+		}
+		if got := skillsOf(t, out); !slicesEqual(got, []string{"code-review", "docs-review"}) {
+			t.Errorf("the composed skills are %v, want the profile's and the part's", got)
+		}
+	})
+
+	t.Run("a binding names it, and boots it", func(t *testing.T) {
+		// Both positions, because they are checked in different places: the
+		// profile key is verified when the bundle is read, and a part is
+		// resolved during the composition.
+		writeBinding(t, bundle, "docs-direct", "docs-only", scopeDir)
+		out := mustShow(t, ctx, bundle, "docs-direct")
+		if !strings.Contains(out, "profile       docs-only") {
+			t.Errorf("a binding does not boot a nested profile:\n%s", out)
+		}
+
+		writeFile(t, filepath.Join(bundle, "bindings", "docs.yaml"),
+			"profile: engineer\nparts:\n  - docs-only\n", 0o644)
+		out = mustShow(t, ctx, bundle, "docs")
+		if !strings.Contains(out, "chain         base -> engineer -> docs-only") {
+			t.Errorf("a binding's part did not resolve to the nested profile:\n%s", out)
+		}
+	})
+
+	t.Run("--save-as records it by id, and the binding replays", func(t *testing.T) {
+		// The rule --save-as enforces is that a composition holding a PATH is
+		// refused, because a binding must be reproducible by name. A nested
+		// profile is the case that rule was leaving stranded: it is catalogued
+		// content that used to have no spelling but a path.
+		t.Setenv("CAIRN_BOOT_ROOT", t.TempDir())
+		var stdout, stderr bytes.Buffer
+		err := run(ctx, []string{
+			"boot", "engineer", "--profile", bundle, "--scope", scopeDir,
+			"--with", "docs-only", "--save-as", "saved",
+		}, &stdout, &stderr)
+		if err != nil {
+			t.Fatalf("boot --save-as: %v\nstderr: %s", err, stderr.String())
+		}
+		saved, readErr := os.ReadFile(filepath.Join(bundle, "bindings", "saved.yaml"))
+		if readErr != nil {
+			t.Fatalf("read the saved binding: %v", readErr)
+		}
+		got := string(saved)
+		if !strings.Contains(got, "parts:\n    - docs-only\n") &&
+			!strings.Contains(got, "parts:\n  - docs-only\n") {
+			t.Errorf("the saved binding does not name the part by id:\n%s", got)
+		}
+		// The one spelling that must NOT appear: a path to the file. That is
+		// what --save-as refuses, and a nested part reached by id is how the
+		// same content is saved instead.
+		if strings.Contains(got, catalog.PartsDir+"/") {
+			t.Errorf("the saved binding recorded a path:\n%s", got)
+		}
+		if out := mustShow(t, ctx, bundle, "saved"); !strings.Contains(out, "-> docs-only") {
+			t.Errorf("the saved binding did not replay the part:\n%s", out)
+		}
+	})
+
+	t.Run("the directory is not part of the name, and cairn says so", func(t *testing.T) {
+		// The mistake profiles/parts/ creates. "parts/docs-only" holds a
+		// separator, so the detection rule reads it as a path — correctly, and
+		// unhelpfully, because the operator is looking straight at the file.
+		var stdout, stderr bytes.Buffer
+		err := run(ctx, []string{
+			"show", "engineer", "--profile", bundle, "--with", catalog.PartsDir + "/docs-only",
+		}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("a part named by its directory was accepted")
+		}
+		for _, want := range []string{"docs-only", "named by its id"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal does not carry %q: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("the hint is offered only when there is a profile to name", func(t *testing.T) {
+		// A guess that named a profile nobody declared would send the operator
+		// looking for the wrong problem, so a path that resolves to no catalog
+		// id gets the plain refusal.
+		var stdout, stderr bytes.Buffer
+		err := run(ctx, []string{
+			"show", "engineer", "--profile", bundle, "--with", catalog.PartsDir + "/nobody",
+		}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("a part naming nothing was accepted")
+		}
+		if strings.Contains(err.Error(), "named by its id") {
+			t.Errorf("a path naming no profile was given the bare-id hint: %v", err)
 		}
 	})
 }

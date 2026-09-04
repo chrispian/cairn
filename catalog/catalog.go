@@ -37,6 +37,28 @@ const DirName = "agents"
 // profile.
 const ProfilesDir = "profiles"
 
+// PartsDir is the one subdirectory of [ProfilesDir] that is also read, so that
+// a bundle with many small reusable profiles can put them somewhere without
+// them becoming a second kind of thing.
+//
+// It is an organizational convention and nothing else. A file under it is an
+// ordinary profile: same parser, same closed frontmatter, same merge rules,
+// and the same global id namespace as the files beside it — profiles/parts/
+// docs-only.md is the profile `docs-only`, listed, shown, booted, extended and
+// composed by that bare id. It is never `parts/docs-only`, because an id holds
+// no separator; see parseProfile, where that rule is enforced and where the
+// reason it must hold is written down.
+//
+// One directory and one level, deliberately. Reading every subdirectory would
+// make the layout of the bundle part of its meaning — a file moved into a
+// folder for tidiness would join the catalog, and a folder of notes beside the
+// profiles would be read as profiles. The cost of naming exactly one directory
+// is that the others stay ignored **silently**: profiles/roles/x.md is not a
+// broken profile and is not reported as one, exactly as a README beside the
+// profiles is not. That was already true of every subdirectory and is only
+// worth writing down now that one of them has stopped being true.
+const PartsDir = "parts"
+
 // BindingsDir is the bundle subdirectory holding one YAML file per binding.
 const BindingsDir = "bindings"
 
@@ -60,6 +82,21 @@ var ErrNoProfilesDir = errors.New("profile bundle holds no profiles directory")
 
 // ErrProfileNotFound reports that no profile file exists for an id.
 var ErrProfileNotFound = errors.New("profile not found")
+
+// ErrDuplicateProfileID reports two files claiming one profile id.
+//
+// It became reachable when [PartsDir] did. While the catalog was one flat
+// directory the id namespace could not collide: an id must equal its file's
+// stem, and one directory holds one file by that name — so the filesystem
+// enforced uniqueness and nothing here had to. Two directories can each hold
+// docs-only.md, and then the bundle answers to one id with two documents.
+//
+// It is refused rather than resolved by precedence. A rule like "the root
+// wins" would be silent shadowing: the losing file stays on disk, is edited,
+// is committed, and never takes effect, and the operator's evidence that
+// something is wrong is that their change did nothing. Both paths are named
+// because the fix is to rename one and the reader has to know which two.
+var ErrDuplicateProfileID = errors.New("two profiles claim one id")
 
 // ErrBindingNotFound reports that no binding file exists for a name.
 var ErrBindingNotFound = errors.New("binding not found")
