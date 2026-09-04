@@ -13,8 +13,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/hollis-labs/agentkit/agentcontext"
@@ -36,16 +39,40 @@ const (
 	ProviderOpenCode Provider = "opencode"
 )
 
-// Valid reports whether p names a harness Cairn knows a layout for. The empty
-// provider is not valid: a profile that declares no harness is a configuration
-// error rather than a default.
-func (p Provider) Valid() bool {
-	switch p {
-	case ProviderClaude, ProviderCodex, ProviderOpenCode:
-		return true
-	}
-	return false
+// ErrSettingsProvider reports a spec.settings that is not one document per
+// provider: a member naming no harness Cairn knows, or a value that is not an
+// object at all.
+//
+// It is the diagnostic the authoring format change owes an operator. Before
+// this key was keyed by provider it held one document, and a profile still
+// carrying that shape is not wrong about anything except where it is written —
+// so the refusal names the member it found and the shape to move it to, rather
+// than reporting a schema violation and leaving the reader to find the memo.
+var ErrSettingsProvider = errors.New("settings document is not keyed by provider")
+
+// Providers returns every harness Cairn has a name for, in the order the
+// constants above declare them.
+//
+// It is the one list, and [Provider.Valid] reads it rather than restating it
+// as a switch. Naming a provider is now something an operator does — spec.
+// settings is keyed by these names, and `--provider` selects one — so a
+// diagnostic that has to say what may be written there reads the same list the
+// check reads. The caller receives a fresh slice it may modify.
+//
+// Knowing a name is not the same as having a layout for it. Two of these three
+// render nothing today: [github.com/chrispian/cairn/bootdir.LayoutFor] refuses
+// them by name, which is a separate answer to a separate question and is
+// deliberately not folded in here. A profile may declare settings for a
+// provider Cairn cannot yet materialize into, and that document is carried
+// rather than refused — it is what makes one profile serve every target.
+func Providers() []Provider {
+	return []Provider{ProviderClaude, ProviderCodex, ProviderOpenCode}
 }
+
+// Valid reports whether p names a harness Cairn knows. The empty provider is
+// not valid: a profile that declares no harness is a configuration error
+// rather than a default.
+func (p Provider) Valid() bool { return slices.Contains(Providers(), p) }
 
 // String returns p as its stored string.
 func (p Provider) String() string { return string(p) }
@@ -115,8 +142,17 @@ const (
 	// install-only key has somewhere to go without another top-level name.
 	SpecKeyInstall = "install"
 
-	// SpecKeySettings holds the provider settings document, written as the
-	// cascade composed it and laid out for reading.
+	// SpecKeySettings holds one settings document per provider, keyed by the
+	// provider's name — `settings: {claude: {...}, codex: {...}}`. The
+	// document chosen for a materialization is written as the cascade composed
+	// it and laid out for reading.
+	//
+	// Keyed by provider because a provider is a materialization target rather
+	// than a property of the content. One profile's access, slots, templates
+	// and skills serve every harness; only this key is written in a harness's
+	// own vocabulary, so only this key is asked which harness it is for. See
+	// [Spec.Settings], which selects one and refuses a document that names no
+	// provider.
 	SpecKeySettings = "settings"
 
 	// SpecKeyAccess holds what a materialized instance is granted beyond the
@@ -374,21 +410,93 @@ func (s Spec) Subagent() (json.RawMessage, bool) {
 	return raw, true
 }
 
-// Settings returns the provider settings document under [SpecKeySettings] as
-// the cascade left it, and whether the key was declared at all. Nothing here
-// reformats the bytes: a document exactly one profile in the chain declared is
-// what the operator wrote, down to its whitespace and key order, and one
-// composed from two profiles is those documents merged at every depth and
-// nothing more.
+// Settings returns the settings document [SpecKeySettings] holds for one
+// provider, as the cascade left it, and whether that provider has one at all.
 //
-// A key set to JSON null reads as undeclared, matching the other accessors and
-// the cascade, where null is how a profile clears a key an ancestor declared.
-func (s Spec) Settings() (json.RawMessage, bool) {
+// spec.settings is a document per provider — `settings: {claude: {...},
+// codex: {...}}` — and this is where one of them is chosen. A provider is a
+// materialization target rather than a property of the content, so one profile
+// serves every target and the choice belongs to whoever is materializing it,
+// not to whoever wrote the profile. The caller passes the target it is
+// rendering for: [github.com/chrispian/cairn/bootdir.RenderSettings] passes
+// its layout's provider, which is what `--provider` selects.
+//
+// Nothing here reformats the bytes. The selected document is the sub-value's
+// own bytes, lifted out by [json.RawMessage] and never re-encoded, so a
+// document exactly one profile in the chain declared is what the operator
+// wrote — whitespace, key order and number spelling included — and one
+// composed from two profiles is those documents merged at every depth and
+// nothing more. Selecting narrows what is returned and re-spells no part of
+// it.
+//
+// A provider the key does not mention, or mentions as JSON null, has no
+// document: nil and false, exactly as an undeclared key. Null clears here for
+// the reason it clears everywhere else in the cascade, and it is how a profile
+// says a target it inherits settings for gets none.
+//
+// # The old flat form is refused, by name
+//
+// A spec.settings whose members are not providers reports
+// [ErrSettingsProvider]. That is a refusal rather than a fallback, and the
+// fallback is what makes it worth one: a flat document silently accepted would
+// select nothing for every target, so a profile carrying the operator's
+// permission mode would render a boot directory with no permission mode in it
+// and say nothing. Cairn would have read a document, understood it, and
+// dropped it. The diagnostic names the member it found and the shape to move
+// it to, walking the members in sorted order so that a document with more than
+// one of them names the same member every time.
+//
+// A spec.settings that is not an object at all is refused the same way: there
+// is nothing to select out of it. What sits under a provider is not read —
+// that document belongs to the harness, and a bare list or a bare string there
+// is written out as faithfully as an object is.
+func (s Spec) Settings(p Provider) (json.RawMessage, bool, error) {
 	raw, ok := s[SpecKeySettings]
 	if !ok || isUndeclared(raw) {
-		return nil, false
+		return nil, false, nil
 	}
-	return raw, true
+	var byProvider map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &byProvider); err != nil {
+		return nil, false, fmt.Errorf(
+			"%w: spec.%s is not an object, so there is no provider's document to select out of it — write it as %s",
+			ErrSettingsProvider, SpecKeySettings, settingsShapeHint)
+	}
+	for _, name := range slices.Sorted(maps.Keys(byProvider)) {
+		if Provider(name).Valid() {
+			continue
+		}
+		return nil, false, fmt.Errorf(
+			"%w: spec.%s declares %q, which names no harness — a settings document is declared under the "+
+				"provider it is for, as %s, and one profile serves every target that way. Cairn knows %s",
+			ErrSettingsProvider, SpecKeySettings, name, settingsShapeHint, ProviderList())
+	}
+	doc, declared := byProvider[p.String()]
+	if !declared || isUndeclared(doc) {
+		return nil, false, nil
+	}
+	return doc, true, nil
+}
+
+// settingsShapeHint is the shape a diagnostic tells an operator to write, in
+// the YAML they authored the profile in rather than in the JSON cairn carries
+// it as.
+const settingsShapeHint = "`settings: {claude: {...}}`"
+
+// ProviderList names every provider Cairn knows, quoted and comma-separated,
+// for the diagnostics that have to offer them.
+//
+// It is exported because cmd/cairn refuses a `--provider` naming no harness and
+// owes the same sentence. Two formatters would be two sentences the moment a
+// fourth harness arrived, and an operator reading "cairn knows claude, codex"
+// from one command and three names from another would be right to distrust
+// both. It reads [Providers], so a name added there reaches every message that
+// offers one.
+func ProviderList() string {
+	names := make([]string, 0, len(Providers()))
+	for _, p := range Providers() {
+		names = append(names, strconv.Quote(p.String()))
+	}
+	return strings.Join(names, ", ")
 }
 
 // Files returns the path-to-content map under [SpecKeyFiles]. A manifest

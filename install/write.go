@@ -79,7 +79,7 @@ func Install(lay *Layer) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	files, err = mergeWithDisk(lay.Root, files, comparisons(lay.Profile.Provider))
+	files, err = mergeWithDisk(lay.Root, files, comparisons(lay.provider()))
 	if err != nil {
 		return nil, err
 	}

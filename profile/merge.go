@@ -54,9 +54,17 @@ var specMergers = map[string]merger{
 	SpecKeyFiles:     objectByKey{},
 	SpecKeyTrees:     objectByKey{},
 
-	// The settings document composes at every depth: a descendant setting one
+	// The settings documents compose at every depth: a descendant setting one
 	// key under "permissions" keeps the siblings it did not mention. Arrays
-	// inside it are not keyed and replace, like any other unkeyed value.
+	// inside them are not keyed and replace, like any other unkeyed value.
+	//
+	// The outermost level is the provider — see [SpecKeySettings] — and it
+	// needs no rule of its own. Provider names are keys like any other, so a
+	// profile declaring settings for claude alone leaves an ancestor's codex
+	// document standing, and one declaring both composes both. That is the
+	// same fold one level up from the one this key was already merged by, and
+	// getting it for free is the whole reason the keying went at the top
+	// rather than being spelled as a second mechanism.
 	SpecKeySettings: objectByKey{deep: true},
 
 	// The install namespace composes per member, and its skills are a keyed
@@ -117,6 +125,11 @@ func Merge(key string, composed, overlay json.RawMessage) (json.RawMessage, erro
 // rule [specMergers] composes [SpecKeySettings] by: a member the overlay
 // declares replaces the one beneath it, a member it does not mention stands,
 // and both compose at every depth.
+//
+// The document is one provider's, already selected by [Spec.Settings] — the
+// caller is rendering for one target and has nothing to say to the others. So
+// the rule applied here is the key's rule from the provider level down, which
+// is where a harness's own vocabulary starts.
 //
 // It exists because the cascade is no longer the last thing to contribute to
 // that document. bootdir.RenderSettings adds the directories an instance is

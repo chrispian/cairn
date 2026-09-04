@@ -96,6 +96,19 @@ flags for show:
                          half a consumer cannot reconstruct. Per key: that spec.slots came
                          from two profiles, not which of them supplied the slot in front of you
 
+flags for boot, install and show:
+  --provider <name>      the harness this materializes into: it selects the layout the
+                         files are written as, and the spec.settings document written
+                         into them. Defaults to the provider the profile declares, so a
+                         command that does not pass it renders what it always did. A
+                         provider is a materialization target rather than a property of
+                         the content — access, slots, templates and skills are neutral
+                         and serve every target — which is why one profile can be asked
+                         for another harness at all. claude is the only layout
+                         implemented: codex and opencode are refused by name rather than
+                         rendered as claude, which would write claude's files at claude's
+                         paths for a harness that reads neither
+
 flags for all four:
   --profile <dir>        the profile bundle — the directory the catalog is read from,
                          holding profiles/ and bindings/. Defaults to $CAIRN_PROFILE_ROOT,
@@ -174,9 +187,10 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	fs := flag.NewFlagSet("cairn install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		check       = fs.Bool("check", false, "re-render, diff against disk, report drift, write nothing")
-		rootFlag    = fs.String("root", "", "the directory the installed layer is written beneath")
-		profileFlag = fs.String("profile", "", profileFlagUsage)
+		check        = fs.Bool("check", false, "re-render, diff against disk, report drift, write nothing")
+		rootFlag     = fs.String("root", "", "the directory the installed layer is written beneath")
+		providerFlag = fs.String("provider", "", providerFlagUsage)
+		profileFlag  = fs.String("profile", "", profileFlagUsage)
 	)
 	target, rest := splitTarget(args)
 	if err := fs.Parse(rest); err != nil {
@@ -236,6 +250,18 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// profile this command mostly exists to render. `cairn boot` is where a
 	// direct boot of an abstract profile is refused — plan §7.
 	resolved, err := profile.Resolve(ctx, cat, profileID)
+	if err != nil {
+		return err
+	}
+
+	// The harness this layer is written for. --provider is not a composition
+	// flag and the paragraph above does not reach it: a composition says what
+	// one launch carries, which the installed layer has no place for, while
+	// this says which harness's layer is being written at all. The installed
+	// layer is per provider by construction — it lands in that harness's own
+	// directory under the root — so the question is exactly as meaningful here
+	// as it is for a boot.
+	provider, providerNamed, err := selectProvider(*providerFlag, resolved.Provider, resolved.ID)
 	if err != nil {
 		return err
 	}
@@ -302,14 +328,18 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	lay := &install.Layer{
 		Root:      root,
 		Profile:   resolved,
+		Provider:  provider,
 		Home:      home,
 		Env:       env,
 		Templates: templates,
 		Sections:  sections,
 		Values: instanceValues(map[string]string{
-			"binding":  target,
-			"profile":  resolved.ID,
-			"provider": resolved.Provider.String(),
+			"binding": target,
+			"profile": resolved.ID,
+			// The target rather than the declaration, for the reason the
+			// layer is rendered for the target: a value marker names a fact
+			// about this materialization, and "which harness is this" is one.
+			"provider": provider.String(),
 			"model":    resolved.Model,
 		}),
 	}
@@ -329,9 +359,9 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// orphan, nothing rendered to diff, "In sync". That is the case this line
 	// is for, and it is reported for a check as well as a write because a
 	// check is where an operator goes to ask whether the layer is right.
-	renderers, layout, err := install.PlanterFor(resolved.Provider)
+	renderers, layout, err := install.PlanterFor(provider)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", providerNamed, err)
 	}
 	if err := reportUnfilledMarkers(stderr, installedTemplates(templates, renderers, layout), sections); err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
@@ -433,12 +463,13 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs := flag.NewFlagSet("cairn boot", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		scopeFlag   = fs.String("scope", "", "the directory the instance works in, as a path or a scope alias")
-		rootFlag    = fs.String("boot-root", "", "where boot directories are planted")
-		sessFlag    = fs.String("session", "", "the session segment")
-		jsonFlag    = fs.Bool("json", false, "print one JSON object describing the boot instead of the bare path")
-		profileFlag = fs.String("profile", "", profileFlagUsage)
-		saveAsFlag  = fs.String("save-as", "", saveAsFlagUsage)
+		scopeFlag    = fs.String("scope", "", "the directory the instance works in, as a path or a scope alias")
+		rootFlag     = fs.String("boot-root", "", "where boot directories are planted")
+		sessFlag     = fs.String("session", "", "the session segment")
+		jsonFlag     = fs.Bool("json", false, "print one JSON object describing the boot instead of the bare path")
+		providerFlag = fs.String("provider", "", providerFlagUsage)
+		profileFlag  = fs.String("profile", "", profileFlagUsage)
+		saveAsFlag   = fs.String("save-as", "", saveAsFlagUsage)
 	)
 	var compose composition
 	compose.bind(fs)
@@ -504,9 +535,24 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return fmt.Errorf("profile %q is abstract: it exists to be extended, not booted", resolved.ID)
 	}
 
-	layout, err := bootdir.LayoutFor(resolved.Provider)
+	// The harness this boot directory is written for, and the one thing that
+	// decides which spec.settings document reaches it. The layout carries it
+	// down: bootdir.RenderSettings reads inst.Layout.Provider rather than the
+	// profile's own declaration, which is what makes the flag select a target
+	// rather than rewrite the profile.
+	//
+	// --provider is deliberately not one of the composition flags. Those add
+	// content — a part, a skill, a prompt, an inline slot — and are refused on
+	// install for exactly that reason. This one names where the content is
+	// being written to, which is a question every command that materializes
+	// anything has to answer.
+	provider, providerNamed, err := selectProvider(*providerFlag, resolved.Provider, resolved.ID)
 	if err != nil {
-		return fmt.Errorf("profile %q: %w", resolved.ID, err)
+		return err
+	}
+	layout, err := bootdir.LayoutFor(provider)
+	if err != nil {
+		return fmt.Errorf("%s: %w", providerNamed, err)
 	}
 
 	rawScope := tgt.scope
@@ -640,9 +686,13 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		Templates: templates,
 		Sections:  sections,
 		Values: instanceValues(map[string]string{
-			"binding":  name,
-			"profile":  resolved.ID,
-			"provider": resolved.Provider.String(),
+			"binding": name,
+			"profile": resolved.ID,
+			// The target rather than the declaration. A value marker names a
+			// fact about this materialization, and which harness it was
+			// written for is one of them — the same string bootReport carries,
+			// which it already reads off the layout.
+			"provider": provider.String(),
 			"model":    resolved.Model,
 			"scope":    scopeDir,
 			"session":  session,

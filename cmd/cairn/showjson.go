@@ -105,16 +105,23 @@ type showReport struct {
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
 
-	// Provider is the harness this profile resolves for, or null when the
-	// chain declares none.
+	// Provider is the harness a boot of this target would materialize into:
+	// what --provider named, or what the chain declares, or null when neither
+	// says anything.
+	//
+	// It is the target and not the declaration, for the reason [showReport].
+	// Scope is what a boot would work in rather than what the binding wrote
+	// down: this command is the preview of a boot, and a preview that reported
+	// the profile's own answer to a question the operator had just overridden
+	// would be answering a different question than the one they asked.
 	//
 	// Nullable where [bootReport.Provider] is a plain string, and the two are
-	// consistent rather than in conflict: a boot refuses a profile whose
-	// provider is not one cairn knows a layout for, so by the time a boot is
-	// described there is always one. This command shows what is there,
-	// including the abstract root, and profile.Provider.Valid documents the
-	// empty provider as a configuration error rather than a default — so it is
-	// a thing a reader can be shown and must be able to tell from "claude".
+	// consistent rather than in conflict: a boot refuses a target that is not
+	// one cairn knows a layout for, so by the time a boot is described there
+	// is always one. This command shows what is there, including the abstract
+	// root, and profile.Provider.Valid documents the empty provider as a
+	// configuration error rather than a default — so it is a thing a reader
+	// can be shown and must be able to tell from "claude".
 	Provider *string `json:"provider"`
 
 	// Model is the closest declared model in the chain, or null.
@@ -233,14 +240,14 @@ type specEntry struct {
 // the alternatives are both worse than saying so — the prose form can fall
 // back to printing the bytes it could not lay out, and this one cannot emit
 // something that is not JSON into a document a program will parse.
-func showJSONDocument(resolved *profile.Resolved, scopeDir, profileRoot string,
+func showJSONDocument(resolved *profile.Resolved, provider profile.Provider, scopeDir, profileRoot string,
 	declared map[string][]string) (string, error) {
 
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", bootdir.JSONIndent)
-	if err := enc.Encode(newShowReport(resolved, scopeDir, profileRoot, declared)); err != nil {
+	if err := enc.Encode(newShowReport(resolved, provider, scopeDir, profileRoot, declared)); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
@@ -251,7 +258,7 @@ func showJSONDocument(resolved *profile.Resolved, scopeDir, profileRoot string,
 // declared is the same map the prose rendering is handed — the chain re-read
 // key by key, with the flags' contributions already appended — so the two
 // forms of this command cannot disagree about who declared what.
-func newShowReport(resolved *profile.Resolved, scopeDir, profileRoot string,
+func newShowReport(resolved *profile.Resolved, provider profile.Provider, scopeDir, profileRoot string,
 	declared map[string][]string) showReport {
 
 	spec := make(map[string]specEntry, len(resolved.Spec))
@@ -263,7 +270,7 @@ func newShowReport(resolved *profile.Resolved, scopeDir, profileRoot string,
 		Chain:       resolved.Chain,
 		Name:        nullable(resolved.Name),
 		Description: nullable(resolved.Description),
-		Provider:    nullable(resolved.Provider.String()),
+		Provider:    nullable(provider.String()),
 		Model:       nullable(resolved.Model),
 		Abstract:    resolved.Abstract,
 		Scope:       nullable(scopeDir),

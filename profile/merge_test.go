@@ -37,7 +37,11 @@ const pythonSpelling = `{"b": 1, "a": {"d": 2, "c": 3}}`
 func TestResolveSettingsFromOneProfileAreByteIdentical(t *testing.T) {
 	t.Parallel()
 
-	stored := json.RawMessage(pythonSpelling)
+	// Wrapped in the provider key the manifest is now written under, and the
+	// wrapper is spelled the same way for the same reason: what comes back out
+	// of Settings has to be the inner bytes, so a selection that decoded and
+	// re-encoded is caught by "b" landing after "a".
+	stored := json.RawMessage(`{"claude": ` + pythonSpelling + `}`)
 	l := fakeLoader{
 		"root": {ID: "root", Spec: Spec{SpecKeySettings: stored}},
 		"leaf": {ID: "leaf", Extends: "root", Spec: spec(t, map[string]string{
@@ -51,12 +55,15 @@ func TestResolveSettingsFromOneProfileAreByteIdentical(t *testing.T) {
 		t.Errorf("Spec[settings] = %s, want the stored bytes %s — a key one profile declares is never re-serialized",
 			got.Spec[SpecKeySettings], stored)
 	}
-	raw, declared := got.Spec.Settings()
+	raw, declared, err := got.Spec.Settings(ProviderClaude)
+	if err != nil {
+		t.Fatalf("Settings(%q): %v", ProviderClaude, err)
+	}
 	if !declared {
 		t.Fatal("Settings() reported the key undeclared")
 	}
-	if !bytes.Equal(raw, stored) {
-		t.Errorf("Settings() = %s, want the stored bytes %s", raw, stored)
+	if !bytes.Equal(raw, []byte(pythonSpelling)) {
+		t.Errorf("Settings() = %s, want the stored bytes %s", raw, pythonSpelling)
 	}
 }
 
@@ -97,10 +104,10 @@ func TestResolveKeyedCollectionFromOneProfileIsCarriedVerbatim(t *testing.T) {
 func TestResolveSettingsRedeclaredAfterAMidChainClearAreByteIdentical(t *testing.T) {
 	t.Parallel()
 
-	stored := json.RawMessage(pythonSpelling)
+	stored := json.RawMessage(`{"claude": ` + pythonSpelling + `}`)
 	l := fakeLoader{
 		"root": {ID: "root", Spec: spec(t, map[string]string{
-			SpecKeySettings: `{"effortLevel":"xhigh"}`,
+			SpecKeySettings: `{"claude":{"effortLevel":"xhigh"}}`,
 		})},
 		"mid": {ID: "mid", Extends: "root", Spec: spec(t, map[string]string{
 			SpecKeySettings: `null`,
@@ -114,11 +121,21 @@ func TestResolveSettingsRedeclaredAfterAMidChainClearAreByteIdentical(t *testing
 		t.Errorf("Spec[settings] = %s, want the stored bytes %s — a redeclaration after a clear has nothing to fold onto and is never re-serialized",
 			got.Spec[SpecKeySettings], stored)
 	}
+	// And the selection is no re-serialization either: what reaches the
+	// harness's file is the provider's own sub-document, lifted out rather
+	// than decoded and written back.
+	raw, declared, err := got.Spec.Settings(ProviderClaude)
+	if err != nil || !declared {
+		t.Fatalf("Settings(%q) = %s, %v, %v; want the leaf's document", ProviderClaude, raw, declared, err)
+	}
+	if !bytes.Equal(raw, []byte(pythonSpelling)) {
+		t.Errorf("Settings() = %s, want the stored bytes %s", raw, pythonSpelling)
+	}
 	// The clear did clear: the root's key is gone rather than merged back in
 	// underneath the leaf's document.
 	var merged map[string]any
-	if err := json.Unmarshal(got.Spec[SpecKeySettings], &merged); err != nil {
-		t.Fatalf("the resolved settings do not decode: %v (%s)", err, got.Spec[SpecKeySettings])
+	if err := json.Unmarshal(raw, &merged); err != nil {
+		t.Fatalf("the resolved settings do not decode: %v (%s)", err, raw)
 	}
 	if _, present := merged["effortLevel"]; present {
 		t.Errorf("settings = %v, want the root's key cleared by the middle profile", merged)
@@ -623,8 +640,8 @@ func TestResolveNullAtTheCollectionClearsIt(t *testing.T) {
 	if err != nil || skills != nil {
 		t.Errorf("Skills() = %v, %v; want nil, nil", skills, err)
 	}
-	if raw, declared := got.Spec.Settings(); declared {
-		t.Errorf("Settings() = %s, declared; want the key cleared", raw)
+	if raw, declared, err := got.Spec.Settings(ProviderClaude); err != nil || declared {
+		t.Errorf("Settings() = %s, %v, %v; want the key cleared", raw, declared, err)
 	}
 	templates, err := got.Spec.Templates()
 	if err != nil || templates != nil {
@@ -1004,5 +1021,95 @@ func TestResolveMergeLeavesOneProfilesDuplicateToItsAccessor(t *testing.T) {
 	}
 	if len(parsed) != 2 {
 		t.Errorf("Slots() returned %d slots, want both members carried through: %+v", len(parsed), parsed)
+	}
+}
+
+// TestResolveSettingsComposePerProviderAndNotAcross is the property that lets
+// one profile serve every harness: a descendant refining claude's document
+// leaves codex's exactly where its ancestor put it.
+//
+// It needs no rule of its own, and that is what this pins. Provider names are
+// members of the settings key like any other, so the fold one level up from
+// the deep merge is the deep merge — a leaf that mentions one provider does
+// not mention the others, and a member nobody mentions stands.
+func TestResolveSettingsComposePerProviderAndNotAcross(t *testing.T) {
+	t.Parallel()
+
+	l := fakeLoader{
+		"root": {ID: "root", Spec: spec(t, map[string]string{SpecKeySettings: `{
+			"claude": {"effortLevel": "xhigh", "permissions": {"defaultMode": "auto", "allow": ["Bash"]}},
+			"codex":  {"approval": "never", "sandbox": "workspace"}
+		}`})},
+		"leaf": {ID: "leaf", Extends: "root", Spec: spec(t, map[string]string{SpecKeySettings: `{
+			"claude": {"permissions": {"defaultMode": "plan"}}
+		}`})},
+	}
+
+	got := resolveOK(t, l, "leaf")
+
+	claude, declared, err := got.Spec.Settings(ProviderClaude)
+	if err != nil || !declared {
+		t.Fatalf("Settings(%q) = %s, %v, %v", ProviderClaude, claude, declared, err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(claude, &document); err != nil {
+		t.Fatalf("claude's document does not decode: %v (%s)", err, claude)
+	}
+	// The leaf's one nested key moved; its sibling and the root's top-level
+	// key both stand. This is the depth rule, one level below the provider.
+	perms, _ := document["permissions"].(map[string]any)
+	if perms["defaultMode"] != "plan" {
+		t.Errorf("claude.permissions.defaultMode = %v, want the leaf's", perms["defaultMode"])
+	}
+	if _, ok := perms["allow"]; !ok {
+		t.Error("claude.permissions.allow was dropped; a sibling the leaf never mentioned must stand")
+	}
+	if document["effortLevel"] != "xhigh" {
+		t.Errorf("claude.effortLevel = %v, want the root's", document["effortLevel"])
+	}
+
+	// And the target the leaf said nothing about is the root's, untouched —
+	// which is the half a merge of top-level keys alone would have destroyed.
+	codex, declared, err := got.Spec.Settings(ProviderCodex)
+	if err != nil || !declared {
+		t.Fatalf("Settings(%q) = %s, %v, %v", ProviderCodex, codex, declared, err)
+	}
+	var other map[string]any
+	if err := json.Unmarshal(codex, &other); err != nil {
+		t.Fatalf("codex's document does not decode: %v (%s)", err, codex)
+	}
+	if other["approval"] != "never" || other["sandbox"] != "workspace" {
+		t.Errorf("codex's document is %v, want the root's untouched", other)
+	}
+}
+
+// TestResolveSettingsClearOneProviderAndKeepTheRest covers the null a profile
+// clears an inherited target with. It is the cascade's own spelling, applied
+// one level in: a role that must not carry the floor's claude settings says so
+// without saying anything about codex.
+func TestResolveSettingsClearOneProviderAndKeepTheRest(t *testing.T) {
+	t.Parallel()
+
+	l := fakeLoader{
+		"root": {ID: "root", Spec: spec(t, map[string]string{SpecKeySettings: `{
+			"claude": {"effortLevel": "xhigh"},
+			"codex":  {"approval": "never"}
+		}`})},
+		"leaf": {ID: "leaf", Extends: "root", Spec: spec(t, map[string]string{
+			SpecKeySettings: `{"claude": null}`,
+		})},
+	}
+
+	got := resolveOK(t, l, "leaf")
+
+	if raw, declared, err := got.Spec.Settings(ProviderClaude); err != nil || declared {
+		t.Errorf("Settings(%q) = %s, %v, %v; want the target cleared", ProviderClaude, raw, declared, err)
+	}
+	raw, declared, err := got.Spec.Settings(ProviderCodex)
+	if err != nil || !declared {
+		t.Fatalf("Settings(%q) = %s, %v, %v; want the root's document", ProviderCodex, raw, declared, err)
+	}
+	if !strings.Contains(string(raw), "never") {
+		t.Errorf("codex's document is %s, want the root's", raw)
 	}
 }

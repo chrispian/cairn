@@ -27,7 +27,7 @@ func contractInstance(t *testing.T) *Instance {
 		},
 		profile.SpecKeySkills:    []string{"code-review"},
 		profile.SpecKeySkillsDir: source,
-		profile.SpecKeySettings:  json.RawMessage(`{"model": "opus"}`),
+		profile.SpecKeySettings:  json.RawMessage(`{"claude": {"model": "opus"}}`),
 		profile.SpecKeyFiles: map[string]any{
 			"notes/decisions.md": "a planted note\n",
 			// A source, not a literal — declared here so the fixture carries

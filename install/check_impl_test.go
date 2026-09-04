@@ -56,7 +56,9 @@ func newCheckFixtureDeclaring(t *testing.T, settings map[string]any, skills ...s
 		t.Fatalf("NewRoot(t.TempDir()): %v", err)
 	}
 	manifest := map[string]any{
-		"settings":  settings,
+		// Under the provider the layer is rendered for. spec.settings holds a
+		// document per harness, and every fixture here renders claude's.
+		"settings":  map[string]any{profile.ProviderClaude.String(): settings},
 		"templates": map[string]any{"AGENTS.md": "declared, and resolved onto the layer"},
 	}
 	if len(skills) > 0 {
@@ -626,15 +628,15 @@ func TestCheckReportsAClaimedFileTheProfileStoppedDeclaring(t *testing.T) {
 	t.Parallel()
 	fixture := newCheckFixture(t)
 	const left = ".claude/settings.json"
-	if _, declared := fixture.lay.Profile.Spec.Settings(); !declared {
-		t.Fatal("the fixture should declare settings, so that dropping the key leaves one behind")
+	if _, declared, err := fixture.lay.Profile.Spec.Settings(profile.ProviderClaude); err != nil || !declared {
+		t.Fatalf("the fixture should declare settings for claude, so that dropping the key leaves one behind: %v", err)
 	}
 
 	// The layer was installed while the profile declared settings. Now it does
 	// not, and the file it wrote is still there.
 	delete(fixture.lay.Profile.Spec, "settings")
-	if _, declared := fixture.lay.Profile.Spec.Settings(); declared {
-		t.Fatal("the settings key was not dropped")
+	if _, declared, err := fixture.lay.Profile.Spec.Settings(profile.ProviderClaude); err != nil || declared {
+		t.Fatalf("the settings key was not dropped: %v, %v", declared, err)
 	}
 
 	report := fixture.check(t)

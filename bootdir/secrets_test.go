@@ -52,7 +52,7 @@ func TestATemplateCannotReachAManifestValue(t *testing.T) {
 		Spec: profile.Spec{
 			"mcp": json.RawMessage(`[{"name":"vanta","command":"vanta-mcp",` +
 				`"env":{"VANTA_TOKEN":"` + secret + `"},"args":["--token","` + secret + `"]}]`),
-			"settings":  json.RawMessage(`{"env":{"ANTHROPIC_API_KEY":"` + secret + `"}}`),
+			"settings":  json.RawMessage(`{"claude":{"env":{"ANTHROPIC_API_KEY":"` + secret + `"}}}`),
 			"templates": json.RawMessage(`{"AGENTS.md": "declared, and resolved onto the instance"}`),
 		},
 	})

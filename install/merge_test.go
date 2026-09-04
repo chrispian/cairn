@@ -172,7 +172,7 @@ func settingsLayer(t *testing.T, document string) *Layer {
 		Name:     "Base",
 		Provider: profile.ProviderClaude,
 		Body:     "Read the profile.",
-		Spec:     fixtureSpec(t, `{"settings": `+document+`}`),
+		Spec:     fixtureSpec(t, `{"settings": {"claude": `+document+`}}`),
 	})
 }
 

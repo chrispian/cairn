@@ -151,12 +151,22 @@ type Layout struct {
 	ProjectDirArg string
 }
 
-// LayoutFor returns the [Layout] for a resolved profile's provider.
+// LayoutFor returns the [Layout] one provider's boot directory is rendered
+// through.
 //
 // Claude Code is the only harness implemented. Codex and opencode report
 // [ErrUnsupportedProvider] rather than falling back to a layout that would
 // write another harness's files, and so does a profile that declares no
 // provider at all.
+//
+// The refusal names what is implemented, which it did not have to before
+// `--provider` existed. A provider used to be something a profile declared, so
+// the reader of this diagnostic was looking at the file that said it; now it
+// is something an operator can ask for at the terminal, and the answer to
+// "codex, then" is worth one clause rather than a lookup. What it must never
+// be is a fallback: [profile.Providers] knows three names and cairn renders
+// one of them, and a target silently redirected to claude's layout would put
+// claude's files at claude's paths for a harness that reads neither.
 func LayoutFor(p profile.Provider) (Layout, error) {
 	switch p {
 	case profile.ProviderClaude:
@@ -164,7 +174,8 @@ func LayoutFor(p profile.Provider) (Layout, error) {
 	case "":
 		return Layout{}, fmt.Errorf("%w: the resolved profile declares no provider", ErrUnsupportedProvider)
 	default:
-		return Layout{}, fmt.Errorf("%w: %q", ErrUnsupportedProvider, p)
+		return Layout{}, fmt.Errorf("%w: %q — cairn renders a boot directory for %q and no other harness yet",
+			ErrUnsupportedProvider, p, profile.ProviderClaude)
 	}
 }
 

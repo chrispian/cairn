@@ -110,7 +110,7 @@ What lands:
 <boot-dir>/
   <spec.templates>       your text, markers substituted; any path, any number
   .mcp.json              spec.mcp
-  .claude/settings.json  spec.settings, laid out, plus the access grant
+  .claude/settings.json  spec.settings for this provider, laid out, plus the grant
   .claude/skills/        spec.skills, whole directory trees
   .claude/commands/boot/ spec.prompts, one substituted file per prompt
   .claude/agents/<id>.md spec.subagents, one per named profile
@@ -122,6 +122,51 @@ What lands:
 destinations the example profiles happen to declare. Declare none and you get no
 prose; declare fifty and you get fifty. Cairn composes no heading, no section
 and no ordering of its own.
+
+### Choosing the target: `--provider`
+
+**A provider is a materialization target, not a property of the content.** One
+profile's `access`, `slots`, `templates`, `skills` and `prompts` are neutral and
+serve any harness. The one key written in a harness's own vocabulary is
+`settings`, so that key — and only that key — is written per provider:
+
+```yaml
+spec:
+  settings:
+    claude:
+      permissions: { defaultMode: acceptEdits }
+      tui: fullscreen
+    codex:
+      approval_policy: on-request
+```
+
+Cairn selects the document for the harness it is materializing into, merges it
+by key at every depth across the chain, and **reads none of it** — selecting is
+not interpreting, and neither is merging.
+
+`--provider <name>` names that target on `boot`, `install` and `show`, and
+defaults to the profile's own `provider:`. So the flag changes nothing until
+you pass it:
+
+```bash
+cairn boot eng --provider claude   # what `cairn boot eng` already did
+cairn boot eng --provider codex    # refused, by name
+```
+
+Claude Code is the only layout implemented. `codex` and `opencode` are names
+cairn knows and cannot yet write, and they are refused rather than rendered as
+claude's layout — which would put claude's files at claude's paths for a
+harness that reads neither. A word that is no harness at all is a different
+refusal, and says so.
+
+It is deliberately **not** one of the four flags below. Those add content to one
+launch, which is why `install` takes none of them; this says where the content
+is being written, which every command that materializes anything has to answer.
+
+**A flat `settings:` block is refused**, naming the member it found and the
+shape to move it to. Accepting it would select nothing for every target and
+plant a boot directory silently missing the settings the profile plainly
+declares.
 
 ### Composing one launch: `--with`, `--skill`, `--prompt`, `--set`
 
@@ -654,8 +699,14 @@ spelling that composes with the scope, unions across a chain, and gets the
 checks above.
 
 It is the one key cairn contributes to that document. Everything else under
-`spec.settings` is still the operator's own, unread — see the section below for
-the tier that decides whether the harness honours any of it.
+`spec.settings.<provider>` is still the operator's own, unread — see the section
+below for the tier that decides whether the harness honours any of it.
+
+`spec.access` needs no provider key of its own, and that is the division of
+labour: it names directories, cairn maps them onto whichever key the target
+harness reads them from, and one declaration therefore grants the same
+directories to every target. `spec.settings` is where you write something only
+one harness understands, which is why it is the key that is asked which one.
 
 ### The settings tier, and why a launcher passes `--settings`
 

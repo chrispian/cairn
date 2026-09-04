@@ -117,7 +117,7 @@ func declaredManifest(skillsDir string) string {
 	  "mcp":        [{"name": "memory", "command": "memoryd", "args": ["--stdio"]}],
 	  "install":    {"skills": ["code-review"]},
 	  "skills_dir": %s,
-	  "settings":   {"model": "opus"},
+	  "settings":   {"claude": {"model": "opus"}},
 	  "files":      {"notes/todo.md": "do the thing"},
 	  "trees":      {"docs": "/nonexistent-on-purpose"},
 	  "templates":  {"AGENTS.md": "declared, and resolved onto the layer"}
@@ -289,7 +289,7 @@ func TestRenderSettingsGrantAccessAndNeverAScope(t *testing.T) {
 	lay := fixtureLayer(t, profile.Resolved{
 		ID:       "base",
 		Provider: profile.ProviderClaude,
-		Spec: fixtureSpec(t, `{"settings": {"model": "opus"},
+		Spec: fixtureSpec(t, `{"settings": {"claude": {"model": "opus"}},
 			"access": {"directories": [`+strconv.Quote(shared)+`]}}`),
 	})
 

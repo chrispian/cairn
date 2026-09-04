@@ -50,7 +50,8 @@ func harnessFor(p profile.Provider) (harness, error) {
 		return harness{}, fmt.Errorf("%w: the resolved profile declares no provider",
 			bootdir.ErrUnsupportedProvider)
 	default:
-		return harness{}, fmt.Errorf("%w: %q", bootdir.ErrUnsupportedProvider, p)
+		return harness{}, fmt.Errorf("%w: %q — cairn renders an installed layer for %q and no other harness yet",
+			bootdir.ErrUnsupportedProvider, p, profile.ProviderClaude)
 	}
 }
 
@@ -103,7 +104,7 @@ func Render(lay *Layer) ([]File, error) {
 	if lay.Root.IsZero() {
 		return nil, ErrNoRoot
 	}
-	h, err := harnessFor(lay.Profile.Provider)
+	h, err := harnessFor(lay.provider())
 	if err != nil {
 		return nil, err
 	}

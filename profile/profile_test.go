@@ -1,7 +1,9 @@
 package profile
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -205,18 +207,138 @@ func TestSpecSettingsAreCarriedVerbatim(t *testing.T) {
 	t.Parallel()
 
 	// Odd spacing and key order on purpose: the manifest is what the operator
-	// wrote, and nothing reformats it on the way through.
+	// wrote, and nothing reformats it on the way through. Selecting a
+	// provider's document out of the wrapper must not either — the sub-value
+	// is lifted out as its own bytes, so this arrives at the harness's file
+	// with "b" still ahead of "a".
 	const raw = `{ "b":  1,
   "a": [2,   3] }`
 
-	s := spec(t, map[string]string{SpecKeySettings: raw})
+	s := spec(t, map[string]string{SpecKeySettings: `{"claude": ` + raw + `}`})
 
-	got, ok := s.Settings()
+	got, ok, err := s.Settings(ProviderClaude)
+	if err != nil {
+		t.Fatalf("Settings(%q): %v", ProviderClaude, err)
+	}
 	if !ok {
 		t.Fatal("Settings() reported the key as undeclared")
 	}
 	if string(got) != raw {
 		t.Errorf("Settings() = %s, want the stored bytes %s", got, raw)
+	}
+}
+
+// TestSpecSettingsSelectTheTargetsDocument is the whole of what keying by
+// provider buys: one profile carries a document for every harness, and a
+// materialization gets exactly the one it is being written for.
+//
+// A provider the key does not mention has none, which is a distinct answer
+// from "the key is undeclared" only to whoever wrote the profile — every
+// caller treats them the same, because a target with nothing to write writes
+// nothing.
+func TestSpecSettingsSelectTheTargetsDocument(t *testing.T) {
+	t.Parallel()
+
+	s := spec(t, map[string]string{SpecKeySettings: `{
+		"claude": {"permissions": {"defaultMode": "auto"}},
+		"codex":  {"approval": "never"},
+		"opencode": null
+	}`})
+
+	for _, tc := range []struct {
+		provider Provider
+		want     string
+		declared bool
+	}{
+		{provider: ProviderClaude, want: `{"permissions":{"defaultMode":"auto"}}`, declared: true},
+		{provider: ProviderCodex, want: `{"approval":"never"}`, declared: true},
+		{provider: ProviderOpenCode},
+	} {
+		t.Run(tc.provider.String(), func(t *testing.T) {
+			t.Parallel()
+
+			got, declared, err := s.Settings(tc.provider)
+			if err != nil {
+				t.Fatalf("Settings(%q): %v", tc.provider, err)
+			}
+			if declared != tc.declared {
+				t.Fatalf("Settings(%q) declared = %v, want %v (%s)", tc.provider, declared, tc.declared, got)
+			}
+			if compactJSONForTest(t, got) != compactJSONForTest(t, json.RawMessage(tc.want)) {
+				t.Errorf("Settings(%q) = %s, want %s", tc.provider, got, tc.want)
+			}
+		})
+	}
+}
+
+// compactJSONForTest removes a document's insignificant whitespace so that two
+// spellings of one document compare equal. An absent document compares as the
+// empty string rather than being reported, since the caller has already
+// checked whether there was one.
+func compactJSONForTest(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	if len(raw) == 0 {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatalf("compact %s: %v", raw, err)
+	}
+	return buf.String()
+}
+
+// TestSpecSettingsRefuseADocumentThatNamesNoProvider covers the authoring
+// format change, from the side an operator meets it: a profile still carrying
+// the flat document is told what to do about it.
+//
+// The refusal is the point. Accepting the flat form would select nothing for
+// every target and render a boot directory with none of the settings the
+// profile plainly declares — cairn having read the document, understood it,
+// and dropped it without a word.
+func TestSpecSettingsRefuseADocumentThatNamesNoProvider(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		manifest string
+		names    string
+	}{
+		{
+			name:     "the flat document every profile used to declare",
+			manifest: `{"permissions": {"defaultMode": "auto"}, "effortLevel": "xhigh"}`,
+			names:    `"effortLevel"`,
+		},
+		{
+			name:     "a misspelled provider beside a real one",
+			manifest: `{"claude": {"a": 1}, "cluade": {"b": 2}}`,
+			names:    `"cluade"`,
+		},
+		{
+			name:     "not an object at all",
+			manifest: `["a settings document that is a list"]`,
+			names:    "not an object",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := spec(t, map[string]string{SpecKeySettings: tc.manifest})
+			got, declared, err := s.Settings(ProviderClaude)
+			if !errors.Is(err, ErrSettingsProvider) {
+				t.Fatalf("Settings() = %s, %v, %v; want ErrSettingsProvider", got, declared, err)
+			}
+			if declared || got != nil {
+				t.Errorf("Settings() returned %s, %v alongside its error; want nothing", got, declared)
+			}
+			if !strings.Contains(err.Error(), tc.names) {
+				t.Errorf("the diagnostic %q does not name %s", err, tc.names)
+			}
+			// The shape to move to, in the YAML the profile was authored in.
+			if !strings.Contains(err.Error(), "settings: {claude: {...}}") &&
+				!strings.Contains(err.Error(), "not an object") {
+				t.Errorf("the diagnostic %q does not say what shape to write", err)
+			}
+		})
 	}
 }
 
@@ -231,13 +353,25 @@ func TestSpecSettingsUndeclared(t *testing.T) {
 		{name: "an empty spec", s: Spec{}},
 		{name: "another key only", s: spec(t, map[string]string{SpecKeySkills: `["a"]`})},
 		{name: "the key holding no bytes", s: Spec{SpecKeySettings: json.RawMessage("")}},
+		{name: "the key cleared with null", s: spec(t, map[string]string{SpecKeySettings: `null`})},
+		{
+			name: "another provider only",
+			s:    spec(t, map[string]string{SpecKeySettings: `{"codex":{"approval":"never"}}`}),
+		},
+		{
+			name: "this provider cleared with null",
+			s:    spec(t, map[string]string{SpecKeySettings: `{"claude":null}`}),
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, ok := tc.s.Settings()
+			got, ok, err := tc.s.Settings(ProviderClaude)
+			if err != nil {
+				t.Fatalf("Settings(%q): %v", ProviderClaude, err)
+			}
 			if ok {
 				t.Errorf("Settings() reported the key declared, returning %s", got)
 			}

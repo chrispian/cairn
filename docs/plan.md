@@ -839,10 +839,24 @@ multi-file skill.
 
 ## 6. Authority is rendered, not decided
 
-`spec.settings` is written into the provider settings file as the cascade
-composed it. Cairn does not model permission modes, does not validate tool
-names, does not read a rule the operator wrote, and makes no claim about what
-the harness does with what it writes.
+`spec.settings` holds one document per provider — `settings: {claude: {...},
+codex: {...}}` — and the document for the harness being materialized into is
+written into that harness's settings file as the cascade composed it. Cairn
+does not model permission modes, does not validate tool names, does not read a
+rule the operator wrote, and makes no claim about what the harness does with
+what it writes. Selecting a document is not reading one, and neither is merging
+it: the choice is made on the provider's name and nothing below it.
+
+**A provider is a materialization target rather than a property of the
+content.** `access`, `slots`, `templates` and `skills` are neutral and serve
+every target, so one profile materializes into any harness cairn has a layout
+for; only `settings` is written in a harness's own vocabulary, so only
+`settings` is asked which harness it is for. `--provider` on `boot`, `install`
+and `show` names the target, defaulting to the one the profile declares. A
+`spec.settings` whose members name no provider is refused
+(`profile.ErrSettingsProvider`) rather than read as one target's document,
+because accepting it would select nothing for every target and render a boot
+directory silently missing what the profile plainly declares.
 
 If a rendered rule turns out not to enforce, that is a finding about the
 harness, not a Cairn defect.
@@ -960,9 +974,12 @@ since the containment guard that refusal exists for guards a write `show` never
 makes. `--profile` is reported the same way and for the same reason — `show`
 reads no value, so it expands nothing — but a `--profile` that names no
 directory is refused rather than reported, because unlike a scope it is always
-typed on the command line being run. There is no `--provider` yet:
-`spec.settings` is one document rather than one per provider, so there is
-nothing for it to select.
+typed on the command line being run. `--provider` is reported the same way as
+`--scope`: it names the harness a boot of this target would materialize into,
+which is now a choice rather than a reading of the profile. `show` looks up no
+layout for it — it renders nothing, so a target cairn cannot yet write is still
+a profile worth reading, and `boot` and `install` are where such a target is
+refused.
 
 **`install --root` requires the directory; `boot --boot-root` creates it.** The
 asymmetry is deliberate and is not a thing to tidy. `install` writes into the

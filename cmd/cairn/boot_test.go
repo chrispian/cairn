@@ -1167,7 +1167,10 @@ func seed(t *testing.T, bundle, skillsDir, scopeDir string) map[string]bundlePro
 		Model:    "opus",
 		Body:     "base persona",
 		Spec: map[string]string{
-			"settings": `{"env":{"CAIRN":"whateverTheOperatorWrote"}}`,
+			// Under the provider it is for. A profile serving two harnesses
+			// declares two documents here; this bundle renders claude, and
+			// what the other keys would hold is that harness's business.
+			"settings": `{"claude":{"env":{"CAIRN":"whateverTheOperatorWrote"}}}`,
 			// Every file of prose in the boot directory is a template a profile
 			// declared. Cairn names none of them: the destinations, the order
 			// of the blocks, and whether an instruction file exists at all are

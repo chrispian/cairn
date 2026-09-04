@@ -100,7 +100,7 @@ func NewSweepPlan(lay *Layer) (SweepPlan, error) {
 	if lay == nil || lay.Profile == nil {
 		return SweepPlan{}, ErrNoProfile
 	}
-	h, err := harnessFor(lay.Profile.Provider)
+	h, err := harnessFor(lay.provider())
 	if err != nil {
 		return SweepPlan{}, err
 	}
@@ -231,7 +231,7 @@ func CheckFS(fsys fs.ReadLinkFS, lay *Layer) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries := checkManifest(fsys, rendered, comparisons(lay.Profile.Provider))
+	entries := checkManifest(fsys, rendered, comparisons(lay.provider()))
 	entries = append(entries, sweep(fsys, plan, manifestPaths(rendered))...)
 	return &Report{Entries: entries}, nil
 }

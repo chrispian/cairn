@@ -21,8 +21,13 @@ spec:
   skills_dir: $CAIRN_PROFILE_ROOT/skills
   prompts_dir: $CAIRN_PROFILE_ROOT/prompts
 
+  # Keyed by provider: a document per harness, and cairn writes the one it is
+  # materializing into. `--provider` names that target and defaults to the
+  # `provider:` above, so one profile can serve every harness cairn grows a
+  # layout for without any of its other keys changing.
   settings:
-    permissions: { defaultMode: acceptEdits }
+    claude:
+      permissions: { defaultMode: acceptEdits }
 
   templates:
     "AGENTS.md": { kind: static_file, static_file: { path: $CAIRN_PROFILE_ROOT/templates/base.md } }

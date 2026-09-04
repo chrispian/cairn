@@ -84,6 +84,19 @@ type Layer struct {
 	// boot` is where a direct boot of one is refused.
 	Profile *profile.Resolved
 
+	// Provider is the harness this layer is materialized for. The zero value
+	// means the profile's own declaration, which is what `--provider`
+	// defaults to.
+	//
+	// It is a field rather than a read of Profile.Provider because the two
+	// answer different questions. The profile says which harness it was
+	// written against; this says which one is being written now, and the
+	// second is the operator's call — spec.settings carries a document per
+	// provider precisely so that one profile can be materialized into more
+	// than one. Everything below reads it through [Layer.provider] so there is
+	// one answer rather than four lookups that could disagree.
+	Provider profile.Provider
+
 	// Home is the operator's home directory, used to expand a manifest path
 	// written with a leading "~/". Carried rather than read, for the reason
 	// [bootdir.Instance].Home is.
@@ -130,6 +143,28 @@ type Layer struct {
 	// template is not something a key added here can do: substitution fills a
 	// value marker only from the names cairn declares it fills.
 	Values map[string]string
+}
+
+// provider returns the harness this layer is materialized for: [Layer].
+// Provider when it names one, and the profile's own declaration otherwise.
+//
+// The fallback is the flag's own default written into the type. `--provider`
+// selects a target and defaults to what the profile declares, so a Layer built
+// without one behaves exactly as it did before a target could be selected —
+// and a caller outside cmd/cairn that never heard of the flag keeps rendering
+// the harness its profile names.
+//
+// A nil Profile answers the empty provider, which every caller of this already
+// refuses by name: [Render] and [checkLayer] test the profile first, and
+// harnessFor reports the empty provider rather than defaulting.
+func (l *Layer) provider() profile.Provider {
+	if l.Provider != "" {
+		return l.Provider
+	}
+	if l.Profile == nil {
+		return ""
+	}
+	return l.Profile.Provider
 }
 
 // Result is what one [Install] wrote.

@@ -41,7 +41,11 @@ func TestSettingsAreWrittenVerbatim(t *testing.T) {
 	}
 
 	for _, document := range documents {
-		manifest := `{"settings": ` + document + `}`
+		// Under the provider key the manifest is written with now. Verbatim is
+		// measured from after the selection: what a target's document holds is
+		// still the harness's business and not cairn's, so a bare list and a
+		// duplicated key are as untouched here as they ever were.
+		manifest := `{"settings": {"claude": ` + document + `}}`
 		inst := testInstance(t, profile.Resolved{ID: "reviewer", Spec: testSpec(t, manifest)})
 
 		files, err := RenderSettings(inst)
@@ -81,7 +85,7 @@ func compactForTest(t *testing.T, raw []byte) string {
 func TestSettingsAreLaidOut(t *testing.T) {
 	inst := testInstance(t, profile.Resolved{
 		ID:   "reviewer",
-		Spec: profile.Spec{profile.SpecKeySettings: []byte(`{"model":"opus","tui":"fullscreen"}`)},
+		Spec: profile.Spec{profile.SpecKeySettings: []byte(`{"claude":{"model":"opus","tui":"fullscreen"}}`)},
 	})
 
 	files, err := RenderSettings(inst)
@@ -99,7 +103,7 @@ func TestSettingsAreLaidOut(t *testing.T) {
 func TestSettingsKeepASingleTrailingNewline(t *testing.T) {
 	inst := testInstance(t, profile.Resolved{
 		ID:   "reviewer",
-		Spec: profile.Spec{profile.SpecKeySettings: []byte("{\"model\": \"opus\"}\n")},
+		Spec: profile.Spec{profile.SpecKeySettings: []byte("{\"claude\": {\"model\": \"opus\"}}\n")},
 	})
 
 	files, err := RenderSettings(inst)
@@ -119,7 +123,13 @@ func TestSettingsKeepASingleTrailingNewline(t *testing.T) {
 // half of the condition: a file is written when there is a document or a grant,
 // and this is neither.
 func TestSettingsAreAbsentWhenUndeclared(t *testing.T) {
-	for _, manifest := range []string{"", `{}`, `{"settings": null}`} {
+	for _, manifest := range []string{"", `{}`, `{"settings": null}`,
+		// A key that names other providers and not this one, and a key that
+		// clears this one. Both are "nothing to write for this target", which
+		// is what makes one profile serve every harness without every harness
+		// getting a file.
+		`{"settings": {"codex": {"approval": "never"}}}`,
+		`{"settings": {"claude": null}}`} {
 		inst := testInstance(t, profile.Resolved{ID: "quiet", Spec: testSpec(t, manifest)})
 
 		files, err := RenderSettings(inst)
@@ -139,7 +149,7 @@ func TestSettingsAreAbsentWhenUndeclared(t *testing.T) {
 func TestSettingsRefuseToBeDropped(t *testing.T) {
 	inst := testInstance(t, profile.Resolved{
 		ID:   "reviewer",
-		Spec: testSpec(t, `{"settings": {"model": "opus"}}`),
+		Spec: testSpec(t, `{"settings": {"claude": {"model": "opus"}}}`),
 	})
 	inst.Layout.Settings = Artifact{}
 
@@ -160,7 +170,7 @@ func TestSettingsRefuseToBeDropped(t *testing.T) {
 func TestSettingsGrantTheScope(t *testing.T) {
 	inst := testInstance(t, profile.Resolved{
 		ID:   "reviewer",
-		Spec: testSpec(t, `{"settings": {"model": "opus", "permissions": {"defaultMode": "auto"}}}`),
+		Spec: testSpec(t, `{"settings": {"claude": {"model": "opus", "permissions": {"defaultMode": "auto"}}}}`),
 	})
 	inst.Scope = resolved(t, t.TempDir())
 
@@ -210,7 +220,7 @@ func TestSettingsGrantDeclaredDirectories(t *testing.T) {
 
 	inst := testInstance(t, profile.Resolved{
 		ID: "reviewer",
-		Spec: testSpec(t, `{"settings": {"model": "opus"},
+		Spec: testSpec(t, `{"settings": {"claude": {"model": "opus"}},
 			"access": {"directories": ["~/dev/nanite", "$WORK/docs", `+
 			strconv.Quote(shared)+`, `+strconv.Quote(scope)+`]}}`),
 	})
@@ -317,7 +327,7 @@ func TestSettingsRefuseAHandDeclaredGrant(t *testing.T) {
 	} {
 		inst := testInstance(t, profile.Resolved{
 			ID:   "reviewer",
-			Spec: testSpec(t, `{"settings": `+document+`}`),
+			Spec: testSpec(t, `{"settings": {"claude": `+document+`}}`),
 		})
 		inst.Scope = t.TempDir()
 
@@ -343,8 +353,8 @@ func TestSettingsRefuseAHandDeclaredGrant(t *testing.T) {
 func TestSettingsAllowASiblingOfTheGrantedKey(t *testing.T) {
 	inst := testInstance(t, profile.Resolved{
 		ID: "reviewer",
-		Spec: testSpec(t, `{"settings": {"apiKeyHelper": "/bin/helper",
-			"permissions": {"defaultMode": "auto", "allow": ["Bash(git status:*)"]}}}`),
+		Spec: testSpec(t, `{"settings": {"claude": {"apiKeyHelper": "/bin/helper",
+			"permissions": {"defaultMode": "auto", "allow": ["Bash(git status:*)"]}}}}`),
 	})
 	// Canonical, the way the composition root supplies it: package scope
 	// resolves the scope before it ever reaches an instance.
@@ -432,7 +442,7 @@ func TestSettingsRefuseToGrantThroughADocumentThatIsNotOne(t *testing.T) {
 	for _, document := range []string{`[]`, `"a settings document that is a bare string"`, `17`} {
 		inst := testInstance(t, profile.Resolved{
 			ID:   "reviewer",
-			Spec: testSpec(t, `{"settings": `+document+`}`),
+			Spec: testSpec(t, `{"settings": {"claude": `+document+`}}`),
 		})
 		inst.Scope = t.TempDir()
 
@@ -503,4 +513,60 @@ func decodeSettings(t *testing.T, content []byte) settingsDocument {
 		t.Fatalf("the rendered settings document does not decode: %v\n%s", err, content)
 	}
 	return document
+}
+
+// TestSettingsSelectTheTargetsDocument is what keying by provider buys, at the
+// renderer: one profile carries a document for every harness and the boot
+// directory gets exactly the one it is being written for.
+//
+// The target is read off the layout rather than off the profile, which is the
+// whole of what makes --provider a selector. A profile's own `provider:` says
+// what it was written against; the layout says what is being written now.
+func TestSettingsSelectTheTargetsDocument(t *testing.T) {
+	inst := testInstance(t, profile.Resolved{
+		ID: "reviewer",
+		// Deliberately declared for a harness this render is not for, as well
+		// as for the one it is. A document reaching the wrong harness's file
+		// is the failure this key was re-shaped to make impossible.
+		Spec: testSpec(t, `{"settings": {
+			"claude": {"model": "opus"},
+			"codex":  {"model": "a model claude has never heard of"}
+		}}`),
+	})
+
+	files, err := RenderSettings(inst)
+	if err != nil {
+		t.Fatalf("RenderSettings(): %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("RenderSettings() wrote %v, want one file", filePaths(files))
+	}
+	if want := "{\n  \"model\": \"opus\"\n}\n"; string(files[0].Content) != want {
+		t.Errorf("the settings document is %q, want %q", files[0].Content, want)
+	}
+}
+
+// TestSettingsRefuseADocumentThatNamesNoProvider covers the authoring format
+// change at the renderer, which is where an operator meets it.
+//
+// A flat document is refused rather than written, and rather than silently
+// selecting nothing: accepting it would plant a boot directory with none of
+// the settings the profile plainly declares, and cairn would have read the
+// document, understood it, and dropped it without a word. The instance carries
+// a scope, so the render has a grant to write and cannot be excused by having
+// nothing to do.
+func TestSettingsRefuseADocumentThatNamesNoProvider(t *testing.T) {
+	inst := testInstance(t, profile.Resolved{
+		ID:   "reviewer",
+		Spec: testSpec(t, `{"settings": {"permissions": {"defaultMode": "auto"}}}`),
+	})
+	inst.Scope = resolved(t, t.TempDir())
+
+	files, err := RenderSettings(inst)
+	if !errors.Is(err, profile.ErrSettingsProvider) {
+		t.Fatalf("RenderSettings() = %v, %v; want profile.ErrSettingsProvider", filePaths(files), err)
+	}
+	if !strings.Contains(err.Error(), "permissions") {
+		t.Errorf("the error is %v, and does not name the member it found", err)
+	}
 }

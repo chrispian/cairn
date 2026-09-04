@@ -191,7 +191,7 @@ func TestInstallRoundTripsHTMLSpecialCharactersInSettings(t *testing.T) {
 	lay := fixtureLayer(t, profile.Resolved{
 		ID:       "base",
 		Provider: profile.ProviderClaude,
-		Spec:     fixtureSpec(t, `{"settings": `+settings+`}`),
+		Spec:     fixtureSpec(t, `{"settings": {"claude": `+settings+`}}`),
 	})
 	if _, err := Install(lay); err != nil {
 		t.Fatalf("Install: %v", err)
@@ -241,7 +241,7 @@ func TestInstallFailedRenderWritesNothing(t *testing.T) {
 		ID:       "base",
 		Provider: profile.ProviderClaude,
 		Spec: fixtureSpec(t, fmt.Sprintf(
-			`{"settings": {"model": "opus"}, "install": {"skills": ["code-review"]}, "skills_dir": %s}`,
+			`{"settings": {"claude": {"model": "opus"}}, "install": {"skills": ["code-review"]}, "skills_dir": %s}`,
 			strconv.Quote(filepath.Join(t.TempDir(), "absent")))),
 	})
 	before := rootEntries(t, lay.Root)

@@ -88,17 +88,26 @@ const specNote = specIndent + "The names beside a key are the profiles in the ch
 // An abstract profile shows, following runInstall rather than runBoot: nothing
 // here is run, and the abstract root is the profile most worth reading.
 //
-// There is no --provider. The task this was written for named one, and it is
-// deliberately absent: spec.settings is a single document rather than one per
-// provider, so there is nothing for the flag to select. It arrives when
-// settings is re-keyed by provider and has a target to name.
+// --provider selects the harness the reported materialization targets, and it
+// arrived here the moment there was something for it to select: spec.settings
+// is one document per provider now, so a profile resolves into a different
+// settings document depending on where it is being written. This command takes
+// the flag for the reason it takes the composition flags — it is boot's
+// preview, and a preview that could not be handed what the boot will be handed
+// would be blind to exactly the thing the reader is checking.
+//
+// What it changes here is one reported field and no value below it. The spec
+// this prints is the merged manifest, which carries every provider's document
+// at once; selecting one is a rendering question, and this command renders
+// nothing.
 func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("cairn show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		scopeFlag   = fs.String("scope", "", "the scope to report, as a path or a scope alias")
-		jsonFlag    = fs.Bool("json", false, showJSONFlagUsage)
-		profileFlag = fs.String("profile", "", profileFlagUsage)
+		scopeFlag    = fs.String("scope", "", "the scope to report, as a path or a scope alias")
+		jsonFlag     = fs.Bool("json", false, showJSONFlagUsage)
+		providerFlag = fs.String("provider", "", providerFlagUsage)
+		profileFlag  = fs.String("profile", "", profileFlagUsage)
 	)
 	// Every flag `cairn boot` composes with, and this is not a convenience.
 	// The document below is the answer to "what will this resolve to", and a
@@ -205,6 +214,25 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		scopeDir = ""
 	}
 
+	// The harness a boot of this target would materialize into, reported the
+	// way the scope is: a fact about the materialization rather than about the
+	// cascade, resolved through the same call runBoot resolves it through, so
+	// the preview and the boot cannot disagree about which document
+	// spec.settings would yield.
+	//
+	// No layout is looked up, and that is the same call this command already
+	// makes about a scope it cannot resolve. show renders nothing and writes
+	// nothing, so there is no layout for it to need; a profile declaring a
+	// harness cairn cannot yet render is a profile worth reading, and refusing
+	// to print it would make show least usable exactly when something is
+	// already wrong. `cairn boot` and `cairn install` are where a target with
+	// no layout is refused, because they are the ones that would have to write
+	// it.
+	provider, _, err := selectProvider(*providerFlag, resolved.Provider, resolved.ID)
+	if err != nil {
+		return err
+	}
+
 	declared, err := declaringProfiles(ctx, loader, resolved)
 	if err != nil {
 		return err
@@ -227,11 +255,11 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// work its own help says it does not.
 	out := ""
 	if *jsonFlag {
-		if out, err = showJSONDocument(resolved, scopeDir, cat.Root(), declared); err != nil {
+		if out, err = showJSONDocument(resolved, provider, scopeDir, cat.Root(), declared); err != nil {
 			return fmt.Errorf("%s resolved but could not be described: %w", resolved.ID, err)
 		}
 	} else {
-		out = showDocument(resolved, scopeDir, cat.Root(), declared)
+		out = showDocument(resolved, provider, scopeDir, cat.Root(), declared)
 	}
 	_, err = fmt.Fprint(stdout, out)
 	return err
@@ -281,6 +309,12 @@ func declaringProfiles(ctx context.Context, l profile.Loader, resolved *profile.
 // which is also what $CAIRN_PROFILE_ROOT expands to. Neither changes a single
 // value above them — that is why they are at the bottom.
 //
+// The provider line is the instance's too, and it is not at the bottom. It
+// keeps the position it held when it was purely a declared field, because it
+// is one whenever no --provider was given, and moving a line an operator reads
+// by position to record that it gained a second source would cost more than it
+// said.
+//
 // Resolved.Body is the field left out, and it is left out rather than
 // forgotten. It is the one thing the cascade concatenates instead of composing
 // by key — see profile.Resolve — so it is not what the merge rule made
@@ -296,7 +330,9 @@ func declaringProfiles(ctx context.Context, l profile.Loader, resolved *profile.
 // Keys are sorted, and so are the members of every collection the cascade
 // composed — see profile.sortedValues, which says why that order is
 // deterministic and why nothing may read meaning into it.
-func showDocument(resolved *profile.Resolved, scopeDir, profileRoot string, declared map[string][]string) string {
+func showDocument(resolved *profile.Resolved, provider profile.Provider, scopeDir, profileRoot string,
+	declared map[string][]string) string {
+
 	var b strings.Builder
 
 	fields := [][2]string{
@@ -304,7 +340,7 @@ func showDocument(resolved *profile.Resolved, scopeDir, profileRoot string, decl
 		{"chain", strings.Join(resolved.Chain, " -> ")},
 		{"name", resolved.Name},
 		{"description", resolved.Description},
-		{"provider", resolved.Provider.String()},
+		{"provider", provider.String()},
 		{"model", resolved.Model},
 		{"abstract", strconv.FormatBool(resolved.Abstract)},
 		{"scope", scopeDir},

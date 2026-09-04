@@ -63,6 +63,28 @@ var ErrGrantConflict = errors.New("the settings document declares a key cairn gr
 // instance is granted — the scope it works in, which needs no declaration, and
 // whatever spec.access.directories names besides.
 //
+// # Verbatim after the cascade, and after the target is chosen
+//
+// spec.settings holds one document per provider, so there is a choice to make
+// before there is a document at all, and the promise above is measured from
+// after it. The target is inst.Layout.Provider — the layout being materialized
+// into, which is what `--provider` selects — and never the profile's own
+// declaration, because a provider is a materialization target rather than a
+// property of the content. A profile declaring settings for a target this
+// instance is not being rendered for contributes none of them, which is the
+// point: one profile serves every harness.
+//
+// Selecting re-spells nothing. [profile.Spec.Settings] lifts the sub-value out
+// as its own bytes, so a document exactly one profile declared reaches this
+// function exactly as the operator wrote it — which is what keeps the sentence
+// below about what costs a document its spelling true of composition alone.
+//
+// A profile whose spec.settings is not keyed by provider is refused rather
+// than read as though it were one target's document — see
+// [profile.ErrSettingsProvider], and note that the alternative is silence: a
+// flat document would select nothing for every target, and the boot directory
+// would come out missing a permission mode the profile plainly declares.
+//
 // That addition is not Cairn interpreting the operator's values. No rule of
 // theirs is read: Cairn models no permission mode, validates no tool name and
 // turns no declaration into a policy. What it reads is spec.access, its own
@@ -99,7 +121,10 @@ func RenderSettings(inst *Instance) ([]File, error) {
 	if inst == nil || inst.Profile == nil {
 		return nil, ErrNoProfile
 	}
-	stored, declared := inst.Profile.Spec.Settings()
+	stored, declared, err := inst.Profile.Spec.Settings(inst.Layout.Provider)
+	if err != nil {
+		return nil, err
+	}
 	granted, err := accessFragment(inst)
 	if err != nil {
 		return nil, err
