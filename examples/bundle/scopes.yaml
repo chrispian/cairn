@@ -1,4 +1,0 @@
-# Scope aliases: a short name a binding's scope may be written as. `--scope`
-# takes either as well.
-cairn:  ~/dev/projects/cairn
-nanite: ~/dev/hollis-labs/apps/nanite

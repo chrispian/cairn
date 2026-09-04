@@ -16,6 +16,7 @@ import (
 
 	"github.com/chrispian/cairn/catalog"
 	"github.com/chrispian/cairn/profile"
+	"github.com/chrispian/cairn/scope"
 )
 
 // specIndent is one level of the indentation a manifest value is shown at, and
@@ -104,7 +105,7 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs := flag.NewFlagSet("cairn show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		scopeFlag    = fs.String("scope", "", "the scope to report, as a path or a scope alias")
+		scopeFlag    = fs.String("scope", "", "the scope to report, as a path")
 		jsonFlag     = fs.Bool("json", false, showJSONFlagUsage)
 		providerFlag = fs.String("provider", "", providerFlagUsage)
 		profileFlag  = fs.String("profile", "", profileFlagUsage)
@@ -193,7 +194,7 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if strings.TrimSpace(*scopeFlag) != "" {
 		rawScope = *scopeFlag
 	}
-	scopeDir, err := resolveScope(cat, rawScope, home)
+	scopeDir, err := scope.Parse(rawScope, home)
 	if err != nil {
 		// Reported, not refused, and the rule it follows is the slot rule: a
 		// resolution that fails costs the reader one fact, and a command that

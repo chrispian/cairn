@@ -64,7 +64,7 @@ flags for boot and show:
                          exactly as a part declaring that slot would
 
 flags for boot:
-  --scope <path|alias>   the directory the instance works in; overrides the binding's
+  --scope <path>         the directory the instance works in; overrides the binding's
   --boot-root <path>     where boot directories are planted; defaults to $CAIRN_BOOT_ROOT,
                          else ~/.local/state/cairn/boot
   --session <name>       the session segment; defaults to a UTC timestamp and a random suffix
@@ -89,7 +89,7 @@ flags for install:
   --root <path>          where the installed layer goes; defaults to the home directory
 
 flags for show:
-  --scope <path|alias>   the scope to report, as boot would resolve it; overrides the binding's
+  --scope <path>         the scope to report, as boot would resolve it; overrides the binding's
   --json                 print one JSON object describing what the target resolves to, instead
                          of the document laid out for reading. It carries the merged manifest
                          and, per key, the profiles and flags that declared it — which is the
@@ -425,8 +425,8 @@ type bootTarget struct {
 	skills  []string
 	prompts []string
 
-	// scope is the declared scope, an alias or a path, before --scope
-	// overrides it and before either is resolved.
+	// scope is the declared scope — a path, as the binding's file spells it
+	// — before --scope overrides it and before either is resolved.
 	scope string
 }
 
@@ -463,7 +463,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs := flag.NewFlagSet("cairn boot", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		scopeFlag    = fs.String("scope", "", "the directory the instance works in, as a path or a scope alias")
+		scopeFlag    = fs.String("scope", "", "the directory the instance works in")
 		rootFlag     = fs.String("boot-root", "", "where boot directories are planted")
 		sessFlag     = fs.String("session", "", "the session segment")
 		jsonFlag     = fs.Bool("json", false, "print one JSON object describing the boot instead of the bare path")
@@ -559,7 +559,7 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if strings.TrimSpace(*scopeFlag) != "" {
 		rawScope = *scopeFlag
 	}
-	scopeDir, err := resolveScope(cat, rawScope, home)
+	scopeDir, err := scope.Parse(rawScope, home)
 	if err != nil {
 		return err
 	}
@@ -776,39 +776,14 @@ func splitTarget(args []string) (target string, rest []string) {
 	return "", args
 }
 
-// resolveScope turns a declared scope into a directory. A value that could not
-// be a path is looked up as a scope alias; anything else is taken as a path, so
-// an operator who has not declared an alias is not obliged to.
-//
-// The path-like test is what keeps the two from crossing. Trying the alias
-// table first for every value would mean that declaring an alias named "src"
-// silently retargets any binding whose scope is the literal relative path
-// "src" — unlikely, and one predicate to make impossible. A scope that moves
-// on its own is the kind of bug that eats an afternoon.
-func resolveScope(cat *catalog.Catalog, raw, home string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", nil
-	}
-	if !pathLike(trimmed) {
-		switch path, err := cat.Scope(trimmed); {
-		case err == nil:
-			return scope.Parse(path, home)
-		case !errors.Is(err, catalog.ErrScopeNotFound):
-			return "", err
-		}
-	}
-	return scope.Parse(trimmed, home)
-}
-
-// pathLike reports whether raw is spelled like a path rather than like a bare
-// alias: it holds a separator, begins with "~", or is absolute.
-func pathLike(raw string) bool {
-	return strings.ContainsRune(raw, '/') ||
-		strings.ContainsRune(raw, filepath.Separator) ||
-		strings.HasPrefix(raw, "~") ||
-		filepath.IsAbs(raw)
-}
+// A scope is a path, and both call sites reach [scope.Parse] directly. There
+// used to be a resolveScope here in front of it, because a scope could also be
+// a name in the bundle's alias registry and something had to decide which of
+// the two a value was — a pathLike predicate, whose whole job was to keep a
+// bare word from being tried as a path and a relative path from being tried as
+// a name. The registry is gone, so both are gone with it. What remains is
+// [scope.Parse]'s own contract: empty is the empty scope, and everything else
+// must name a directory that exists.
 
 // instanceValues returns the values a template may substitute: a key for each
 // name in [bootdir.ValueNames] and no others, so that a value wired here under

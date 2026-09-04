@@ -7,7 +7,7 @@ Nothing here starts, watches, or supervises an agent.
 Four commands and one workflow:
 
 ```
-cairn boot <binding|profile> [--scope <path|alias>]   materialize a boot dir, print its path
+cairn boot <binding|profile> [--scope <path>]         materialize a boot dir, print its path
 cairn boot <binding|profile> --json                   ... and describe it for a launcher
 cairn boot <binding|profile> --save-as <name>         ... and save the composition as a binding
 cairn show <binding|profile>                          print what the profile resolves to
@@ -41,7 +41,6 @@ files, which is the whole store:
   profiles/    one markdown file per profile, YAML frontmatter and prose
     parts/     the same, for the small reusable ones — one flat namespace
   bindings/    one YAML file per binding, named after the binding
-  scopes.yaml  scope aliases, if you use them
   templates/   the documents your profiles name
   skills/      one directory per skill
   prompts/     one flat .md file per prompt
@@ -60,7 +59,7 @@ seed and nothing to import: edit a file, and the next command reads it.
 
 It holds an abstract `base`, a concrete `engineer` that extends it, a
 `reviewer` the engineer dispatches and that also boots on its own, a
-`docs-only` part, two scope aliases, three bindings — one of which composes a
+`docs-only` part, three bindings — one of which composes a
 part, which is what `--save-as` writes — and the templates, the skill and the
 prompt `engineer` names — plus a second prompt no profile names, which is
 there to be added with `--prompt`. Read it — it is the profile-authoring
@@ -405,15 +404,15 @@ discard it in silence, and `part:` for `parts:` — or `skill:` for `skills:`,
 one character from the flag that fills it — would give you a binding that
 composes nothing, boots cleanly and never mentions it.
 
-**Values are saved as they were written.** `--scope cairn` saves the alias
-`cairn`, not the directory it resolves to today, for the same reason a part
-keeps its declared spelling: a binding that recorded one machine's expansion is
-a binding that works on one machine.
+**Values are saved as they were written.** `--scope ~/dev/projects/cairn` saves
+that spelling and not the expansion of it, for the same reason a part keeps its
+declared spelling: a binding that recorded one machine's expansion is a binding
+that works on one machine.
 
 **With one exception: a relative `--scope` is saved as the directory it
-resolved to**, and cairn says so. An alias, a `~/` path and an absolute path
-all still name the same place tomorrow; a relative path is anchored to the
-working directory of the shell that typed it, and a binding records no working
+resolved to**, and cairn says so. A `~/` path and an absolute path both still
+name the same place tomorrow; a relative path is anchored to the working
+directory of the shell that typed it, and a binding records no working
 directory. Saved verbatim it would resolve somewhere else from somewhere else,
 silently.
 

@@ -62,15 +62,6 @@ const PartsDir = "parts"
 // BindingsDir is the bundle subdirectory holding one YAML file per binding.
 const BindingsDir = "bindings"
 
-// ScopesFile is the bundle file holding the scope alias registry, if there is
-// one. It is at the bundle root rather than inside [BindingsDir], where every
-// file is one binding named after itself.
-//
-// The registry is on its way out — a binding is to carry its directory as a
-// path — so this file has a shorter future than the rest of the layout, and it
-// is deliberately one file rather than a directory of them.
-const ScopesFile = "scopes.yaml"
-
 // ErrBundleNotFound reports that the bundle directory is absent, or is not a
 // directory.
 var ErrBundleNotFound = errors.New("profile bundle not found")
@@ -104,9 +95,6 @@ var ErrBindingNotFound = errors.New("binding not found")
 // ErrBindingName reports a name that cannot be a binding's, because it cannot
 // be the base name of a file in the bindings directory.
 var ErrBindingName = errors.New("not a binding name")
-
-// ErrScopeNotFound reports that the scope registry names no such alias.
-var ErrScopeNotFound = errors.New("scope alias not found")
 
 // ErrNoHome reports that the bundle path fell back to the home directory and
 // no home directory is known.
@@ -162,19 +150,14 @@ type Binding struct {
 	// of them would be a saved composition that does not save the composition.
 	Prompts []string
 
-	// Scope is where that boot works. It is a scope alias when one exists by
-	// that name and a directory path otherwise, so an operator who has not
-	// declared an alias is not obliged to. Empty means no declared scope.
+	// Scope is where that boot works: a directory path, as the file wrote it.
+	// Empty means no declared scope.
+	//
+	// It is a path and only a path. A bundle-wide registry of short names for
+	// directories used to stand in front of this field, and retiring it is
+	// what makes the value here readable on its own — a binding says where it
+	// works, and nothing else in the bundle can change the answer.
 	Scope string
-}
-
-// Scope is one entry of the scope registry: a short alias for a directory.
-type Scope struct {
-	// Alias is the name a binding's scope may be written as.
-	Alias string
-
-	// Path is the directory the alias names.
-	Path string
 }
 
 // Catalog is one bundle, read.
@@ -187,13 +170,12 @@ type Catalog struct {
 
 	profiles map[string]profile.Profile
 	bindings map[string]Binding
-	scopes   map[string]string
 
 	// The listing orders, sorted at Open. They are held rather than recomputed
-	// so that [Catalog.Profiles] and its two siblings are reads and not sorts.
+	// so that [Catalog.Profiles] and [Catalog.Bindings] are reads and not
+	// sorts.
 	profileIDs   []string
 	bindingNames []string
-	scopeAliases []string
 }
 
 // DefaultRoot returns the bundle directory: envRoot when it is set,
@@ -234,16 +216,12 @@ func Open(root string) (*Catalog, error) {
 	if c.profiles, err = readProfiles(dir); err != nil {
 		return nil, err
 	}
-	if c.scopes, err = readScopes(dir); err != nil {
-		return nil, err
-	}
 	if c.bindings, err = readBindings(dir, c.profiles); err != nil {
 		return nil, err
 	}
 
 	c.profileIDs = sortedKeys(c.profiles)
 	c.bindingNames = sortedKeys(c.bindings)
-	c.scopeAliases = sortedKeys(c.scopes)
 	return c, nil
 }
 
@@ -293,40 +271,16 @@ func (c *Catalog) Bindings() []Binding {
 	return out
 }
 
-// Scope returns the directory path alias names, or an error wrapping
-// [ErrScopeNotFound] when the registry does not name it.
-func (c *Catalog) Scope(alias string) (string, error) {
-	path, ok := c.scopes[strings.TrimSpace(alias)]
-	if !ok {
-		return "", fmt.Errorf("load scope %q from %s: %w", alias, filepath.Join(c.root, ScopesFile), ErrScopeNotFound)
-	}
-	return path, nil
-}
-
-// Scopes returns every scope alias in the bundle, ordered by alias.
-func (c *Catalog) Scopes() []Scope {
-	out := make([]Scope, 0, len(c.scopeAliases))
-	for _, alias := range c.scopeAliases {
-		out = append(out, Scope{Alias: alias, Path: c.scopes[alias]})
-	}
-	return out
-}
-
-// ResolvedScope returns where a binding's boot works: the alias's directory
-// when the scope names one, and the scope itself otherwise. A binding that
-// declares no scope resolves to the empty string.
+// There is no Scope lookup here, and there is no ResolvedScope beside
+// [Catalog.Bindings], because there is nothing left for either to resolve.
+// [Binding.Scope] is the directory, trimmed as it was read, and a caller that
+// wants where a binding's boot works reads that field.
 //
-// It is the listing's answer and not the boot's. `cairn boot` expands "~/" and
-// checks that the directory exists — see scope.Parse — and a listing that did
-// either would refuse to print a catalog because one binding points somewhere
-// that is not there today.
-func (c *Catalog) ResolvedScope(b Binding) string {
-	declared := strings.TrimSpace(b.Scope)
-	if declared == "" {
-		return ""
-	}
-	if path, ok := c.scopes[declared]; ok {
-		return path
-	}
-	return declared
-}
+// It was not always so: a bundle-wide registry mapped short names to
+// directories, so the scope in a binding file could be a name this catalog had
+// to look up, and the listing needed a method to ask. The registry retired —
+// `--scope nanite` bought over `--scope ~/dev/hollis-labs/apps/nanite` what a
+// shell alias buys, at the price of a second name for every directory — and a
+// method called ResolvedScope that returned its argument's field unchanged
+// would be a resolution step that no longer resolves anything, which is a
+// worse thing to leave standing than a deletion.

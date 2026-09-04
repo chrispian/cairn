@@ -20,14 +20,13 @@ type listSection struct {
 	rows    [][]string
 }
 
-// runList enumerates the catalog: the bindings with the directories their
-// scopes resolve to, and the profiles with their descriptions.
+// runList enumerates the catalog: the bindings with the directories they work
+// in, and the profiles with their descriptions.
 //
 // It exists for two reasons and the smaller one is the conductor's. A
 // file-backed catalog with no way to list it is a directory an operator has to
-// `ls` themselves, reading nine files to answer "what can I boot" — and the
-// answer is not in any one of them, since a binding's scope may be an alias
-// that resolves somewhere else. The other reason is that the profile which
+// `ls` themselves, reading nine files to answer "what can I boot" — and no one
+// of those files holds the answer. The other reason is that the profile which
 // prints that menu into its own boot file used to do it with a SQL query, and
 // the database it queried is gone.
 //
@@ -72,8 +71,8 @@ func runList(args []string, stdout, stderr io.Writer) error {
 // itself belongs.
 //
 // A section with no rows renders nothing at all, which is install.Report's
-// rule and for its reason: a bundle with no aliases should not have to scroll
-// past a heading saying so.
+// rule and for its reason: a bundle with no abstract profiles should not have
+// to scroll past a heading saying so.
 func listDocument(cat *catalog.Catalog) string {
 	sections := []listSection{
 		{
@@ -84,22 +83,17 @@ func listDocument(cat *catalog.Catalog) string {
 		},
 		{
 			heading: "Profiles",
-			note:    "Bootable by id, and each one needs a scope: a path, or an alias below.",
+			note:    "Bootable by id, and each one needs a scope: the path `--scope` is given.",
 		},
 		{
 			heading: "Abstract profiles",
 			note:    "Extended rather than booted. `cairn install` and `cairn show` take one; `cairn boot` refuses it.",
-		},
-		{
-			heading: "Scope aliases",
-			note:    "A short name a binding's scope, or --scope, may be written as instead of a path.",
 		},
 	}
 	const (
 		bindings = 0
 		profiles = 1
 		abstract = 2
-		aliases  = 3
 	)
 
 	// The composition is the last column, and last is load-bearing. [writeRows]
@@ -117,7 +111,7 @@ func listDocument(cat *catalog.Catalog) string {
 	// is measured across rows.
 	for _, b := range cat.Bindings() {
 		sections[bindings].rows = append(sections[bindings].rows,
-			[]string{b.Name, b.ProfileID, cat.ResolvedScope(b), bindingComposition(b)})
+			[]string{b.Name, b.ProfileID, b.Scope, bindingComposition(b)})
 	}
 	for _, p := range cat.Profiles() {
 		at := profiles
@@ -125,9 +119,6 @@ func listDocument(cat *catalog.Catalog) string {
 			at = abstract
 		}
 		sections[at].rows = append(sections[at].rows, []string{p.ID, p.Description})
-	}
-	for _, s := range cat.Scopes() {
-		sections[aliases].rows = append(sections[aliases].rows, []string{s.Alias, s.Path})
 	}
 
 	var b strings.Builder

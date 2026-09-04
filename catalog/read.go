@@ -449,29 +449,6 @@ func listOf(path, key string, in []string) ([]string, error) {
 	return out, nil
 }
 
-// readScopes reads the bundle's scope alias registry. An absent file is not an
-// error: aliases are optional, and a binding whose scope is a path needs none.
-func readScopes(root string) (map[string]string, error) {
-	path := filepath.Join(root, ScopesFile)
-	text, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return map[string]string{}, nil
-	case err != nil:
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	out := map[string]string{}
-	if err := yaml.Unmarshal(text, &out); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	for alias, dir := range out {
-		if strings.TrimSpace(dir) == "" {
-			return nil, fmt.Errorf("%s: alias %q names no directory", path, alias)
-		}
-	}
-	return out, nil
-}
-
 // sortedKeys returns a map's keys in order, for the listings that are read
 // rather than searched.
 func sortedKeys[V any](m map[string]V) []string {

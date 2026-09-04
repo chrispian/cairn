@@ -15,7 +15,7 @@ import (
 )
 
 // TestABundleIsReadWhole covers the shape of a catalog: what a profile file
-// carries, what a binding file carries, and what a scope alias resolves to.
+// carries and what a binding file carries.
 //
 // It is one test over one fixture rather than one per field, because the thing
 // being asserted is that a directory of files produces the same values the
@@ -44,9 +44,8 @@ name: Engineer
 provider: claude
 ---
 `)
-	writeFile(t, filepath.Join(root, BindingsDir, "eng.yaml"), "profile: engineer\nscope: cairn\n")
+	writeFile(t, filepath.Join(root, BindingsDir, "eng.yaml"), "profile: engineer\nscope: ~/dev/projects/cairn\n")
 	writeFile(t, filepath.Join(root, BindingsDir, "loose.yaml"), "profile: engineer\nscope: /somewhere/else\n")
-	writeFile(t, filepath.Join(root, ScopesFile), "cairn: ~/dev/projects/cairn\n")
 
 	cat, err := Open(root)
 	if err != nil {
@@ -77,8 +76,9 @@ provider: claude
 		t.Errorf("Profiles() = %v, want base and engineer in order", got)
 	}
 
-	// A scope that names an alias resolves through the registry; one that
-	// names a path is itself.
+	// A binding's scope is the path its file wrote, and nothing in the bundle
+	// stands between the two. Neither spelling is expanded here — `~` is
+	// boot's business, not the catalog's.
 	for _, want := range []struct{ binding, scope string }{
 		{"eng", "~/dev/projects/cairn"},
 		{"loose", "/somewhere/else"},
@@ -90,8 +90,8 @@ provider: claude
 		if b.ProfileID != "engineer" {
 			t.Errorf("binding %q boots %q, want engineer", want.binding, b.ProfileID)
 		}
-		if got := cat.ResolvedScope(*b); got != want.scope {
-			t.Errorf("binding %q resolves to %q, want %q", want.binding, got, want.scope)
+		if b.Scope != want.scope {
+			t.Errorf("binding %q works in %q, want %q", want.binding, b.Scope, want.scope)
 		}
 	}
 }
@@ -627,8 +627,8 @@ func TestDefaultRoot(t *testing.T) {
 	}
 }
 
-// TestAMissingLookupIsNamedByKind covers the three not-found sentinels a
-// caller branches on, and that each names the file it looked in.
+// TestAMissingLookupIsNamedByKind covers the two not-found sentinels a caller
+// branches on, and that each names the file it looked in.
 func TestAMissingLookupIsNamedByKind(t *testing.T) {
 	root := t.TempDir()
 	writeProfileFile(t, root, "engineer", "---\nid: engineer\nname: Engineer\nprovider: claude\n---\n")
@@ -643,16 +643,10 @@ func TestAMissingLookupIsNamedByKind(t *testing.T) {
 	if _, err := cat.Binding("nobody"); !errors.Is(err, ErrBindingNotFound) {
 		t.Errorf("Binding(nobody) = %v, want ErrBindingNotFound", err)
 	}
-	if _, err := cat.Scope("nobody"); !errors.Is(err, ErrScopeNotFound) {
-		t.Errorf("Scope(nobody) = %v, want ErrScopeNotFound", err)
-	}
-	// An absent bindings directory and an absent scopes file are legal: a
-	// bundle with profiles and nothing else boots by profile id.
+	// An absent bindings directory is legal: a bundle with profiles and
+	// nothing else boots by profile id.
 	if got := len(cat.Bindings()); got != 0 {
 		t.Errorf("a bundle with no bindings directory reported %d bindings", got)
-	}
-	if got := len(cat.Scopes()); got != 0 {
-		t.Errorf("a bundle with no scopes file reported %d aliases", got)
 	}
 }
 

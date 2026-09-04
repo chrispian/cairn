@@ -26,8 +26,8 @@ func TestMarshalBindingWritesWhatAPersonWouldType(t *testing.T) {
 		want string
 	}{{
 		name: "a binding that composes nothing is the two lines it always was",
-		in:   Binding{Name: "eng", ProfileID: "engineer", Scope: "cairn"},
-		want: "profile: engineer\nscope: cairn\n",
+		in:   Binding{Name: "eng", ProfileID: "engineer", Scope: "~/dev/projects/cairn"},
+		want: "profile: engineer\nscope: ~/dev/projects/cairn\n",
 	}, {
 		// The key order is the order a composition resolves in, so a reader
 		// can read the file top to bottom and be reading the sequence
@@ -41,7 +41,7 @@ func TestMarshalBindingWritesWhatAPersonWouldType(t *testing.T) {
 			Parts:     []string{"docs-only", "nanite-conventions"},
 			Skills:    []string{"qhealth", "adr"},
 			Prompts:   []string{"handoff", "reset-scope"},
-			Scope:     "nanite",
+			Scope:     "~/dev/hollis-labs/apps/nanite",
 		},
 		want: "profile: writer\n" +
 			"parts:\n" +
@@ -53,7 +53,7 @@ func TestMarshalBindingWritesWhatAPersonWouldType(t *testing.T) {
 			"prompts:\n" +
 			"  - handoff\n" +
 			"  - reset-scope\n" +
-			"scope: nanite\n",
+			"scope: ~/dev/hollis-labs/apps/nanite\n",
 	}, {
 		// An empty list marshalled as "parts: []" would be a saved binding
 		// that reads differently from every hand-authored one beside it, for

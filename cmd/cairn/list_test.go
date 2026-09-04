@@ -33,8 +33,10 @@ func TestList(t *testing.T) {
 	mustMkdir(t, scopeDir)
 	writeSkill(t, skillsDir)
 	seed(t, bundle, skillsDir, scopeDir)
-	writeScopes(t, bundle, map[string]string{"repo": scopeDir})
-	writeBinding(t, bundle, "aliased", "engineer", "repo")
+	writeBinding(t, bundle, "solo", "engineer", scopeDir)
+	// A home-relative scope, so that the directory column can be shown to be
+	// the path the file declared rather than an expansion of it.
+	writeBinding(t, bundle, "tilde", "engineer", "~/dev/projects/cairn")
 	// A binding that composes, standing beside two that do not. A listing
 	// resolves none of these ids — the catalog checks that a binding names a
 	// profile it holds and checks nothing else — so what is printed is what the
@@ -63,7 +65,7 @@ func TestList(t *testing.T) {
 		// somewhere in the document would pass on a listing that never put the
 		// three facts together.
 		out := list(t)
-		if !hasLine(out, "aliased", "engineer", scopeDir) {
+		if !hasLine(out, "solo", "engineer", scopeDir) {
 			t.Errorf("no line carries the binding, its profile and its directory:\n%s", out)
 		}
 	})
@@ -91,7 +93,7 @@ func TestList(t *testing.T) {
 		// of plain bindings from re-rendering every file this listing is
 		// planted into.
 		out := list(t)
-		row := lineStarting(t, out, "aliased")
+		row := lineStarting(t, out, "solo")
 		if !strings.HasSuffix(row, scopeDir) {
 			t.Errorf("a binding composing nothing grew a column anyway: %q", row)
 		}
@@ -109,17 +111,15 @@ func TestList(t *testing.T) {
 		}
 	})
 
-	t.Run("a scope alias is resolved, and listed as well", func(t *testing.T) {
-		// The alias is what the binding file says and the directory is what a
-		// boot would work in. A listing showing the alias would make an
-		// operator open a second file to find out where that is, which is the
-		// whole reason the command exists.
+	t.Run("the directory column is the path the binding declared", func(t *testing.T) {
+		// A binding's scope is a path and the listing prints it. There was a
+		// bundle-wide registry of short names for directories in front of this
+		// once, so the column was the registry's answer rather than the file's;
+		// retiring it is what makes the row readable against the file beside
+		// it. The listing still expands nothing — `~` is boot's business.
 		out := list(t)
-		if strings.Contains(out, "aliased      engineer      repo\n") {
-			t.Errorf("the binding shows its alias rather than the directory it resolves to:\n%s", out)
-		}
-		if !hasLine(out, "repo", scopeDir) {
-			t.Errorf("the alias itself is not listed:\n%s", out)
+		if !hasLine(out, "tilde", "engineer", "~/dev/projects/cairn") {
+			t.Errorf("the row is not the path the file declared:\n%s", out)
 		}
 	})
 
@@ -146,8 +146,8 @@ func TestList(t *testing.T) {
 	})
 
 	t.Run("a block with nothing in it renders nothing", func(t *testing.T) {
-		// install.Report's rule: a bundle with no aliases should not have to
-		// scroll past a heading saying so.
+		// install.Report's rule: a bundle with no abstract profiles should not
+		// have to scroll past a heading saying so.
 		bare := filepath.Join(home, "bare")
 		writeProfile(t, bare, bundleProfile{ID: "only", Name: "Only", Provider: "claude"})
 
@@ -155,7 +155,7 @@ func TestList(t *testing.T) {
 		if err := run(ctx, []string{"list", "--profile", bare}, &stdout, &stderr); err != nil {
 			t.Fatalf("list: %v\nstderr: %s", err, stderr.String())
 		}
-		for _, absent := range []string{"Bindings", "Abstract profiles", "Scope aliases"} {
+		for _, absent := range []string{"Bindings", "Abstract profiles"} {
 			if strings.Contains(stdout.String(), absent) {
 				t.Errorf("a bundle with no %s printed the heading anyway:\n%s", absent, stdout.String())
 			}
@@ -277,7 +277,7 @@ func TestListRendersEveryBindingField(t *testing.T) {
 	shown := map[string]string{
 		"Name":      "the first column",
 		"ProfileID": "the second column",
-		"Scope":     "the third column, resolved through the alias registry",
+		"Scope":     "the third column",
 		"Parts":     "the composition column",
 		"Skills":    "the composition column",
 		"Prompts":   "the composition column",

@@ -215,13 +215,19 @@ func TestARelativeScopeIsSavedAsTheDirectoryItResolvedTo(t *testing.T) {
 		t.Errorf("the substitution was not reported:\n%s", stderr.String())
 	}
 
-	// An alias, by contrast, is a name and stays one.
-	writeScopes(t, bundle, map[string]string{"here-alias": scopeDir})
-	bootTree(t, ctx, filepath.Join(home, "runtime2"),
-		"engineer", "--profile", bundle, "--scope", "here-alias", "--save-as", "aliased")
-	if got, want := read(t, bundle, "bindings/aliased.yaml"),
-		"profile: engineer\nscope: here-alias\n"; got != want {
+	// An absolute scope, by contrast, names the same place from anywhere, so
+	// it is saved exactly as typed and nothing is said. Spelled with a "/."
+	// the boot resolves away, so a pass proves the value passed through rather
+	// than that the two happened to agree.
+	var quiet bytes.Buffer
+	bootTreeErr(t, ctx, &quiet, filepath.Join(home, "runtime2"),
+		"engineer", "--profile", bundle, "--scope", scopeDir+"/.", "--save-as", "absolute")
+	if got, want := read(t, bundle, "bindings/absolute.yaml"),
+		fmt.Sprintf("profile: engineer\nscope: %s\n", scopeDir+"/."); got != want {
 		t.Errorf("the saved binding is\n%q\nwant\n%q", got, want)
+	}
+	if strings.Contains(quiet.String(), "was saved instead") {
+		t.Errorf("an absolute scope was reported as substituted:\n%s", quiet.String())
 	}
 }
 
@@ -629,17 +635,18 @@ func TestSavedBindingFormat(t *testing.T) {
 	bundle := exampleBundle(t, home)
 	scopeDir := filepath.Join(home, "scope")
 	mustMkdir(t, scopeDir)
-	// An alias, so that what is saved can be told apart from what it resolves
-	// to. A binding recording this machine's expansion of an alias would be a
-	// binding that worked on this machine.
-	writeScopes(t, bundle, map[string]string{"here": scopeDir})
+	// Spelled with a "/." the boot resolves away, so what is saved can be told
+	// apart from what it resolved to. A binding recording this machine's
+	// resolution of a path the operator typed would be a binding that carried
+	// a spelling the operator cannot find in their own shell.
+	declared := scopeDir + "/."
 
 	bootTree(t, ctx, filepath.Join(home, "runtime"),
 		"engineer",
 		"--profile", bundle,
 		"--with", "docs-only",
 		"--skill", "qhealth", "--skill", "adr",
-		"--scope", "here",
+		"--scope", declared,
 		"--save-as", "eng-docs",
 	)
 
@@ -649,7 +656,7 @@ func TestSavedBindingFormat(t *testing.T) {
 		"skills:\n" +
 		"  - qhealth\n" +
 		"  - adr\n" +
-		"scope: here\n"
+		fmt.Sprintf("scope: %s\n", declared)
 	if got := read(t, bundle, "bindings/eng-docs.yaml"); got != want {
 		t.Errorf("the saved binding is\n%q\nwant\n%q", got, want)
 	}

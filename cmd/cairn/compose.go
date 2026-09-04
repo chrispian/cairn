@@ -420,10 +420,12 @@ func nameOnce(named map[string]string, id, as string) {
 // most --with values are — and the not-found diagnostic in [composition.load]
 // is the whole mitigation for it.
 //
-// It is deliberately not [pathLike], which decides the same question for
-// --scope. A scope is a directory, so "." and "$HOME" are already covered by
-// the separator and absolute tests there, and a leading "." is far more likely
-// to be a relative file here than a directory there.
+// It has no counterpart on --scope, and used to. While a scope could be a name
+// in the bundle's alias registry, something had to tell a name from a path
+// there too — deliberately by a different rule, since a scope is a directory
+// and a leading "." is far more likely to be a relative file here than a
+// directory there. The registry retired and a scope is now unambiguously a
+// path, so this is the only place in cairn that still asks the question.
 func partIsPath(raw string) bool {
 	return strings.ContainsRune(raw, '/') ||
 		strings.ContainsRune(raw, filepath.Separator) ||

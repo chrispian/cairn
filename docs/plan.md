@@ -132,7 +132,6 @@ A profile bundle is a directory, and the directory is the whole store.
     parts/     the same, for the small reusable ones — one global id namespace,
                an organizational convention rather than a second kind
   bindings/    one YAML file per binding, named after the binding
-  scopes.yaml  scope aliases, for as long as the alias registry lasts
   templates/   the documents profiles name
   skills/      one directory per skill
   prompts/     one flat .md file per prompt
@@ -931,11 +930,10 @@ All four take `--profile <dir>`, naming the profile bundle the catalog is read
 from and seeding `$CAIRN_PROFILE_ROOT` with its root — see §3. `show` reports
 the root as well, because it expands nothing itself.
 
-`list` prints the bindings with the directories their scopes resolve to, and
-the profiles with their descriptions, each in its own block and an empty block
-omitted. It exists because a file-backed catalog with no way to list it is a
-directory the operator has to `ls` themselves — the answer is in no one file,
-since a binding's scope may be an alias that resolves elsewhere — and because
+`list` prints the bindings with the directories they work in, and the profiles
+with their descriptions, each in its own block and an empty block omitted. It
+exists because a file-backed catalog with no way to list it is a directory the
+operator has to `ls` themselves — the answer is in no one file — and because
 the conductor profile's launch menu was a SQL query until the database went
 away. It takes no target: one profile is what `show` is for.
 

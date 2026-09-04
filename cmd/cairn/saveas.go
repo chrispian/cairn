@@ -59,33 +59,31 @@ type bindingSave struct {
 // that is something other than what was written.
 //
 // Everything else in a saved composition is recorded verbatim, because every
-// other spelling still means the same directory tomorrow: an alias resolves
-// through the bundle's own registry, and "~/dev/x" and "/dev/x" name one place
-// from anywhere. A **relative** scope does not. It is anchored to the working
-// directory of the process that typed it, a binding records no working
-// directory, and nothing downstream can tell that the value moved — booting
-// the same binding from somewhere else silently resolves somewhere else, or
-// fails.
+// other spelling still means the same directory tomorrow: "~/dev/x" and
+// "/dev/x" name one place from anywhere. A **relative** scope does not. It is
+// anchored to the working directory of the process that typed it, a binding
+// records no working directory, and nothing downstream can tell that the value
+// moved — booting the same binding from somewhere else silently resolves
+// somewhere else, or fails.
 //
 // So the relative case is the one place "as written" would record a value that
 // is not true anywhere but here, and what is saved instead is the directory
-// this boot actually used. That is not the alias hazard in reverse: an alias
-// is a name and stays one, while a relative path was never a name at all.
+// this boot actually used.
 //
 // Absolutized rather than refused because, unlike a path member, there is a
 // sound answer — the boot resolved it, and the resolution is exactly what the
 // binding is meant to reproduce. It is still said out loud.
-func savedScope(cat *catalog.Catalog, raw, resolved string) (value string, absolutized bool) {
+//
+// There used to be a third case between these two: a bare word could be a name
+// in the bundle's scope alias registry, saved as written because a name stays
+// a name. The registry retired, so a bare word is now unambiguously a relative
+// path and falls to the absolutizing branch — which is why this no longer needs
+// the catalog to decide anything.
+func savedScope(raw, resolved string) (value string, absolutized bool) {
 	trimmed := strings.TrimSpace(raw)
 	switch {
 	case trimmed == "":
 		return "", false
-	case !pathLike(trimmed):
-		// A bare word is an alias when the bundle declares one, and a
-		// relative path when it does not — the same fork resolveScope takes.
-		if _, err := cat.Scope(trimmed); err == nil {
-			return trimmed, false
-		}
 	case strings.HasPrefix(trimmed, "~"), filepath.IsAbs(trimmed):
 		return trimmed, false
 	}
@@ -158,7 +156,7 @@ func newBindingSave(ctx context.Context, name string, cat *catalog.Catalog, t bo
 		return nil, err
 	}
 
-	saved, absolutized := savedScope(cat, rawScope, scopeDir)
+	saved, absolutized := savedScope(rawScope, scopeDir)
 	declared := ""
 	if absolutized {
 		declared = strings.TrimSpace(rawScope)

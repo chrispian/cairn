@@ -124,17 +124,6 @@ func writeBinding(t *testing.T, bundle, name, profileID, scopeDir string) {
 	writeFile(t, filepath.Join(dir, name+".yaml"), body, 0o644)
 }
 
-// writeScopes writes the bundle's scope alias registry.
-func writeScopes(t *testing.T, bundle string, aliases map[string]string) {
-	t.Helper()
-	var b strings.Builder
-	for _, alias := range slices.Sorted(maps.Keys(aliases)) {
-		fmt.Fprintf(&b, "%s: %q\n", alias, aliases[alias])
-	}
-	mustMkdir(t, bundle)
-	writeFile(t, filepath.Join(bundle, catalog.ScopesFile), b.String(), 0o644)
-}
-
 // nothingUnder fails the test when anything exists at or under path. It is how
 // "a read that finds nothing writes nothing" is asserted: the command is
 // pointed at a path that does not exist, and this says whether it stayed that
