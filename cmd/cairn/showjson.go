@@ -53,8 +53,8 @@ const showJSONFlagUsage = "print one JSON object describing what the target reso
 //
 // # Why Spec nests where bootReport is flat
 //
-// [bootReport] is flat because it is seven scalars and nesting buys nothing at
-// seven. The reason was never "flat is the house style"; it was that a
+// [bootReport] is flat because it is six scalars and nesting buys nothing at
+// six. The reason was never "flat is the house style"; it was that a
 // consumer reads one key at a time out of a shell. This document's payload is
 // a map from manifest key to an arbitrary JSON value, which has nowhere to go
 // but under a key of its own, and `jq -r '.spec.settings.value'` is the same
