@@ -81,8 +81,8 @@ func normalizesDurations(specKey string) bool {
 }
 
 // maxAliasHops bounds an alias chain. It is a guard and not a limit anybody
-// should reach: aliases pointing at aliases are legal and a document with
-// sixty-four of them in a row is not one an operator wrote.
+// should reach: aliases pointing at aliases are legal, and a document with
+// this many of them in a row is not one an operator wrote.
 const maxAliasHops = 64
 
 // specWalk is one manifest key's conversion: whether a duration underneath it

@@ -25,8 +25,9 @@ import (
 // # The contract
 //
 // Flat and snake_case. What it has to be cheapest for is a consumer reading
-// one key at a time out of a shell — `jq -r '.settings_path'` — and nesting
-// buys nothing at seven.
+// one key at a time out of a shell — `jq -r '.settings_path'` — and every
+// value here is a scalar or a list of them, so there is nothing for nesting to
+// group.
 //
 // Every key is emitted on every boot. The key set is the contract: a key that
 // came and went would make a consumer handle two shapes for one meaning, and it
@@ -35,12 +36,15 @@ import (
 // A value cairn does not have is null, never "" and never []. An empty string
 // is the shape most likely to be interpolated straight into argv — `claude
 // $FLAG "$VALUE"` passes an empty argument and the launch is wrong in a way
-// nothing reports — where null forces the consumer to decide. Three keys can be
-// null and each says something different: no scope was resolved, no file stands
-// at the harness's settings path, this provider needs no flag to grant a
-// directory.
+// nothing reports — where null forces the consumer to decide. Every key whose
+// type is a pointer or a slice can be null, and each says something different:
+// no scope was resolved, no file stands at the harness's settings path, this
+// provider needs no flag to grant a directory. Which those are is read off the
+// struct below rather than counted here, so that adding a fourth cannot make
+// this paragraph wrong.
 //
-// The three are not independent, and the dependency runs one way only: a
+// Scope and SettingsPath are not independent, and the dependency runs one way
+// only: a
 // non-null Scope guarantees a non-null SettingsPath, because the scope is
 // itself a granted directory — see bootdir.grantedDirectories, which adds it
 // first — and a directory to grant is enough on its own to render the settings

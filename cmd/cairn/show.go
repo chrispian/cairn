@@ -216,9 +216,10 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 
 	// Whichever form it takes, this is the whole output of the command. The
-	// two renderers are handed the same four values — nothing above here is
-	// resolved twice, and nothing is resolved differently for one of them — so
-	// --json changes how the document is spelled and never what it says.
+	// two renderers take the same arguments and are handed the same values —
+	// nothing above here is resolved twice, and nothing is resolved
+	// differently for one of them — so --json changes how the document is
+	// spelled and never what it says.
 	// Only the form that was asked for is rendered. The one-liner that renders
 	// both and keeps one is what `cairn boot` does, and it is right there
 	// because the discarded branch is a path and a newline; here it is a whole

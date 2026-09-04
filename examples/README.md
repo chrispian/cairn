@@ -760,7 +760,7 @@ re-authored. That worked, and it worked by luck: one template edit moving the
 line would have returned an empty scope with no error, which is a launcher
 granting nothing and saying so nowhere.
 
-Six keys, flat, `snake_case`, and **every one of them is emitted on every
+Flat, `snake_case`, and **every key is emitted on every
 boot** — the key set is the contract, and a key that came and went would make a
 consumer handle two shapes for one meaning.
 
@@ -924,8 +924,9 @@ both, and `null` in both when there is none. A launcher that showed one scope
 and booted into another would be worse than one that showed nothing.
 
 **`spec` nests where the boot report is flat**, and the reason the boot report
-is flat still holds. It is flat because it is six scalars and nesting buys
-nothing at six — not because flat is the house style. Here the payload is a map
+is flat still holds. It is flat because every value in it is a scalar or a list
+of them, so there is nothing for nesting to group — not because flat is the
+house style. Here the payload is a map
 from manifest key to an arbitrary JSON value, which has nowhere to go but under
 a key of its own, and `jq -r '.spec.settings.value'` is the same one-key read.
 

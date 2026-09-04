@@ -61,14 +61,16 @@ const (
 )
 
 // composition is what a command is given beyond the profile it names: the
-// parts merged after the extends chain, the skills added to the resolved set,
-// and the slots supplied inline.
+// parts merged after the extends chain, the skills and prompts added to the
+// resolved sets, and the slots supplied inline. The fields below are the list;
+// this sentence does not count them, because the last time it did it said
+// three and stayed that way when prompts arrived.
 //
-// All three are instance concerns rather than authoring ones, which is the
-// test for what earns a flag here. spec.skills is what one boot directory
-// carries — install.skills is what every session on the machine loads — and a
-// --set value is a one-off direction for this materialization. A direction
-// worth reusing is an ordinary profile and arrives through --with.
+// Every one of them is an instance concern rather than an authoring one, which
+// is the test for what earns a flag here. spec.skills is what one boot
+// directory carries — install.skills is what every session on the machine
+// loads — and a --set value is a one-off direction for this materialization. A
+// direction worth reusing is an ordinary profile and arrives through --with.
 type composition struct {
 	with    partList
 	skills  idList
@@ -169,7 +171,8 @@ func (c *composition) savedParts() []string   { return []string(c.with) }
 func (c *composition) savedSkills() []string  { return []string(c.skills) }
 func (c *composition) savedPrompts() []string { return []string(c.prompts) }
 
-// bind registers the four flags on fs.
+// bind registers the composition's flags on fs — one per field, and this list
+// is the only place their number is written down.
 func (c *composition) bind(fs *flag.FlagSet) {
 	fs.Var(&c.with, "with", withFlagUsage)
 	fs.Var(&c.skills, "skill", skillFlagUsage)
