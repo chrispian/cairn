@@ -78,17 +78,19 @@ Confirm a path resolves before relying on it.
 End of task, commit, push, pull request, release — each has a skill that carries
 the current steps.
 ## What Chrispian can boot
-Bindings. The name is all the launcher needs.
-  chrispian     planner       ~/dev/chrispian
-  conductor     conductor     ~/dev/chrispian
-  dir-nanite    director      ~/dev/hollis-labs/apps/nanite
-  eng-cairn     engineer      ~/dev/projects/cairn
-  eng-nanite    engineer      ~/dev/hollis-labs/apps/nanite
-  eng-setup     engineer      ~/dev/projects/agent-setup
-  nanite        orchestrator  ~/dev/hollis-labs/apps/nanite
-  orch-nanite   orchestrator  ~/dev/hollis-labs/apps/nanite
+Bindings (8)
+  The name is all `cairn boot` needs: it carries the profile and where the work is.
+  chrispian    planner       ~/dev/chrispian
+  conductor    conductor     ~/dev/chrispian
+  dir-nanite   director      ~/dev/hollis-labs/apps/nanite
+  eng-cairn    engineer      ~/dev/projects/cairn
+  eng-nanite   engineer      ~/dev/hollis-labs/apps/nanite
+  eng-setup    engineer      ~/dev/projects/agent-setup
+  nanite       orchestrator  ~/dev/hollis-labs/apps/nanite
+  orch-nanite  orchestrator  ~/dev/hollis-labs/apps/nanite
 
-Profiles. Each one needs a scope: a path, or an alias below.
+Profiles (8)
+  Bootable by id, and each one needs a scope: a path, or an alias below.
   architect     Decides structure and boundaries, including what they rule out.
   conductor     Runs Chrispian's other sessions from one seat, and holds no scope of its own.
   director      Holds a program across orchestrators and is the escalation point.
@@ -98,13 +100,18 @@ Profiles. Each one needs a scope: a path, or an alias below.
   reviewer      Reviews a change with no shared context on how it was built.
   writer        Writes prose for a human audience. Drafts and stops.
 
-Scope aliases.
-  agent-setup   ~/dev/projects/agent-setup
-  cairn         ~/dev/projects/cairn
-  chrispian     ~/dev/chrispian
-  nanite        ~/dev/hollis-labs/apps/nanite
-  tesseract     ~/dev/hollis-labs/apps/tesseract
-  torque        ~/dev/hollis-labs/apps/torque
+Abstract profiles (1)
+  Extended rather than booted. `cairn install` and `cairn show` take one; `cairn boot` refuses it.
+  base
+
+Scope aliases (6)
+  A short name a binding's scope, or --scope, may be written as instead of a path.
+  agent-setup  ~/dev/projects/agent-setup
+  cairn        ~/dev/projects/cairn
+  chrispian    ~/dev/chrispian
+  nanite       ~/dev/hollis-labs/apps/nanite
+  tesseract    ~/dev/hollis-labs/apps/tesseract
+  torque       ~/dev/hollis-labs/apps/torque
 
 ## Profile
 
