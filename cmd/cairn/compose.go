@@ -510,11 +510,60 @@ func (l *idList) Set(v string) error {
 	return nil
 }
 
+// folded returns the ids once each, keeping the position the first of a repeat
+// landed at.
+//
+// One id arrives twice the ordinary way, which is the way --skill exists for:
+// a binding declares a skill and the operator names it again, because "boot
+// this binding, and make sure x is on" is a thing to type without first
+// reading what the binding holds — and not having to know that is the whole
+// point of the flag. Two --skill values naming one id are the same collision
+// typed in one go.
+//
+// So this is [nameOnce]'s rule over the other collection a binding and a flag
+// both contribute to, and it keeps the first for the reason nameOnce does: the
+// earlier entry is where the composition put the id — the binding's position,
+// ahead of the terminal — and moving it to the end because the operator
+// restated it would report a position nothing chose.
+//
+// The fold is here rather than downstream because downstream is right as it
+// is. [profile.Merge] already folds these keys, a member being its own key,
+// but a merger only ever runs on two declared values: a target that declares
+// no skills at all leaves the flag's list the whole value, carried unread so
+// that a single declarer survives byte for byte. bootdir then refuses the
+// repeat, and that refusal is correct for the manifest it guards — a profile
+// declaring one skill twice IS an authoring error worth naming. What was wrong
+// was handing the checker a list composition had never folded.
+//
+// Two ids fold only when they are the same bytes. A skill id is a directory
+// name under spec.skills_dir and a prompt id a file name under
+// spec.prompts_dir, so "Adr" and "adr" are two names a case-sensitive
+// filesystem tells apart. Folding them would be an identity rule cairn has
+// nowhere else — not in the cascade's own union, which keys by the member's
+// bytes, and not in bootdir, which keys by the trimmed name — and both stand.
+func (l idList) folded() []string {
+	out := make([]string, 0, len(l))
+	seen := make(map[string]struct{}, len(l))
+	for _, id := range l {
+		if _, repeat := seen[id]; repeat {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 // mergeInto folds the collected ids into spec's value for key, last and by id
 // — exactly what a part declaring the same ids would do, through the same
 // table of keyed collections. There are no new merge semantics here and that
 // is the point: a flag is one more contributor to a union that already had
 // several. flag names the flag a diagnostic quotes.
+//
+// What the flag contributes is folded first, by [idList.folded], so that the
+// value handed to the merge is one an operator could have written into a
+// manifest. Otherwise the flags would be the one contributor able to put a
+// repeat into a key whose whole rule is that a member is its own key.
 //
 // Additive, permanently as far as these flags are concerned. See
 // [skillFlagUsage].
@@ -522,7 +571,7 @@ func (l idList) mergeInto(spec profile.Spec, key, flag string) error {
 	if len(l) == 0 {
 		return nil
 	}
-	raw, err := composedJSON([]string(l))
+	raw, err := composedJSON(l.folded())
 	if err != nil {
 		return fmt.Errorf("%s: %w", flag, err)
 	}

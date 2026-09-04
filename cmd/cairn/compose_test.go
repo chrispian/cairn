@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/chrispian/cairn/bootdir"
 	"github.com/chrispian/cairn/catalog"
 	"github.com/chrispian/cairn/profile"
 )
@@ -504,6 +507,133 @@ func TestMergeSkillsIsTheCascadesOwnRule(t *testing.T) {
 	}
 	if got := string(spec[profile.SpecKeySkills]); got != string(want) {
 		t.Errorf("--skill composed %s, want the key's own rule to give %s", got, want)
+	}
+}
+
+// TestAFlagMayNameWhatTheCompositionAlreadyCarries covers the collision the
+// flags exist to make cheap: a binding declares a skill, and the operator names
+// it again because they did not read the binding first.
+//
+// It is asserted against a target that declares neither key, which is the shape
+// that used to refuse. A merger only runs on two declared values, so a profile
+// with no spec.skills leaves the flags' own list the whole value, unread — and
+// an unfolded repeat in it reached bootdir, which refuses one. A target that
+// declares the key never showed the defect at all, because the cascade's union
+// folded the repeat away on the way past.
+//
+// Both flags, because they are one flag over two keys and a fold written for
+// one of them would leave the other refusing.
+func TestAFlagMayNameWhatTheCompositionAlreadyCarries(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := exampleBundle(t, home)
+	scopeDir := filepath.Join(home, "scope")
+	mustMkdir(t, scopeDir)
+
+	// Neither key declared anywhere in this chain: base carries the two source
+	// directories and nothing that names a skill or a prompt.
+	writeFile(t, filepath.Join(bundle, "profiles", "bare.md"),
+		"---\nid: bare\nextends: base\nname: Bare\n---\n", 0o644)
+	// Two of each, so the fold has a position to get wrong as well as a
+	// duplicate to remove.
+	writeFile(t, filepath.Join(bundle, "bindings", "bare-binding.yaml"),
+		"profile: bare\n"+
+			"skills:\n  - capture-decision\n  - adr\n"+
+			"prompts:\n  - handoff\n  - reset-scope\n"+
+			fmt.Sprintf("scope: %s\n", scopeDir), 0o644)
+
+	t.Run("a binding's id restated by the flag lands once, where it was", func(t *testing.T) {
+		out := mustShow(t, ctx, bundle, "bare-binding",
+			"--skill", "capture-decision", "--prompt", "handoff")
+		// Once, and still first: the binding put it there, and the operator
+		// restating it is not a request to move it behind the id it precedes.
+		if got := skillsOf(t, out); !slicesEqual(got, []string{"capture-decision", "adr"}) {
+			t.Errorf("the composed skills are %v, want the binding's folded once and in place", got)
+		}
+		if got := promptsOf(t, out); !slicesEqual(got, []string{"handoff", "reset-scope"}) {
+			t.Errorf("the composed prompts are %v, want the binding's folded once and in place", got)
+		}
+	})
+
+	t.Run("and the boot it used to refuse plants each once", func(t *testing.T) {
+		// bootTree fails the test if the boot refuses, which is the claim.
+		tree := bootTree(t, ctx, filepath.Join(home, "runtime"), "bare-binding",
+			"--profile", bundle, "--skill", "capture-decision", "--prompt", "handoff")
+		for _, rel := range []string{
+			".claude/skills/capture-decision/SKILL.md",
+			".claude/skills/adr/SKILL.md",
+			".claude/commands/boot/handoff.md",
+			".claude/commands/boot/reset-scope.md",
+		} {
+			if _, ok := tree[rel]; !ok {
+				t.Errorf("the boot did not plant %s; the tree holds %v", rel, sortedPaths(tree))
+			}
+		}
+	})
+
+	t.Run("one command naming an id twice is the same collision", func(t *testing.T) {
+		out := mustShow(t, ctx, bundle, "bare",
+			"--skill", "adr,adr", "--prompt", "handoff", "--prompt", "handoff")
+		if got := skillsOf(t, out); !slicesEqual(got, []string{"adr"}) {
+			t.Errorf("the composed skills are %v, want the id once", got)
+		}
+		if got := promptsOf(t, out); !slicesEqual(got, []string{"handoff"}) {
+			t.Errorf("the composed prompts are %v, want the id once", got)
+		}
+	})
+
+	// Two spellings are two ids. A skill is a directory name and a prompt a
+	// file name, so folding by anything looser than the bytes would be an
+	// identity rule cairn has nowhere else — and would make one of two
+	// directories a case-sensitive filesystem tells apart disappear.
+	t.Run("ids that differ fold nothing", func(t *testing.T) {
+		if got := (idList{"adr", "Adr", "adr"}).folded(); !slicesEqual(got, []string{"adr", "Adr"}) {
+			t.Errorf("the folded ids are %v, want the two spellings kept and the repeat dropped", got)
+		}
+	})
+}
+
+// TestAManifestDeclaringOneIDTwiceIsStillRefused is the other half of the fold,
+// and the half a fix could have taken out by mistake.
+//
+// The composition folds before the value is a manifest value. What bootdir
+// guards is the manifest itself, where one skill declared twice is an authoring
+// error in a file somebody wrote — and the way to find out is to be told, not
+// to have cairn quietly render one of them. So the refusal stands, reached by a
+// profile that declares the repeat with no flag anywhere near it.
+func TestAManifestDeclaringOneIDTwiceIsStillRefused(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := exampleBundle(t, home)
+	scopeDir := filepath.Join(home, "scope")
+	mustMkdir(t, scopeDir)
+	writeFile(t, filepath.Join(bundle, "profiles", "twice.md"),
+		"---\nid: twice\nextends: base\nname: Twice\n"+
+			"spec:\n  skills: [capture-decision, capture-decision]\n---\n", 0o644)
+	writeFile(t, filepath.Join(bundle, "profiles", "twice-prompts.md"),
+		"---\nid: twice-prompts\nextends: base\nname: Twice prompts\n"+
+			"spec:\n  prompts: [handoff, handoff]\n---\n", 0o644)
+
+	for _, tc := range []struct {
+		id   string
+		want error
+	}{
+		{"twice", bootdir.ErrSkillName},
+		{"twice-prompts", bootdir.ErrPromptName},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run(ctx, []string{"boot", tc.id, "--profile", bundle,
+				"--scope", scopeDir,
+				"--boot-root", filepath.Join(home, "runtime", tc.id), "--session", "s"},
+				&stdout, &stderr)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("booting a manifest that declares one id twice gave %v, want %v", err, tc.want)
+			}
+			if !strings.Contains(err.Error(), "twice") {
+				t.Errorf("the refusal does not say what is wrong with the manifest: %v", err)
+			}
+		})
 	}
 }
 
