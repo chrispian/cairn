@@ -80,6 +80,8 @@ the current steps.
 ## What Chrispian can boot
 Bindings (8)
   The name is all `cairn boot` needs: it carries the profile and where the work is.
+  A binding that composes says that too: the parts, skills and prompts it adds,
+  as it declares them. `cairn show <name>` resolves what a boot will carry.
   chrispian    planner       ~/dev/chrispian
   conductor    conductor     ~/dev/chrispian
   dir-nanite   director      ~/dev/hollis-labs/apps/nanite
