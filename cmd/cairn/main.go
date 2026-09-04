@@ -90,6 +90,11 @@ flags for install:
 
 flags for show:
   --scope <path|alias>   the scope to report, as boot would resolve it; overrides the binding's
+  --json                 print one JSON object describing what the target resolves to, instead
+                         of the document laid out for reading. It carries the merged manifest
+                         and, per key, the profiles and flags that declared it — which is the
+                         half a consumer cannot reconstruct. Per key: that spec.slots came
+                         from two profiles, not which of them supplied the slot in front of you
 
 flags for all four:
   --profile <dir>        the profile bundle — the directory the catalog is read from,

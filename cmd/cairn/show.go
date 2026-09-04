@@ -55,10 +55,23 @@ const specNote = specIndent + "The names beside a key are the profiles in the ch
 	specIndent + "otherwise untouched. Anything else is a composition: the members are what those\n" +
 	specIndent + "contributors declared, and the order is not.\n"
 
-// runShow resolves a target and prints what it resolves to. It is the
-// mitigation docs/plan.md §3 names: a manifest key is composed member by
-// member across the extends chain, so a profile can no longer be read by
-// reading its own row.
+// runShow resolves a target and prints what it resolves to — laid out for
+// reading, or with --json as one object for a program. It is the mitigation
+// docs/plan.md §3 names: a manifest key is composed member by member across
+// the extends chain, so a profile can no longer be read by reading its own
+// row.
+//
+// The two forms are one document and not two, which is why --json is a flag on
+// this command rather than a command of its own. They are rendered from the
+// same resolution, the same scope and the same attribution map — see the seam
+// at the bottom of this function — so the machine-readable form cannot drift
+// into answering a different question than the one an operator checked by eye.
+// See [showReport], which carries what a consumer may rely on.
+//
+// What --json does not move is stderr. A scope that did not resolve and a part
+// that contributed nothing are facts about the resolution rather than lines of
+// the document, they are reported the same way in both forms, and a consumer
+// reading stdout gets one object either way.
 //
 // It renders nothing and writes nothing. No boot directory, no installed
 // layer, no temporary file, and nothing in the bundle it reads; the whole
@@ -84,6 +97,7 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	fs.SetOutput(stderr)
 	var (
 		scopeFlag   = fs.String("scope", "", "the scope to report, as a path or a scope alias")
+		jsonFlag    = fs.Bool("json", false, showJSONFlagUsage)
 		profileFlag = fs.String("profile", "", profileFlagUsage)
 	)
 	// Every flag `cairn boot` composes with, and this is not a convenience.
@@ -201,7 +215,24 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		declared[key] = append(declared[key], flags...)
 	}
 
-	_, err = fmt.Fprint(stdout, showDocument(resolved, scopeDir, cat.Root(), declared))
+	// Whichever form it takes, this is the whole output of the command. The
+	// two renderers are handed the same four values — nothing above here is
+	// resolved twice, and nothing is resolved differently for one of them — so
+	// --json changes how the document is spelled and never what it says.
+	// Only the form that was asked for is rendered. The one-liner that renders
+	// both and keeps one is what `cairn boot` does, and it is right there
+	// because the discarded branch is a path and a newline; here it is a whole
+	// document, and building one to throw away would be this command doing the
+	// work its own help says it does not.
+	out := ""
+	if *jsonFlag {
+		if out, err = showJSONDocument(resolved, scopeDir, cat.Root(), declared); err != nil {
+			return fmt.Errorf("%s resolved but could not be described: %w", resolved.ID, err)
+		}
+	} else {
+		out = showDocument(resolved, scopeDir, cat.Root(), declared)
+	}
+	_, err = fmt.Fprint(stdout, out)
 	return err
 }
 

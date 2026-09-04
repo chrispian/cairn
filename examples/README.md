@@ -11,6 +11,7 @@ cairn boot <binding|profile> [--scope <path|alias>]   materialize a boot dir, pr
 cairn boot <binding|profile> --json                   ... and describe it for a launcher
 cairn boot <binding|profile> --save-as <name>         ... and save the composition as a binding
 cairn show <binding|profile>                          print what the profile resolves to
+cairn show <binding|profile> --json                   ... and describe it for a launcher
 cairn install <binding|profile> [--check]             render ~/.claude from the same source
 cairn list                                            enumerate the catalog
 ```
@@ -242,6 +243,10 @@ parts, and the flag itself:
 ```
 spec.skills   engineer, docs-only, --skill
 ```
+
+Pass `--json` and that document arrives as one object instead, contributors
+included — which is what a launch palette reads rather than scraping the
+columns above. See **`cairn show --json`** in §5.
 
 `cairn install` takes none of them. It renders the layer every session on the
 machine loads, and a composition is an instance concern by construction — a
@@ -800,6 +805,104 @@ if boot.Scope != nil {
 }
 launch := exec.Command("claude", args...)
 launch.Dir = boot.BootDir
+```
+
+### `cairn show --json`
+
+The same seam, one command over. Without `--json`, stdout is the document laid
+out for reading; with it, stdout is one JSON object and nothing else, and
+diagnostics still go to stderr.
+
+It exists for a launch palette. A GUI showing "what this binding already
+carries" beside an additive skill picker should source that list from `show`
+rather than reimplementing the cascade — that is what `show` is for. But `show`
+without this emits prose, so a consumer would be scraping a human-facing
+document for structured data: **the same defect as the `sed` scrape above, in
+the other command.**
+
+```json
+{
+  "profile": "engineer",
+  "chain": ["base", "engineer"],
+  "name": "Engineer",
+  "description": "Writes code.",
+  "provider": "claude",
+  "model": "opus",
+  "abstract": false,
+  "scope": "/Users/chrispian/dev/projects/cairn",
+  "profile_root": "/Users/chrispian/.config/agents",
+  "spec": {
+    "skills": {
+      "value": ["code-review", "writing", "qhealth"],
+      "contributors": ["engineer", "docs-only", "binding \"eng\""]
+    },
+    "settings": {
+      "value": {"env": {"CAIRN": "1"}},
+      "contributors": ["base"]
+    }
+  }
+}
+```
+
+**The contract is `cairn boot --json`'s, in every clause** — `snake_case`, every
+key emitted on every call, a value Cairn does not have spelled `null`, and no
+`version` field because new keys are free while renaming one is breaking. A
+consumer reading both documents in one session should not have to learn two
+sets of rules. Where a key means the same thing in both it is spelled the same
+way and carries the same value: `scope` is absolute and symlink-resolved in
+both, and `null` in both when there is none. A launcher that showed one scope
+and booted into another would be worse than one that showed nothing.
+
+**`spec` nests where the boot report is flat**, and the reason the boot report
+is flat still holds. It is flat because it is six scalars and nesting buys
+nothing at six — not because flat is the house style. Here the payload is a map
+from manifest key to an arbitrary JSON value, which has nowhere to go but under
+a key of its own, and `jq -r '.spec.settings.value'` is the same one-key read.
+
+The pairing inside each entry is structural on purpose. The value and the
+names beside it are **one fact** — that pairing is the whole reason `show`
+exists — so they are one object rather than two parallel maps a consumer could
+iterate out of step.
+
+**`contributors` is per key, and it is not per member.** It says `spec.skills`
+came from the profile, a part and the binding; it does **not** say which of
+them supplied the skill in front of you. That is a limit of the cascade rather
+than of this command — the second answer cannot be assembled without a second
+copy of the merge table — and a shape implying otherwise would be worse than
+the prose, because a launcher would build a UI on it and the UI would be
+confidently wrong.
+
+Not every member is a profile id. `--skill`, `--prompt` and `--set` appear as
+they are spelled, and a binding replaying a saved composition appears as
+`binding "eng"`. **Do not resolve a member as a profile.** What these are is
+what you would have to change to change the value.
+
+For the palette in particular, that answers the question the union raises:
+skills reach a boot directory from three contributors — the resolved profile,
+any part, and the binding's own skill list — and they compose as a collection
+keyed by id. `spec.skills.value` is that union already done, which is the whole
+reason to route the list through `show`.
+
+**Two nulls that are not the same null.** An empty manifest is `{}`, not
+`null`: `null` is for a value Cairn does not have, and a profile declaring
+nothing has an empty manifest rather than no manifest. But a `value` of `null`
+inside `spec` is a **declaration** — it is how a profile clears an ancestor's
+key — so `"settings": {"value": null, ...}` means *this profile deliberately
+has no settings*, which is a different fact from `settings` being absent from
+`spec`, which means nothing in the chain ever mentioned it. A consumer that
+treats the two as one will render an inherited settings document for a profile
+that went to the trouble of saying it has none.
+
+**`--json` does not move what goes to stderr.** A scope that did not resolve
+and a `--with` that contributed nothing are facts about the resolution rather
+than lines of the document; they are reported the same way in both forms, and a
+consumer reading only stdout gets one object either way. A scope that did not
+resolve is `null` here and named there.
+
+```bash
+SHOW="$(cairn show eng --json)"          # stdout is the object, stderr still yours
+jq -r '.spec.skills.value[]?' <<<"$SHOW" # what this binding already carries
+jq -r '.scope // empty'       <<<"$SHOW" # empty rather than the string "null"
 ```
 
 ### What Cairn is still missing for this
