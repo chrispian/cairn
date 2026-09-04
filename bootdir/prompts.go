@@ -49,38 +49,61 @@ var promptKind = contentKind{
 	sourceErr: ErrPromptsSource,
 }
 
-// renderPrompts returns one file per prompt spec.prompts declares, substituted
-// like any other template and planted under the layout's prompts directory.
+// PromptSource is one declared prompt as it was read: the name spec.prompts
+// declared, the file its text came from, the path it plants at, and that text
+// before any substitution.
 //
-// A prompt is [RenderSkills] for content a person invokes. The declaration
-// cascades the same way, composes the same way, and resolves against a
-// directory the manifest names for the same reason — so what is here is only
-// the part that is about prompts: one flat file per name, substituted, at a
-// path the harness reads as a namespaced command.
+// The text is the source and not the rendering, and that is the only reason
+// this type exists. Substitution replaces every marker it acts on, so a
+// rendered prompt cannot afterwards be asked which of its markers stood for
+// nothing — and that question has a caller. `cairn boot` asks it of
+// spec.templates and reports the answer on stderr; a template's text reaches
+// that report on the [Instance], and a prompt's is on disk. This is how a
+// prompt's gets there.
+type PromptSource struct {
+	// Name is what spec.prompts declared, without the extension.
+	Name string
+
+	// From is the absolute path the text was read from — what a diagnostic
+	// about the prompt's content names, because that is the file to edit.
+	From string
+
+	// Path is where the prompt plants, relative to the boot directory root.
+	// It is what /Name resolves to under [PromptNamespace] and what an
+	// operator looks for, so it is what a diagnostic about the planted
+	// command names.
+	Path string
+
+	// Text is the file's bytes, unsubstituted.
+	Text string
+}
+
+// PromptSources returns every prompt spec.prompts declares — resolved,
+// checked, and read, and not substituted.
 //
-// It is a template and not a copy, which is the whole difference from a skill.
-// The text goes through [Substitute], so a prompt carries `cairn:slot` and
-// `cairn:value` markers and reaches the boot directory already knowing its
-// scope, its session and its profile. Nothing new renders it: this is the same
-// substitution spec.templates gets, over text read from a file instead of out
-// of the manifest.
+// It is the first half of [renderPrompts]: the declaration resolved against
+// the directory the manifest names, each name checked for naming one file
+// directly beneath it, and each file read. The substitution and the planting
+// are the other half, and stay unexported because nothing outside this package
+// plants a prompt.
 //
-// A profile declaring no prompts renders nothing and reports no error. One
-// declaring a prompt that cannot be planted reports [ErrPromptsSource],
-// [ErrPromptName], [ErrPromptNotFound] or [ErrPromptContent], each naming the
-// prompt and the path it was read from.
+// Exporting the read rather than leaving a caller to repeat it is the point.
+// A caller wanting a prompt's source text would otherwise resolve the prompts
+// directory a second time and decide a second time which file each name is,
+// and two answers to one question is how a report comes to describe a file the
+// render never read. That is the same failure in a different collection as the
+// one the report exists to catch, so the read is shared instead.
 //
-// It is unexported, where [RenderSkills] is not. The difference is who calls
-// them: the installed layer renders skills through [RenderInstallSkills] and
-// so needs the boot one on the same boundary, while nothing outside this
-// package renders prompts — `cairn install` deliberately plants none. That is
-// [renderSubagents]'s situation exactly, and this follows it.
+// A profile declaring no prompts returns nothing and no error. The errors are
+// [renderPrompts]'s because they are raised here: [ErrNoProfile],
+// [ErrProviderLayout], [ErrPromptsSource], [ErrPromptName],
+// [ErrPromptNotFound] and [ErrPromptContent].
 //
 // The output is deterministic: the prompts in the order the resolved manifest
 // carries them, which for a key the cascade composed is sorted — see
 // [profile.Resolve]. Nothing here depends on which, because the planted paths
 // are one per name.
-func renderPrompts(inst *Instance) ([]File, error) {
+func PromptSources(inst *Instance) ([]PromptSource, error) {
 	if inst == nil || inst.Profile == nil {
 		return nil, ErrNoProfile
 	}
@@ -107,7 +130,7 @@ func renderPrompts(inst *Instance) ([]File, error) {
 	}
 
 	seen := make(map[string]struct{}, len(declared))
-	files := make([]File, 0, len(declared))
+	out := make([]PromptSource, 0, len(declared))
 	for _, raw := range declared {
 		name := strings.TrimSpace(raw)
 		if err := checkContentName(name, promptKind); err != nil {
@@ -135,7 +158,56 @@ func renderPrompts(inst *Instance) ([]File, error) {
 		}
 		seen[name] = struct{}{}
 
-		file, err := renderPrompt(inst, source, target, name)
+		from := filepath.Join(source, name+PromptFileExt)
+		text, err := readPrompt(name, source, from)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, PromptSource{
+			Name: name,
+			From: from,
+			Path: path.Join(target, name+PromptFileExt),
+			Text: text,
+		})
+	}
+	return out, nil
+}
+
+// renderPrompts returns one file per prompt spec.prompts declares, substituted
+// like any other template and planted under the layout's prompts directory.
+//
+// A prompt is [RenderSkills] for content a person invokes. The declaration
+// cascades the same way, composes the same way, and resolves against a
+// directory the manifest names for the same reason — so what is here is only
+// the part that is about prompts: one flat file per name, substituted, at a
+// path the harness reads as a namespaced command.
+//
+// It is a template and not a copy, which is the whole difference from a skill.
+// The text goes through [Substitute], so a prompt carries `cairn:slot` and
+// `cairn:value` markers and reaches the boot directory already knowing its
+// scope, its session and its profile. Nothing new renders it: this is the same
+// substitution spec.templates gets, over text read from a file instead of out
+// of the manifest.
+//
+// A profile declaring no prompts renders nothing and reports no error. One
+// declaring a prompt that cannot be planted reports [ErrPromptsSource],
+// [ErrPromptName], [ErrPromptNotFound] or [ErrPromptContent], each naming the
+// prompt and the path it was read from.
+//
+// It is unexported, where [RenderSkills] is not. The difference is who calls
+// them: the installed layer renders skills through [RenderInstallSkills] and
+// so needs the boot one on the same boundary, while nothing outside this
+// package renders prompts — `cairn install` deliberately plants none. That is
+// [renderSubagents]'s situation exactly, and this follows it. What is exported
+// is [PromptSources], which reads and does not render.
+func renderPrompts(inst *Instance) ([]File, error) {
+	sources, err := PromptSources(inst)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]File, 0, len(sources))
+	for _, src := range sources {
+		file, err := renderPrompt(inst, src)
 		if err != nil {
 			return nil, err
 		}
@@ -165,10 +237,13 @@ func emptiedBy(text string) string {
 	return "substitutes away to nothing — " + strings.Join(named, ", ") + " stood for nothing"
 }
 
-// renderPrompt reads the prompt named name under source, substitutes it, and
-// returns it as one file under target.
-func renderPrompt(inst *Instance, source, target, name string) (File, error) {
-	from := filepath.Join(source, name+PromptFileExt)
+// readPrompt returns the bytes of the prompt named name, read from the file at
+// from beneath source.
+//
+// It is the read and none of the rendering, so that [PromptSources] can hand a
+// caller the source text and [renderPrompt] can substitute it without either
+// of them owning the other's half.
+func readPrompt(name, source, from string) (string, error) {
 	// Stat and not Lstat, so a symlink to a regular file is read by value. That
 	// is the skills copier's behaviour and this follows it rather than
 	// narrowing it here: a bundle that keeps one prompt somewhere else and
@@ -182,24 +257,30 @@ func renderPrompt(inst *Instance, source, target, name string) (File, error) {
 		// there, and an operator told to create the file finds one already in
 		// the way. So the link is named, as the skills copier names it.
 		if link, readErr := os.Readlink(from); readErr == nil {
-			return File{}, fmt.Errorf("%w: prompt %q at %s is a symlink to %s, which does not exist",
+			return "", fmt.Errorf("%w: prompt %q at %s is a symlink to %s, which does not exist",
 				ErrPromptContent, name, from, link)
 		}
-		return File{}, fmt.Errorf("%w: spec.%s declares %q, which is not in %s: nothing at %s",
+		return "", fmt.Errorf("%w: spec.%s declares %q, which is not in %s: nothing at %s",
 			ErrPromptNotFound, profile.SpecKeyPrompts, name, source, from)
 	case err != nil:
-		return File{}, fmt.Errorf("stat prompt %q at %s: %w", name, from, err)
+		return "", fmt.Errorf("stat prompt %q at %s: %w", name, from, err)
 	case !info.Mode().IsRegular():
-		return File{}, fmt.Errorf("%w: prompt %q at %s is not a regular file",
+		return "", fmt.Errorf("%w: prompt %q at %s is not a regular file",
 			ErrPromptContent, name, from)
 	}
 	text, err := os.ReadFile(from)
 	if err != nil {
-		return File{}, fmt.Errorf("read prompt %q at %s: %w", name, from, err)
+		return "", fmt.Errorf("read prompt %q at %s: %w", name, from, err)
 	}
-	rendered, err := Substitute(string(text), inst.Sections, inst.Values)
+	return string(text), nil
+}
+
+// renderPrompt substitutes one already-read prompt and returns it as the file
+// it plants as.
+func renderPrompt(inst *Instance, src PromptSource) (File, error) {
+	rendered, err := Substitute(src.Text, inst.Sections, inst.Values)
 	if err != nil {
-		return File{}, fmt.Errorf("prompt %q at %s: %w", name, from, err)
+		return File{}, fmt.Errorf("prompt %q at %s: %w", src.Name, src.From, err)
 	}
 	// A prompt that substitutes away to nothing is refused, where a template
 	// that does renders no file. The difference is what each one is addressed
@@ -216,13 +297,20 @@ func renderPrompt(inst *Instance, source, target, name string) (File, error) {
 	// is the cost of refusing rather than planting nothing, and it is why the
 	// message names the markers rather than only reporting the emptiness: the
 	// slot failure is already on stderr, and this is what matches the two up.
+	//
+	// The markers named here are every marker the file held, which is a wider
+	// set than the one `cairn boot` reports as unfilled — see [Unfilled]. A
+	// prompt emptied by a slot no profile declared is emptied by a marker that
+	// is nobody's mistake, and this has to say so; the report upstream names
+	// only the faults. The two are a shortlist and an inventory, and a prompt
+	// that empties out is the one case an operator reads both.
 	if strings.TrimSpace(rendered) == "" {
 		return File{}, fmt.Errorf("%w: prompt %q at %s %s, so /%s:%s would answer "+
-			"\"Unknown command\"", ErrPromptContent, name, from, emptiedBy(string(text)),
-			PromptNamespace, name)
+			"\"Unknown command\"", ErrPromptContent, src.Name, src.From, emptiedBy(src.Text),
+			PromptNamespace, src.Name)
 	}
 	if !strings.HasSuffix(rendered, "\n") {
 		rendered += "\n"
 	}
-	return File{Path: path.Join(target, name+PromptFileExt), Content: []byte(rendered)}, nil
+	return File{Path: src.Path, Content: []byte(rendered)}, nil
 }

@@ -285,9 +285,12 @@ harness loads on its own; a prompt is one file planted at
 which the operator invokes as `/boot:<name>`.
 
 **A prompt is a template**, so it carries the same `<!-- cairn:slot ... -->` and
-`<!-- cairn:value ... -->` markers a `templates:` entry does and is substituted
-from the same slots and instance values. There is no second syntax, no extra
-source kind, and deliberately nowhere to put a conditional — that is what keeps
+`<!-- cairn:value ... -->` markers a `templates:` entry does, is substituted
+from the same slots and instance values, and a marker in one that stood for
+nothing is named on stderr on the same terms — see *Templates and markers*
+below. That last one matters more here than it does for a `templates:` entry: a
+template is read, and a prompt is a command you type. There is no second
+syntax, no extra source kind, and deliberately nowhere to put a conditional — that is what keeps
 a template a substitution target rather than a program. A prompt that must
 differ is two prompts, or a slot.
 

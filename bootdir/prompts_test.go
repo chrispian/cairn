@@ -111,6 +111,75 @@ func TestPromptsArePlantedAsNamespacedCommandsAndSubstituted(t *testing.T) {
 	}
 }
 
+// TestPromptSourcesAreTheTextTheRenderSubstitutes pins the one property that
+// makes exporting the read worth anything: the report and the render see the
+// same bytes at the same destination.
+//
+// `cairn boot` reports the markers in a prompt that stood for nothing, and it
+// can only ask that of the source text. If [PromptSources] ever resolved the
+// prompts directory, or decided which file a name is, separately from the
+// render, the report would describe a file that was never planted — which is a
+// worse version of the silence the report was added to end. So the two are
+// asserted against each other rather than against a literal: the source's Path
+// is the rendered file's path, and the source's Text substituted by hand is
+// the rendered file's content.
+//
+// The unsubstituted half is asserted too. A Text that had already been through
+// [Substitute] would satisfy the path claim and carry no markers left to
+// report, which is the failure that would look most like working.
+func TestPromptSourcesAreTheTextTheRenderSubstitutes(t *testing.T) {
+	source := t.TempDir()
+	text := "Write the handoff.\n\n" + promptSlotMarker + "\n\nScope: " + promptValueMarker + "\n"
+	writePrompt(t, source, "handoff", text)
+
+	inst := promptsInstance(t, source, "handoff")
+	inst.Sections = map[string]string{"repository": promptSection}
+	inst.Values = map[string]string{"scope": promptScope}
+
+	sources, err := PromptSources(inst)
+	if err != nil {
+		t.Fatalf("PromptSources(): %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("PromptSources() returned %d sources, want the one declared prompt", len(sources))
+	}
+	got := sources[0]
+	if got.Name != "handoff" {
+		t.Errorf("the source is named %q, want the name spec.prompts declared", got.Name)
+	}
+	if want := filepath.Join(source, "handoff"+PromptFileExt); got.From != want {
+		t.Errorf("the source was read from %q, want %q", got.From, want)
+	}
+	if got.Text != text {
+		t.Errorf("the source text is\n%q\nwant the file's own bytes\n%q", got.Text, text)
+	}
+	for _, marker := range []string{promptSlotMarker, promptValueMarker} {
+		if !strings.Contains(got.Text, marker) {
+			t.Errorf("the source text has lost %s, so nothing can report it as unfilled", marker)
+		}
+	}
+
+	files, err := renderPrompts(inst)
+	if err != nil {
+		t.Fatalf("renderPrompts(): %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("renderPrompts() returned %d files, want one", len(files))
+	}
+	if got.Path != files[0].Path {
+		t.Errorf("the source plants at %q and the render plants at %q; a report reading the first "+
+			"would name a file the second never wrote", got.Path, files[0].Path)
+	}
+	rendered, err := Substitute(got.Text, inst.Sections, inst.Values)
+	if err != nil {
+		t.Fatalf("Substitute(the source text): %v", err)
+	}
+	if rendered != string(files[0].Content) {
+		t.Errorf("the source text substitutes to\n%q\nand the render wrote\n%q",
+			rendered, files[0].Content)
+	}
+}
+
 // TestPromptSubstitutionComesFromTheInstance is the control for the test
 // above. The same fixture with nothing on the instance has to lose both
 // substituted strings, and keep the prose around them.

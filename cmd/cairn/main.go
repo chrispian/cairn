@@ -651,7 +651,26 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// Reported before the write rather than after it, so that an operator
 	// reading stderr sees the missing block named beside the slot failure that
 	// explains it.
-	if err := reportUnfilledMarkers(stderr, bootTemplates(templates), sections); err != nil {
+	//
+	// Prompts are reported here beside the templates, and being here at all is
+	// the point: a prompt is planted as a slash command, so a marker in one
+	// that filled nothing is a command a person RUNS with a block of its
+	// instructions missing and nothing anywhere saying so. It is a report and
+	// not a refusal, the way the template one is — the boot still exits 0.
+	//
+	// One call and not two. The trailing line naming the values cairn fills is
+	// printed once per report, so a second call would print it twice for a
+	// profile that misspelled a value in each collection, and the sort that
+	// makes two boots of one profile report in the same order only orders what
+	// it is handed.
+	//
+	// It costs a second read of the prompt files, since the render reads them
+	// again. That is a handful of small files against a report that is the
+	// only thing standing between an operator and a half-empty command, and
+	// the alternative — carrying the sources from here into the render — is a
+	// second way to render a boot directory.
+	if err := reportUnfilledMarkers(stderr,
+		append(bootTemplates(templates), bootPrompts(inst)...), sections); err != nil {
 		return fmt.Errorf("profile %q: %w", resolved.ID, err)
 	}
 	files, err := bootdir.Render(inst)
@@ -764,8 +783,16 @@ func instanceValues(values map[string]string) map[string]string {
 // reportUnfilledMarkers prints every marker that stood for nothing an operator
 // would want to hear about: a slot that was declared and then filled nothing —
 // it failed to resolve, or it resolved empty — and a value cairn cannot fill for
-// any profile. Either leaves the template shorter than it reads, and nothing in
+// any profile. Either leaves the document shorter than it reads, and nothing in
 // the resulting file says so.
+//
+// It walks whatever it is handed, which is spec.templates and spec.prompts. A
+// prompt is a template read from a file, substituted from the same sections
+// and the same values, and a marker in one fails in exactly the way a marker
+// in a template does — with one difference, and it runs the wrong way. A
+// template is read; a prompt is planted as a slash command and is typed. A
+// half-empty command is executed by a person expecting instructions that are
+// not in it.
 //
 // A marker naming a slot no profile declared is not reported, and neither is a
 // value cairn knows that is empty for this instance. See
@@ -785,13 +812,14 @@ func instanceValues(values map[string]string) map[string]string {
 // where in the file the marker was, so a second line for the same name in the
 // same file carries nothing the first did not.
 //
-// Each template carries two names because a diagnostic and a refusal are read
+// Each document carries two names because a diagnostic and a refusal are read
 // for different reasons. A marker that stood for nothing names the path the
 // file lands at, which is what an operator looks for and fails to find. A
-// marker that would not parse names the manifest key, which is what they open
-// to fix it — the path is an output that this run will never produce, and
-// naming a file an operator cannot find is worse than not naming one. In a boot
-// directory the two are the same string; in the installed layer they are not.
+// marker that would not parse names the manifest key and the name under it,
+// which is what they open to fix it — the path is an output that this run will
+// never produce, and naming a file an operator cannot find is worse than not
+// naming one. For a boot directory's templates the two are the same string;
+// for the installed layer, and for a prompt, they are not.
 //
 // The slice is sorted here, so a caller may hand one over in any order and two
 // boots of one profile still report in the same one.
@@ -802,7 +830,7 @@ func reportUnfilledMarkers(stderr io.Writer, templates []reportedTemplate, secti
 		dest := tmpl.path
 		unfilled, err := bootdir.Unfilled(tmpl.text, sections)
 		if err != nil {
-			return fmt.Errorf("spec.%s %q: %w", profile.SpecKeyTemplates, tmpl.key, err)
+			return fmt.Errorf("spec.%s %q: %w", tmpl.spec, tmpl.key, err)
 		}
 		said := make(map[reportedMarker]bool, len(unfilled))
 		for _, marker := range unfilled {
@@ -852,9 +880,19 @@ func quotedValueNames() string {
 	return strings.Join(quoted, ", ")
 }
 
-// reportedTemplate is one template a report walks: the manifest key it was
-// declared under, the path the file lands at, and its text.
+// reportedTemplate is one substituted document a report walks: the manifest
+// key that declares its collection, the name it was declared under, the path
+// the file lands at, and its text.
+//
+// It is named for spec.templates because that is the collection it was written
+// for, and it carries spec.prompts too — a prompt is a template, read from a
+// file instead of out of the manifest, and there is nothing about a marker
+// that stood for nothing that differs between the two. The spec field is what
+// keeps a diagnostic from saying otherwise: without it a report about a prompt
+// would name spec.templates, and send an operator to a key that does not hold
+// it.
 type reportedTemplate struct {
+	spec string
 	key  string
 	path string
 	text string
@@ -866,7 +904,46 @@ type reportedTemplate struct {
 func bootTemplates(templates map[string]string) []reportedTemplate {
 	out := make([]reportedTemplate, 0, len(templates))
 	for dest, text := range templates {
-		out = append(out, reportedTemplate{key: dest, path: dest, text: text})
+		out = append(out, reportedTemplate{
+			spec: profile.SpecKeyTemplates, key: dest, path: dest, text: text})
+	}
+	return out
+}
+
+// bootPrompts lists a boot directory's prompts for a report, and nothing at
+// all when they cannot be read.
+//
+// A prompt is substituted from the same sections and the same values a
+// template is, so a marker in one that stands for nothing is the same fault
+// with the same cause — and the only reason it was not reported until now is
+// that a template's text arrives on the instance while a prompt's is on disk.
+// [bootdir.PromptSources] is that read, and it is the read the render makes:
+// asking for it here rather than resolving the prompts directory again is what
+// keeps this report describing the files that are actually planted.
+//
+// The two names are the two a prompt answers to. The key is what spec.prompts
+// declared, which is what an operator edits; the path is where the command
+// lands, which is what they type. Both, because a prompt is the one artifact
+// whose declaration and destination are different strings an operator holds in
+// mind at once.
+//
+// An error is discarded rather than returned, and that is the whole of what
+// this function decides. Every failure here — an unusable prompts directory, a
+// name that cannot be a file, a prompt that is not there — is one
+// [bootdir.Render] makes again a moment later, under the artifact name and the
+// source path it belongs to. Returning it would put a worse-addressed copy of
+// the same refusal one step in front of the good one, and the report has
+// nothing of its own to add to it. What it must not do is suppress the render:
+// nothing is reported, the render still runs, and the boot still fails on it.
+func bootPrompts(inst *bootdir.Instance) []reportedTemplate {
+	sources, err := bootdir.PromptSources(inst)
+	if err != nil {
+		return nil
+	}
+	out := make([]reportedTemplate, 0, len(sources))
+	for _, src := range sources {
+		out = append(out, reportedTemplate{
+			spec: profile.SpecKeyPrompts, key: src.Name, path: src.Path, text: src.Text})
 	}
 	return out
 }
@@ -894,7 +971,8 @@ func installedTemplates(templates map[string]string, renderers []install.Rendere
 			continue
 		}
 		if text, declared := templates[r.Artifact]; declared {
-			out = append(out, reportedTemplate{key: r.Artifact, path: artifact.RelPath, text: text})
+			out = append(out, reportedTemplate{
+				spec: profile.SpecKeyTemplates, key: r.Artifact, path: artifact.RelPath, text: text})
 		}
 	}
 	return out
