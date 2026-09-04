@@ -78,7 +78,9 @@ func listDocument(cat *catalog.Catalog) string {
 	sections := []listSection{
 		{
 			heading: "Bindings",
-			note:    "The name is all `cairn boot` needs: it carries the profile and where the work is.",
+			note: "The name is all `cairn boot` needs: it carries the profile and where the work is.\n" +
+				specIndent + "A binding that composes says that too: the parts, skills and prompts it adds,\n" +
+				specIndent + "as it declares them. `cairn show <name>` resolves what a boot will carry.",
 		},
 		{
 			heading: "Profiles",
@@ -100,9 +102,22 @@ func listDocument(cat *catalog.Catalog) string {
 		aliases  = 3
 	)
 
+	// The composition is the last column, and last is load-bearing. [writeRows]
+	// measures a column across every row of the block and pads all but the last
+	// one, so a binding that names six parts spends that width on its own line
+	// and no other. In any earlier position it would push every other binding's
+	// scope right by the same amount, and eight rows would become a wall of
+	// whitespace to say something about one of them. It is also the only column
+	// holding three lists rather than one value, so it is the only one whose
+	// width has no bound — which is the same fact from the other side.
+	//
+	// The binding's own file writes scope last, and the order there is the
+	// order a composition resolves in — see catalog's bindingFile. This row
+	// deliberately disagrees, because a file is read top to bottom and a column
+	// is measured across rows.
 	for _, b := range cat.Bindings() {
 		sections[bindings].rows = append(sections[bindings].rows,
-			[]string{b.Name, b.ProfileID, cat.ResolvedScope(b)})
+			[]string{b.Name, b.ProfileID, cat.ResolvedScope(b), bindingComposition(b)})
 	}
 	for _, p := range cat.Profiles() {
 		at := profiles
@@ -130,13 +145,69 @@ func listDocument(cat *catalog.Catalog) string {
 	return b.String()
 }
 
+// bindingComposition renders what a binding adds to the profile it boots: the
+// parts merged onto that profile's chain, then the skills and prompts the boot
+// directory carries. Empty for a binding that adds none of them.
+//
+// Ids, and not a count of them. The defect this closes is that two bindings
+// booting materially different sessions rendered as one row but for the name,
+// and a count reproduces that a notch further in: two bindings each adding one
+// part are still one row apart, which is the same complaint about the same
+// listing. The case is sharpest for prompts, because a prompt is planted as a
+// command a person can type — "1 prompt" stands for an invocation without
+// saying what to invoke. `cairn show <name>` resolves the whole cascade and is
+// where a full account belongs; a listing is for choosing which of these to
+// boot, and that choice is made on the ids.
+//
+// They are the binding's own ids, spelled as it wrote them. [catalog.Binding]
+// keeps a part as written so that it stays true when the bundle moves, and
+// expanding one here would undo that and could print an absolute path — which
+// is the line [listDocument] exists not to grow. It follows that this column
+// is what the binding adds and not what the boot ends up carrying: a skill the
+// profile itself declares is not here, which is what the note under the
+// heading spends its second sentence on.
+//
+// The labels are the binding file's keys rather than the flags that fill them,
+// for the reason catalog's bindingFile gives for the keys themselves — they
+// name what the binding holds. An operator who reads "parts: docs-only" here
+// opens the file and finds "parts:" in it.
+func bindingComposition(b catalog.Binding) string {
+	// Declaration order, which is also resolution order: parts change what the
+	// profile is, and skills and prompts are added to whatever it resolved to.
+	groups := []struct {
+		key string
+		ids []string
+	}{
+		{"parts", b.Parts},
+		{"skills", b.Skills},
+		{"prompts", b.Prompts},
+	}
+	written := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if len(g.ids) == 0 {
+			continue
+		}
+		written = append(written, g.key+": "+strings.Join(g.ids, ", "))
+	}
+	// The gap between groups is the gap between columns, because with nothing
+	// to the right of it there is no second boundary for it to be confused
+	// with, and one spacing is one thing for a reader to learn.
+	return strings.Join(written, strings.Repeat(" ", columnGap))
+}
+
 // writeRows writes one section's rows, each column widened to the widest entry
 // in it, indented to sit under its heading's note.
 //
 // The last column is not padded and every line is trimmed on the right. A
-// binding that declares no scope, or a profile with no description, would
+// binding that composes nothing, or a profile with no description, would
 // otherwise end in a run of spaces — invisible in a terminal, and a diff in a
 // file this render is planted into.
+//
+// The trim does more than tidy: it is why the composition column costs nothing
+// where it is not used. A binding with no parts, skills or prompts pads its
+// scope to the block's width, appends nothing, and has the padding taken back
+// off — so the row is byte-for-byte the row it was before the column existed.
+// Every binding in the live bundle is that binding today.
 func writeRows(b *strings.Builder, rows [][]string) {
 	widths := make([]int, 0, 4)
 	for _, row := range rows {

@@ -3,16 +3,27 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/chrispian/cairn/catalog"
 )
 
 // TestList covers the command that answers "what can I boot" against a
 // directory of files. It replaces a SQL query the conductor profile ran against
 // the store, so the question is the same one and the answer has to carry the
 // same three facts: what a binding is called, what it boots, and where.
+//
+// And now a fourth, which the query never could: what the binding composes on
+// top. The listing rendered three of catalog.Binding's fields and went on
+// rendering three as parts, skills and prompts arrived, so two bindings that
+// boot materially different sessions read as one row but for the name. See
+// TestListRendersEveryBindingField, which is that decay written down as a
+// failure rather than as a comment.
 func TestList(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
@@ -24,6 +35,16 @@ func TestList(t *testing.T) {
 	seed(t, bundle, skillsDir, scopeDir)
 	writeScopes(t, bundle, map[string]string{"repo": scopeDir})
 	writeBinding(t, bundle, "aliased", "engineer", "repo")
+	// A binding that composes, standing beside two that do not. A listing
+	// resolves none of these ids — the catalog checks that a binding names a
+	// profile it holds and checks nothing else — so what is printed is what the
+	// file says, which is the promise this column makes.
+	writeFile(t, filepath.Join(bundle, catalog.BindingsDir, "composed.yaml"),
+		"profile: engineer\n"+
+			"parts:\n  - docs-only\n  - git-flow\n"+
+			"skills:\n  - code-review\n"+
+			"prompts:\n  - handoff\n"+
+			fmt.Sprintf("scope: %q\n", scopeDir), 0o644)
 
 	list := func(t *testing.T, args ...string) string {
 		t.Helper()
@@ -44,6 +65,47 @@ func TestList(t *testing.T) {
 		out := list(t)
 		if !hasLine(out, "aliased", "engineer", scopeDir) {
 			t.Errorf("no line carries the binding, its profile and its directory:\n%s", out)
+		}
+	})
+
+	t.Run("a binding says what it composes, and all three kinds of it", func(t *testing.T) {
+		// One line again, and for a sharper reason than above: three
+		// assertions that each pass somewhere in the document would pass on a
+		// listing that showed one binding's parts and another's prompts.
+		//
+		// Ids and not counts. A count would leave two bindings that each add
+		// one part rendering identically, which is the very complaint this
+		// column answers, and for prompts it would stand for a command a
+		// person can type without saying which command.
+		out := list(t)
+		if !hasLine(out, "composed", "engineer", scopeDir,
+			"parts: docs-only, git-flow", "skills: code-review", "prompts: handoff") {
+			t.Errorf("the row does not carry what the binding composes:\n%s", out)
+		}
+	})
+
+	t.Run("a binding that composes nothing ends where it always ended", func(t *testing.T) {
+		// The column is paid for only by the bindings that use it. writeRows
+		// right-trims, so a row with an empty composition is byte-for-byte the
+		// row it was before the column existed — which is what keeps a bundle
+		// of plain bindings from re-rendering every file this listing is
+		// planted into.
+		out := list(t)
+		row := lineStarting(t, out, "aliased")
+		if !strings.HasSuffix(row, scopeDir) {
+			t.Errorf("a binding composing nothing grew a column anyway: %q", row)
+		}
+	})
+
+	t.Run("no line ends in whitespace", func(t *testing.T) {
+		// writeRows' own promise, asserted against the document rather than
+		// read off the function. This render is planted into a boot file, where
+		// a run of invisible spaces is a diff, and adding a column is exactly
+		// the change that breaks it.
+		for _, line := range strings.Split(list(t), "\n") {
+			if line != strings.TrimRight(line, " ") {
+				t.Errorf("a line ends in spaces, which is a diff in a planted file: %q", line)
+			}
 		}
 	})
 
@@ -175,4 +237,62 @@ func blockOf(t *testing.T, out, heading string) string {
 		t.Fatalf("the listing has no %q block:\n%s", heading, out)
 	}
 	return strings.Join(block, "\n")
+}
+
+// lineStarting returns the one line of out whose first field is name, failing
+// when there is not exactly one. It is how a single row is pulled out whole, so
+// an assertion can be about where the row ends and not only about what it
+// contains.
+func lineStarting(t *testing.T, out, name string) string {
+	t.Helper()
+	var found []string
+	for _, line := range strings.Split(out, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == name {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one row for %q, got %d:\n%s", name, len(found), out)
+	}
+	return found[0]
+}
+
+// TestListRendersEveryBindingField fails when catalog.Binding gains a field the
+// listing was not taught to show.
+//
+// It is this task's own defect, mechanized. A binding grew parts, then skills,
+// then prompts, and listDocument went on rendering the three fields it was
+// written against — so a binding that composed a different session rendered as
+// the row beside it. catalog.Binding's doc comment predicts exactly this decay
+// for its own prose, and prose is what failed: nothing anywhere said the
+// listing had fallen behind.
+//
+// Reflection rather than a golden of the render, because the question is about
+// the struct and not about the bytes. A field added and left unshown changes no
+// output, so no output test can notice it; this one turns the next field into a
+// failure that names it and asks for a decision. Answering the failure is
+// editing the map — after deciding that the field belongs in a row, or that it
+// does not and why.
+func TestListRendersEveryBindingField(t *testing.T) {
+	shown := map[string]string{
+		"Name":      "the first column",
+		"ProfileID": "the second column",
+		"Scope":     "the third column, resolved through the alias registry",
+		"Parts":     "the composition column",
+		"Skills":    "the composition column",
+		"Prompts":   "the composition column",
+	}
+	fields := reflect.VisibleFields(reflect.TypeFor[catalog.Binding]())
+	for _, f := range fields {
+		if _, ok := shown[f.Name]; !ok {
+			t.Errorf("catalog.Binding.%s is new and `cairn list` does not show it. Decide whether a "+
+				"row should carry it, then say so here — a field silently left out is how this "+
+				"listing fell three fields behind before.", f.Name)
+		}
+	}
+	for name := range shown {
+		if !slices.ContainsFunc(fields, func(f reflect.StructField) bool { return f.Name == name }) {
+			t.Errorf("this test claims `cairn list` shows catalog.Binding.%s, which no longer exists", name)
+		}
+	}
 }
