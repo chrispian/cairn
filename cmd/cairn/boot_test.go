@@ -209,10 +209,17 @@ func TestBootJSONDescribesTheBootForALauncher(t *testing.T) {
 
 	// The key set is the contract. A key that came and went would make a
 	// consumer handle two shapes for one meaning.
-	want := []string{"boot_dir", "cwd_preference", "project_dir_arg", "provider", "scope",
-		"settings_path"}
+	want := []string{"boot_dir", "cwd_preference", "profile_root", "project_dir_arg", "provider",
+		"saved_binding_path", "saved_dropped_sets", "scope", "settings_path"}
 	if got := slices.Sorted(maps.Keys(raw)); !slices.Equal(got, want) {
 		t.Errorf("the document carries %v, want exactly %v", got, want)
+	}
+	// The two --save-as keys are emitted on a boot that saved nothing, which
+	// is the half of "every key on every boot" a conditional would break.
+	for _, key := range []string{"saved_binding_path", "saved_dropped_sets"} {
+		if got := string(raw[key]); got != "null" {
+			t.Errorf("%s = %s on a boot with no --save-as, want null", key, got)
+		}
 	}
 
 	var report bootReport
@@ -227,6 +234,13 @@ func TestBootJSONDescribesTheBootForALauncher(t *testing.T) {
 	}
 	if report.Provider != profile.ProviderClaude.String() {
 		t.Errorf("provider = %q, want %q", report.Provider, profile.ProviderClaude)
+	}
+	// The bundle this boot was composed out of, which the boot directory does
+	// not record anywhere. Without it a harness re-running cairn from inside
+	// that directory falls back to ~/.config/agents and reads a different
+	// bundle, silently and by the rules.
+	if report.ProfileRoot != bundle {
+		t.Errorf("profile_root = %q, want %q", report.ProfileRoot, bundle)
 	}
 	// The scope as the boot resolved it, symlinks and all, and not the raw
 	// value the binding declared — a granted directory is matched against by
@@ -286,7 +300,7 @@ func TestBootJSONDescribesTheBootForALauncher(t *testing.T) {
 // without this it rests on nullable's shape and nothing else.
 func TestBootJSONReportsAFlaglessProviderAsNull(t *testing.T) {
 	layout := bootdir.Layout{Provider: profile.ProviderClaude}
-	report, err := newBootReport("/boot/x", layout, "", nil)
+	report, err := newBootReport("/boot/x", layout, "", "/bundle", nil, nil)
 	if err != nil {
 		t.Fatalf("newBootReport: %v", err)
 	}

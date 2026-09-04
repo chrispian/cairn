@@ -746,10 +746,13 @@ moved. With it, stdout is one JSON object and nothing else, so
 {
   "boot_dir": "/Users/.../boot/eng/20260826T014133Z-9f2a1c",
   "provider": "claude",
+  "profile_root": "/Users/chrispian/.config/agents",
   "scope": "/Users/chrispian/dev/projects/cairn",
   "settings_path": "/Users/.../boot/eng/20260826T014133Z-9f2a1c/.claude/settings.json",
   "cwd_preference": "boot_dir",
-  "project_dir_arg": ["--add-dir", "{{.ProjectDir}}"]
+  "project_dir_arg": ["--add-dir", "{{.ProjectDir}}"],
+  "saved_binding_path": null,
+  "saved_dropped_sets": null
 }
 ```
 
@@ -767,7 +770,7 @@ consumer handle two shapes for one meaning.
 **A value Cairn does not have is `null`, never `""` and never `[]`.** An empty
 string is the shape most likely to be interpolated straight into argv: `claude
 $FLAG "$VALUE"` passes an empty argument and the launch is wrong with nothing
-reporting it, where `null` forces the consumer to decide. Three keys can be
+reporting it, where `null` forces the consumer to decide. Five keys can be
 null and each says something different:
 
 - `scope` — the binding declared none and no `--scope` was given.
@@ -777,6 +780,15 @@ null and each says something different:
   produced, so it never names a file that is not there.
 - `project_dir_arg` — this harness needs no flag to grant a directory. It is
   **not** how "there is no scope" is spelled; `scope` says that.
+- `saved_binding_path` — no `--save-as` was given.
+- `saved_dropped_sets` — no `--set` was dropped from a save, which is one
+  meaning covering both "no `--save-as`" and "a save that dropped nothing".
+  `saved_binding_path` is what separates those two states.
+
+`profile_root` is the exception: it is **never null**, which is that same rule
+applied rather than a break from it. `null` is for a value Cairn does not have,
+and a boot that resolved no bundle read no profile and wrote no directory —
+there is no document for the null to appear in.
 
 **`scope` and `settings_path` are not equivalent, and only one implication
 holds.** The scope is itself one of the granted directories, and one directory
@@ -806,6 +818,35 @@ and with the placeholder **left standing**. Both halves are deliberate:
   scope would have to report `null`, which already means "this harness needs no
   such flag". Replace `{{.ProjectDir}}` in each token with `scope`.
 
+`profile_root` is the bundle the boot was composed out of, and what
+`$CAIRN_PROFILE_ROOT` expanded to in every manifest value that names somewhere
+to read from. **The boot directory does not record it, and the bundle resolves
+without it** — with no flag and no variable, Cairn falls to
+`$XDG_CONFIG_HOME/agents` and then to `~/.config/agents`. So an agent launched
+with `--profile` that runs `cairn` again from inside its own boot directory
+reads a *different* bundle: silently, and correctly by every rule as written,
+which is what makes it hard to see. It is the same class of failure as the
+`sed` scrape — something inferred that should have been told.
+
+**Cairn does not export it, and that is the launcher's half.** Cairn writes a
+directory and describes it; the process that has a child to put a variable into
+is the one that spawns the harness, exactly as with `--settings`. What was
+missing was never the export — it was the value.
+
+`saved_binding_path` and `saved_dropped_sets` describe a `--save-as`, which is
+the one thing `cairn boot` does that leaves nothing in the boot directory to
+read. Both used to be announced on stderr and nowhere else, so a launcher that
+composed and saved in one call had to parse a diagnostic to learn what it had
+just created.
+
+`saved_dropped_sets` names slots and never carries their values. A launcher
+that passed `--set` already holds what it typed; what it cannot otherwise know
+is which of those stopped at this run. **A refused save has no key at all**, and
+that is a decision rather than an omission: every refusal `--save-as` can raise
+is raised *before* the boot, so it exits non-zero, plants no directory and
+prints no document. `$(cairn boot x --json)` either parses or the command
+failed, and there is one thing to check.
+
 There is no `version` field, and the rule that replaces it is: **new keys are
 free; renaming or removing one is breaking and must update every consumer in
 the same change.** That does not rest on how many consumers there are to
@@ -826,18 +867,25 @@ BOOT_DIR="$(jq -r '.boot_dir // empty' <<<"$BOOT")"
 SETTINGS="$(jq -r '.settings_path // empty' <<<"$BOOT")"
 [ -n "$BOOT_DIR" ] || { echo "cairn reported no boot directory" >&2; exit 70; }
 
+# The export is this script's, not Cairn's. Without it an agent that runs
+# `cairn` from inside the boot directory falls back to ~/.config/agents and
+# reads a bundle nobody chose.
+export CAIRN_PROFILE_ROOT="$(jq -r '.profile_root' <<<"$BOOT")"
+
 set --
 [ -n "$SETTINGS" ] && set -- "$@" --settings "$SETTINGS"
 cd "$BOOT_DIR" && exec claude "$@"
 ```
 
-**`// empty` on every read, and it is not decoration.** `jq -r` prints the four
-characters `null` for a null value, so a read without it hands back `null` as
-though it were a path — `--settings null`, which is exactly the argv the null
-rule above exists to prevent, arriving through the one reader that turns the
-null back into a string. Building the arguments with `set --` rather than
-interpolating a string is the other half: a settings path with a space in it
-stays one argument.
+**`// empty` on every read of a key that can be null, and it is not
+decoration.** `jq -r` prints the four characters `null` for a null value, so a
+read without it hands back `null` as though it were a path — `--settings null`,
+which is exactly the argv the null rule above exists to prevent, arriving
+through the one reader that turns the null back into a string. Building the
+arguments with `set --` rather than interpolating a string is the other half: a
+settings path with a space in it stays one argument. `profile_root` is read
+without it because it is the one key that is never null, and a `// empty` there
+would claim otherwise.
 
 Minimal Go, engine-side:
 

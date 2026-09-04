@@ -46,10 +46,13 @@ const showJSONFlagUsage = "print one JSON object describing what the target reso
 //     every consumer in the same change.**
 //
 // Where a key means the same thing in both documents it is spelled the same
-// way and carries the same value — Scope is the one that matters, absolute and
-// symlink-resolved in both, null in both when there is none. A launcher that
+// way and carries the same value. Scope is the one that matters, absolute and
+// symlink-resolved in both, null in both when there is none: a launcher that
 // showed a scope and then booted into a different one would be worse than one
-// that never showed it.
+// that never showed it. ProfileRoot is the second, and it is the same rule
+// with a second reader — both commands report the bundle off the catalog they
+// opened, so neither spelling can be tidied on its own without the two
+// documents starting to disagree about one directory.
 //
 // # Why Spec nests where bootReport is flat
 //
@@ -136,6 +139,11 @@ type showReport struct {
 	// what $CAIRN_PROFILE_ROOT expands to in every manifest value that names
 	// somewhere to read from. It is never null: a resolution that found no
 	// bundle produced no document.
+	//
+	// It is [bootReport.ProfileRoot], and the two are one key rather than two
+	// that happen to agree — same spelling, same value, read off the catalog
+	// each command opened. What that key is for is argued there, where a
+	// launcher acts on it.
 	ProfileRoot string `json:"profile_root"`
 
 	// Spec is the composed manifest, one entry per key, each carrying the

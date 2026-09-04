@@ -12,8 +12,9 @@ import (
 )
 
 // bootReport is what `cairn boot --json` prints: everything a launcher needs to
-// open the directory cairn just wrote, so that nothing has to read the files
-// inside it to find out.
+// open the directory cairn just wrote, and everything this run did that the
+// directory itself does not record, so that nothing has to read the files
+// inside it — or scrape a diagnostic — to find out.
 //
 // It exists because the alternative was scraping. The reference launcher used
 // to pull the scope out of the rendered AGENTS.md with sed, which meant a
@@ -21,6 +22,12 @@ import (
 // document whose whole purpose is to be re-authored. The scrape worked; it
 // survived by luck, and a template edit that moved the line would have returned
 // an empty scope with no error — a launcher granting nothing, silently.
+//
+// The second clause of that first sentence is the same defect twice more, and
+// both are answered below. A boot directory does not record which bundle it was
+// composed out of, and a --save-as was announced on stderr and nowhere else; in
+// each case the launcher was left inferring or parsing something it should have
+// been told.
 //
 // # The contract
 //
@@ -39,9 +46,13 @@ import (
 // nothing reports — where null forces the consumer to decide. Every key whose
 // type is a pointer or a slice can be null, and each says something different:
 // no scope was resolved, no file stands at the harness's settings path, this
-// provider needs no flag to grant a directory. Which those are is read off the
-// struct below rather than counted here, so that adding a fourth cannot make
-// this paragraph wrong.
+// provider needs no flag to grant a directory, no binding was saved, no --set
+// was dropped from a save. Which those are is read off the struct below rather
+// than counted here, so that adding another cannot make this paragraph wrong.
+//
+// ProfileRoot is a plain string and never null, and that is this rule applied
+// rather than an exception to it: null is for a value cairn does not have, and
+// a boot that resolved no bundle wrote no directory to describe.
 //
 // Scope and SettingsPath are not independent, and the dependency runs one way
 // only: a
@@ -76,6 +87,38 @@ type bootReport struct {
 	// makes the object self-describing, and adding it later is free where
 	// needing it later is not.
 	Provider string `json:"provider"`
+
+	// ProfileRoot is the bundle this boot was composed out of, which is also
+	// what $CAIRN_PROFILE_ROOT expanded to in every manifest value that names
+	// somewhere to read from. It is [showReport.ProfileRoot] — same key, same
+	// value, read off the same catalog — because a launcher holding both
+	// documents must not get two answers for one directory.
+	//
+	// The boot directory does not record it, and the bundle resolves without
+	// it: with no flag and no variable, [bundleRoot] falls to
+	// $XDG_CONFIG_HOME/agents and then to ~/.config/agents. So a harness
+	// launched with --profile that runs cairn again from inside its own boot
+	// directory reads a DIFFERENT bundle — silently, and correctly by every
+	// rule as written, which is what makes it hard to see. That is exactly the
+	// class of failure this document exists to end.
+	//
+	// Never null, and that is the null rule applied rather than an exception
+	// to it. Null is for a value cairn does not have, and there is no such
+	// state: a boot that resolved no bundle read no profile and wrote no
+	// directory, so there is no document for the null to appear in.
+	//
+	// Reported as the catalog holds it — the flag absolutized, the variable
+	// and the default passed through as they were exported. That asymmetry is
+	// [resolveProfileRoot]'s and is not re-decided here; a document that tidied
+	// the value would hand back a spelling the operator cannot find in their
+	// own shell, and would disagree with `cairn show` about one directory.
+	//
+	// Cairn does not export it into anything, and that is deliberate. Cairn
+	// writes a directory and describes it; the process that has a child to put
+	// a variable into is the one that spawns the harness, and passing this on
+	// is a launcher's job exactly as passing --settings is. What was missing
+	// was never the export — it was the value.
+	ProfileRoot string `json:"profile_root"`
 
 	// Scope is the directory the instance works in, absolute and symlink
 	// resolved, or null when the binding declared none and no --scope was
@@ -125,6 +168,44 @@ type bootReport struct {
 	// flag" is spelled. Null therefore means one thing only, and Scope — in
 	// this same object, and what {{.ProjectDir}} stands for — says the other.
 	ProjectDirArg []string `json:"project_dir_arg"`
+
+	// SavedBindingPath is the file --save-as wrote, absolute, or null when no
+	// --save-as was given.
+	//
+	// A save is the one thing this command does that leaves nothing in the
+	// boot directory to read, and until this key it was announced on stderr
+	// and nowhere else. A launcher that composes and saves in one call would
+	// have had to parse a diagnostic to learn what it had just created —
+	// the shape this document exists to end, arriving through the other half
+	// of the same command.
+	//
+	// A path here is a file that is there. The write is the last thing before
+	// this document is built and a write that fails fails the command, so
+	// there is no state where the key names a binding that was not created.
+	//
+	// A REFUSED save has no key, and that is a decision rather than an
+	// omission. Every refusal --save-as can raise is knowable before the boot
+	// runs and is raised there — see [newBindingSave] — so a refusal exits
+	// non-zero, plants no directory and prints no document at all. There is
+	// nothing for a key to be a field of.
+	SavedBindingPath *string `json:"saved_binding_path"`
+
+	// SavedDroppedSets names the --set slots the saved binding does not carry,
+	// or null when none were dropped.
+	//
+	// Names and never values. A launcher that passed --set already holds the
+	// values; what it cannot know is which of them stopped at this run. And a
+	// --set value is content, which is the thing the bundle's shape keeps out
+	// of the catalog — reporting it here would not be that violation, but a
+	// document whose every other value is a path or a flag token is not where
+	// a paragraph of an operator's prose belongs either.
+	//
+	// Null spells both "no --save-as" and "a save that dropped nothing", and
+	// that is one meaning rather than two: there is no dropped --set for
+	// anyone to be told about. Which of the two states it was is read off
+	// SavedBindingPath, and the implication runs one way — a non-null list
+	// here guarantees a non-null path there, and never the converse.
+	SavedDroppedSets []string `json:"saved_dropped_sets"`
 }
 
 // projectDirPlaceholder is what a BootDirSpec's ProjectDirArg writes where the
@@ -145,8 +226,10 @@ const projectDirPlaceholder = "{{.ProjectDir}}"
 //
 // It is still one object and nothing else, so `$(cairn boot x --json)` is
 // parseable. [json.Encoder] supplies the trailing newline that makes it a line.
-func bootDocument(dir string, layout bootdir.Layout, scopeDir string, files []bootdir.File) (string, error) {
-	report, err := newBootReport(dir, layout, scopeDir, files)
+func bootDocument(dir string, layout bootdir.Layout, scopeDir, profileRoot string,
+	files []bootdir.File, save *bindingSave) (string, error) {
+
+	report, err := newBootReport(dir, layout, scopeDir, profileRoot, files, save)
 	if err != nil {
 		return "", err
 	}
@@ -163,19 +246,36 @@ func bootDocument(dir string, layout bootdir.Layout, scopeDir string, files []bo
 // newBootReport describes one written boot directory.
 //
 // files is what [bootdir.Render] produced, which is how SettingsPath can report
-// a file that is there rather than one the layout has a path for.
-func newBootReport(dir string, layout bootdir.Layout, scopeDir string, files []bootdir.File) (bootReport, error) {
+// a file that is there rather than one the layout has a path for. save is what
+// --save-as wrote, or nil when none was given.
+func newBootReport(dir string, layout bootdir.Layout, scopeDir, profileRoot string,
+	files []bootdir.File, save *bindingSave) (bootReport, error) {
+
 	cwd, err := cwdPreferenceName(layout.CwdPreference)
 	if err != nil {
 		return bootReport{}, err
 	}
+	// A save contributes two keys or neither, and both are read off the record
+	// [newBindingSave] built rather than off anything the write returned — the
+	// same value [bindingSave.write] printed its lines from. Two readings of
+	// one save is how a document and a diagnostic start disagreeing about what
+	// was saved.
+	var savedPath *string
+	var droppedSets []string
+	if save != nil {
+		savedPath = nullable(save.path)
+		droppedSets = nonEmpty(save.dropped)
+	}
 	return bootReport{
-		BootDir:       dir,
-		Provider:      layout.Provider.String(),
-		Scope:         nullable(scopeDir),
-		SettingsPath:  nullable(renderedPath(dir, layout.Settings, files)),
-		CwdPreference: cwd,
-		ProjectDirArg: argvTokens(layout.ProjectDirArg),
+		BootDir:          dir,
+		Provider:         layout.Provider.String(),
+		ProfileRoot:      profileRoot,
+		Scope:            nullable(scopeDir),
+		SettingsPath:     nullable(renderedPath(dir, layout.Settings, files)),
+		CwdPreference:    cwd,
+		ProjectDirArg:    argvTokens(layout.ProjectDirArg),
+		SavedBindingPath: savedPath,
+		SavedDroppedSets: droppedSets,
 	}, nil
 }
 

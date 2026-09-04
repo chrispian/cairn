@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -399,6 +400,75 @@ func TestUsageNamesTheProfileRootVariable(t *testing.T) {
 	if !strings.Contains(profileFlagUsage, envProfileRoot) {
 		t.Errorf("the flag's own description does not name %s: %q", envProfileRoot, profileFlagUsage)
 	}
+}
+
+// TestBootReportsTheBundleItComposedFrom covers the key a launcher needs and
+// could not read, and it asserts the two things that make it worth having.
+//
+// The first is that the value is there at all. A boot directory records nothing
+// about the bundle it came from, and [bundleRoot] resolves without one — with
+// no flag and no variable it falls to $XDG_CONFIG_HOME/agents and then to
+// ~/.config/agents. So a harness launched with --profile that re-runs cairn
+// from inside its own boot directory reads a DIFFERENT bundle, silently, and
+// correctly by every rule as written; the variable is the launcher's to export,
+// and it had no value to export it from.
+//
+// The second is that `boot` and `show` answer with one string. They are two
+// documents describing one directory, a launcher may well read both in one
+// session, and a difference between them would be a difference nothing else
+// would ever report. Both halves of [resolveProfileRoot]'s asymmetry are put
+// through it — the flag, which cairn absolutizes, and the variable, which it
+// passes through as it was exported — because a report that tidied either one
+// would agree with the other command on a path that was already canonical and
+// disagree on the one that was not. The redundant "/./" is what tells a
+// pass-through from a tidy-up.
+func TestBootReportsTheBundleItComposedFrom(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	scopeDir := filepath.Join(home, "repo")
+	mustMkdir(t, scopeDir)
+	bundle := filepath.Join(home, "bundle")
+	writeBundle(t, bundle, "one")
+
+	if got := bootBundledJSON(t, ctx, scopeDir, filepath.Join(home, "boot-flag"),
+		"--profile", bundle).ProfileRoot; got != bundle {
+		t.Errorf("profile_root = %q, want the absolutized --profile %q", got, bundle)
+	}
+
+	// Built by hand rather than with filepath.Join, which would clean the
+	// "/./" back out before cairn ever saw it.
+	asHeld := home + string(filepath.Separator) + "." + string(filepath.Separator) + "bundle"
+	t.Setenv(envProfileRoot, asHeld)
+	booted := bootBundledJSON(t, ctx, scopeDir, filepath.Join(home, "boot-env"))
+	if booted.ProfileRoot != asHeld {
+		t.Errorf("profile_root = %q, want the variable as it is held (%s)", booted.ProfileRoot, asHeld)
+	}
+	if shown := showBundledJSON(t, ctx).ProfileRoot; shown != booted.ProfileRoot {
+		t.Errorf("show reports profile_root %q where boot reports %q — one directory, two answers",
+			shown, booted.ProfileRoot)
+	}
+}
+
+// bootBundledJSON boots the fixture profile with --json and returns the report.
+func bootBundledJSON(t *testing.T, ctx context.Context, scopeDir, bootRoot string, args ...string) bootReport {
+	t.Helper()
+	var report bootReport
+	out := bootBundled(t, ctx, scopeDir, bootRoot, append(args, "--json")...)
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("boot --json is not one object: %v\n%s", err, out)
+	}
+	return report
+}
+
+// showBundledJSON shows the fixture profile with --json and returns the report.
+func showBundledJSON(t *testing.T, ctx context.Context, args ...string) showReport {
+	t.Helper()
+	var report showReport
+	out := showBundled(t, ctx, append(args, "--json")...)
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("show --json is not one object: %v\n%s", err, out)
+	}
+	return report
 }
 
 // writeBundle lays down a whole profile bundle at root and labels every file in

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -474,6 +475,145 @@ func TestSaveAsRefusesAPathMember(t *testing.T) {
 	}
 	nothingUnder(t, filepath.Join(home, "runtime2"))
 	nothingUnder(t, filepath.Join(bundle, "bindings", "copied.yaml"))
+}
+
+// TestBootJSONReportsWhatTheSaveDidAndDidNotSave covers the two keys a
+// --save-as contributes to the launcher's document.
+//
+// A save is the one thing `cairn boot` does that leaves nothing in the boot
+// directory to read. It was announced on stderr and nowhere else, so a launcher
+// that composed and saved in one call had to parse a diagnostic to learn what
+// it had just created — the scrape `--json` exists to end, arriving through the
+// other half of the same command.
+//
+// The dropped --set is the half worth testing hardest, because the key reports
+// a NAME and the drop is about a VALUE: the launcher already holds what it
+// typed, and what it cannot otherwise know is which of those stopped at this
+// run. So the value must be nowhere in the document, exactly as it is nowhere
+// in the binding.
+func TestBootJSONReportsWhatTheSaveDidAndDidNotSave(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := exampleBundle(t, home)
+	scopeDir := filepath.Join(home, "scope")
+	mustMkdir(t, scopeDir)
+
+	// Distinctive, so that finding it in the document could not be a
+	// coincidence, and content-shaped, because that is what a --set carries.
+	const direction = "Only the release notes, and nothing about the API."
+
+	var stdout, stderr bytes.Buffer
+	if err := run(ctx, []string{
+		"boot", "engineer",
+		"--profile", bundle,
+		"--with", "docs-only",
+		"--set", "direction=" + direction,
+		"--scope", scopeDir,
+		"--boot-root", filepath.Join(home, "runtime"),
+		"--session", "s",
+		"--save-as", "eng-docs",
+		"--json",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("boot --save-as --json: %v\nstderr: %s", err, stderr.String())
+	}
+
+	var report bootReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal the report: %v", err)
+	}
+	// The path names a binding that is there. The write is the last thing
+	// before the document is built and a failed write fails the command, so
+	// there is no state where this key names a file that was not created.
+	want := filepath.Join(bundle, "bindings", "eng-docs.yaml")
+	if report.SavedBindingPath == nil || *report.SavedBindingPath != want {
+		t.Fatalf("saved_binding_path = %v, want %q", deref(report.SavedBindingPath), want)
+	}
+	if _, err := os.Stat(*report.SavedBindingPath); err != nil {
+		t.Errorf("saved_binding_path names a file that is not there: %v", err)
+	}
+	if got := []string{"direction"}; !slices.Equal(report.SavedDroppedSets, got) {
+		t.Errorf("saved_dropped_sets = %v, want %v", report.SavedDroppedSets, got)
+	}
+	// Names, never values — and the check is over the bytes rather than the
+	// field, because a value could reach the document through any key.
+	if strings.Contains(stdout.String(), direction) {
+		t.Errorf("the --set value reached the launcher's document:\n%s", stdout.String())
+	}
+	// The document says what stderr says. Two readings of one save is how a
+	// report and a diagnostic start disagreeing about what was saved.
+	if got := stderr.String(); !strings.Contains(got, "--set direction was not saved") {
+		t.Errorf("stderr no longer names the dropped --set:\n%s", got)
+	}
+
+	// A save that dropped nothing is null and not [], which only the bytes
+	// say: [] would read as "these zero were dropped" where the key's absent
+	// value is the same "nothing to tell you about" as no --save-as at all.
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(ctx, []string{
+		"boot", "engineer",
+		"--profile", bundle,
+		"--scope", scopeDir,
+		"--boot-root", filepath.Join(home, "runtime2"),
+		"--session", "s",
+		"--save-as", "plain",
+		"--json",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("boot --save-as --json: %v\nstderr: %s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"saved_dropped_sets": null`) {
+		t.Errorf("saved_dropped_sets is not null on a save that dropped nothing:\n%s", stdout.String())
+	}
+	var plain bootReport
+	if err := json.Unmarshal(stdout.Bytes(), &plain); err != nil {
+		t.Fatalf("unmarshal the report: %v", err)
+	}
+	// And the path is still there, which is what separates the two states the
+	// one null covers.
+	if plain.SavedBindingPath == nil {
+		t.Error("saved_binding_path is null on a boot that saved a binding")
+	}
+}
+
+// TestARefusedSaveIsNotADocument settles the key --json does not have.
+//
+// Every refusal --save-as can raise is knowable before the boot runs and is
+// raised there, so a refusal plants no directory — which means there is no
+// document to carry a "the save was refused" key, and stdout is not a channel
+// the refusal could arrive on even in principle. A launcher learns it the way
+// it learns any other failed command: a non-zero exit and a diagnostic.
+func TestARefusedSaveIsNotADocument(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	bundle := exampleBundle(t, home)
+	scopeDir := filepath.Join(home, "scope")
+	mustMkdir(t, scopeDir)
+	mustMkdir(t, filepath.Join(home, "tmp"))
+	part := filepath.Join(home, "tmp", "for-this-launch.md")
+	writeFile(t, part, "---\nspec:\n  skills: [\"one-off\"]\n---\n", 0o644)
+
+	bootRoot := filepath.Join(home, "runtime")
+	var stdout, stderr bytes.Buffer
+	err := run(ctx, []string{
+		"boot", "engineer",
+		"--profile", bundle,
+		"--with", part,
+		"--scope", scopeDir,
+		"--boot-root", bootRoot,
+		"--session", "s",
+		"--save-as", "one-off",
+		"--json",
+	}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("a composition holding a path member was saved")
+	}
+	// Nothing on stdout at all — not an object reporting the refusal, and not
+	// a half-written one. `$(cairn boot x --json)` either parses or the
+	// command failed, and a consumer has one thing to check.
+	if stdout.Len() != 0 {
+		t.Errorf("a refused save printed a document:\n%s", stdout.String())
+	}
+	nothingUnder(t, bootRoot)
 }
 
 // TestSavedBindingFormat pins the file --save-as writes, in full.

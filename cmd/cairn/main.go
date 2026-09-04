@@ -674,9 +674,15 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// Whichever form it takes, this is the whole output of the command, so a
 	// write that fails is reported rather than dropped — and it names the
 	// directory, which by now exists, so the failure does not also lose it.
+	//
+	// It is built after the save for the reason the save runs after the boot:
+	// the document reports what this command did, and a save is one of those
+	// things. The bundle it quotes is the catalog's own root rather than the
+	// value bundleRoot returned — the same string, read from the place `cairn
+	// show` reads it, so one directory has one spelling in both documents.
 	out := dir + "\n"
 	if *jsonFlag {
-		out, err = bootDocument(dir, layout, scopeDir, files)
+		out, err = bootDocument(dir, layout, scopeDir, cat.Root(), files, save)
 		if err != nil {
 			return fmt.Errorf("the boot directory was written to %s but it could not be described: %w", dir, err)
 		}
