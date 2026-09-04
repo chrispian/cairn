@@ -186,13 +186,27 @@ type Resolved struct {
 	// ID is the profile the cascade was resolved for — the leaf of the chain.
 	ID string
 
-	// Chain is every profile id the cascade walked, ancestor-first, ending at
-	// ID. It is provenance: nothing renders from it.
+	// Chain is every profile id the cascade folded, in fold order: ID's own
+	// chain ancestor-first, then whatever each composed part adds to it — see
+	// [ResolveComposition]. No id appears twice, there as here: a part that
+	// shares an ancestor with ID contributes only the profiles below it.
+	// It is provenance: nothing renders from it.
 	Chain []string
 
-	// Abstract is the leaf profile's own flag, carried so a caller can refuse
-	// to boot one. It is not inherited.
+	// Abstract is ID's own leaf's flag, carried so a caller can refuse to boot
+	// one. It is not inherited, and a composed part never contributes it.
 	Abstract bool
+
+	// AlreadyFolded lists the composed parts that contributed nothing, in the
+	// order they were given: every profile in the part's own chain had been
+	// folded before it was reached, so naming it changed nothing. It is nil
+	// for a plain resolution, which composes no parts at all.
+	//
+	// It is reported rather than refused. Naming a part the resolution already
+	// covers is a legitimate thing to do — it makes a composition explicit
+	// about what it rests on — so this is a fact for the caller to pass on,
+	// not a mistake to reject. See [ResolveComposition].
+	AlreadyFolded []string
 
 	// Name, Description, Provider and Model are the closest declared value of
 	// each field in the chain.

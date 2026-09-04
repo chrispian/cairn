@@ -4,14 +4,19 @@ Cairn assembles files and writes them into a directory. It prints the path —
 or, with `--json`, one object describing the boot — and exits. **You launch.**
 Nothing here starts, watches, or supervises an agent.
 
-Three commands and one workflow:
+Four commands and one workflow:
 
 ```
 cairn boot <binding|profile> [--scope <path|alias>]   materialize a boot dir, print its path
 cairn boot <binding|profile> --json                   ... and describe it for a launcher
+cairn show <binding|profile>                          print what the profile resolves to
 cairn install <binding|profile> [--check]             render ~/.claude from the same source
 cairn list                                            enumerate the catalog
 ```
+
+`boot` and `show` also take the composition flags — `--with`, `--skill` and
+`--set`, all repeatable — which say what this one launch carries beyond the
+profile it names. See **Composing one launch** under §3.
 
 ---
 
@@ -107,6 +112,111 @@ What lands:
 destinations the example profiles happen to declare. Declare none and you get no
 prose; declare fifty and you get fifty. Cairn composes no heading, no section
 and no ordering of its own.
+
+### Composing one launch: `--with`, `--skill`, `--set`
+
+A profile is what a role always is. These three are what one launch is, and
+none of them changes a file in the bundle.
+
+This runs against the bundle in this directory. `docs-only` is a part that
+ships in it; the second one is a file you write, which is the case the path form
+exists for:
+
+```bash
+printf -- '---\nspec:\n  skills: ["capture-decision"]\n---\n' > /tmp/session-part.md
+
+cairn boot eng --with docs-only --with /tmp/session-part.md \
+               --skill capture-decision \
+               --set direction="user-facing docs only, no API reference"
+```
+
+The direction lands where `engineer.md` puts `<!-- cairn:slot direction -->`,
+and a plain `cairn boot eng` renders nothing there — a slot that stands for
+nothing leaves nothing behind, heading included.
+
+**`--with <part>`** merges a profile after the `extends` chain resolves,
+closest-wins and in the order given. A part is an *ordinary profile* — there is
+no separate fragment kind — so anything composable is also bootable and
+inspectable on its own, and its own `extends` resolves against the catalog like
+any other profile's.
+
+A part is named by catalog id **or by path**, because generated,
+instance-scoped composition content otherwise has nowhere to live: a file
+outside `profiles/` has no name. **A value holding a path separator, or
+beginning with `.`, `~` or `$`, is a path; anything else is a catalog id.** So
+a part in the current directory is `./part.md` — a bare `part.md` is a *name*,
+and cairn says so when no profile has it. `$VAR` and `~/` expand as they do in
+every other value that names somewhere to read from.
+
+A part named by path is **not** held to being named after the id it declares.
+That rule is the catalog's, whose map is keyed by the declared id while the
+listing walks file names, so a bundled file disagreeing with itself resolves
+under one spelling and lists under the other. A part is in no such map — it is
+keyed by its path. A generator may write `/tmp/session-4f2a9b.md` declaring
+`id: docs-only`, or declare no id at all and take the file's name.
+
+Cairn reads a path-named part during resolution and needs nothing after `boot`
+returns. Cleaning it up belongs to whatever generated it.
+
+**A part contributes what it adds, not what the target already settled.** Parts
+and targets usually share an abstract base, and folding that base again would
+put it *in front of* the target — so the base's value would beat the very
+profile that overrode it. Not only reported fields: `spec.templates` is keyed
+by destination, so the base's `AGENTS.md` would replace the target's and the
+boot directory would carry the wrong instructions. `files`, `trees`, `slots`,
+`mcp` and `settings` are the same shape.
+
+So a profile the fold has already reached is skipped when a later chain names
+it again — against the target's chain and against every earlier part alike. It
+is not a new rule: resolving a single `extends` chain already refuses to visit
+a profile twice, and this is that same guard across the sequence of chains.
+What both keep is that no profile is ever folded after one of its own
+descendants.
+
+One consequence is worth knowing, and cairn tells you when it happens rather
+than leaving the flag quietly doing nothing:
+
+```console
+$ cairn show eng --with base
+cairn: --with base: already in the chain, contributed nothing
+```
+
+`base` is already what `eng` extends, so it stays where it first landed. Exit
+status is 0 and the document is unchanged — naming a part the resolution
+already covers is a fine way to be explicit about what a composition rests on.
+
+**`--skill <a,b,c>`** adds skills to the ones the profile resolves to. It is
+comma-separated *and* repeatable, the two forms equivalent and composing, and
+it merges into `spec.skills` last and by id — exactly as a part declaring the
+same ids would. `spec.skills` is what one boot directory carries, which is why
+it earns a flag where `install.skills` — what every session on the machine
+loads — does not.
+
+**It is additive only.** Nothing in cairn removes one member of a collection
+keyed by its own id: the null that clears a member of an object has nowhere to
+be written in a list. A session that wants *fewer* skills boots a different
+profile.
+
+**`--set <slot>=<value>`** supplies an inline literal for a named slot, merged
+last. It is how a one-off direction reaches a session without authoring a file
+for it. The member replaces a declared slot of that name whole — its `section`
+included — because that is how `spec.slots` composes for every contributor.
+Cairn gains no `direction` concept from this: it is a slot like any other, and
+cairn goes on owning shape rather than content. A direction worth reusing
+becomes an ordinary part and arrives through `--with`.
+
+**`cairn show` takes all three**, and that is not a convenience. `show` is the
+"what will this resolve to" preview; a preview blind to the composition would
+be blind to precisely the part that makes it differ from its base. It names
+every contributor beside each manifest key — the profiles in the chain, the
+parts, and the flag itself:
+
+```
+spec.skills   engineer, docs-only, --skill
+```
+
+`cairn install` takes none of them. It renders the layer every session on the
+machine loads, and a composition is an instance concern by construction.
 
 ### Templates and markers
 

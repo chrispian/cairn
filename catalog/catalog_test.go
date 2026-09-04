@@ -682,3 +682,82 @@ func ids(profiles []profile.Profile) []string {
 	}
 	return out
 }
+
+// TestAProfileIdHoldsNoPathSeparator pins the constraint the composition
+// flags' detection rule stands on.
+//
+// `cairn boot x --with <part>` decides between a catalog id and a path by
+// whether the value holds a separator, and that is only sound while an id
+// cannot hold one. It is true today because an id is a file stem, but that is
+// an inference about where ids come from rather than a rule about ids, and an
+// inference is not what a resolution split should rest on.
+func TestAProfileIdHoldsNoPathSeparator(t *testing.T) {
+	root := t.TempDir()
+	writeProfileFile(t, root, "engineer", "---\nid: sub/dir\nname: Engineer\nprovider: claude\n---\n")
+	_, err := Open(root)
+	if !errors.Is(err, ErrProfileID) {
+		t.Fatalf("a profile id holding a separator was accepted: %v", err)
+	}
+	if !strings.Contains(err.Error(), "sub/dir") {
+		t.Errorf("the refusal does not name the id: %v", err)
+	}
+}
+
+// TestReadProfileReadsAFileOutsideTheBundle covers the read a composition's
+// path-named part goes through: the ordinary parser, on a file the catalog
+// does not hold and never listed.
+func TestReadProfileReadsAFileOutsideTheBundle(t *testing.T) {
+	dir := t.TempDir()
+
+	path := filepath.Join(dir, "docs-only.md")
+	writeFile(t, path, "---\nextends: base\nname: Docs only\nspec:\n  skills: [\"adr\"]\n---\n\nDocs.\n")
+	p, err := ReadProfile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	// The id is the file's own name, which is what a part declaring none gets
+	// and what a generated part will always be.
+	if p.ID != "docs-only" || p.Name != "Docs only" || p.Extends != "base" {
+		t.Errorf("the part read as %+v", *p)
+	}
+	if got := string(p.Spec["skills"]); got != `["adr"]` {
+		t.Errorf("the part's manifest is %s, want the declared list", got)
+	}
+
+	// Any extension, because a path names exactly one file and there is
+	// nothing to tell a profile from a README.
+	other := filepath.Join(dir, "part.txt")
+	writeFile(t, other, "---\nname: Part\n---\n")
+	if _, err := ReadProfile(other); err != nil {
+		t.Errorf("a part spelled with another extension was refused: %v", err)
+	}
+
+	// A file that is not there names itself rather than being conjured.
+	if _, err := ReadProfile(filepath.Join(dir, "nope.md")); err == nil {
+		t.Error("a part that is not there was accepted")
+	}
+
+	// The file is NOT held to being named after the id it declares, which is
+	// the one rule that does not carry over from the catalog.
+	//
+	// The catalog is keyed by file name, so a bundled file disagreeing with
+	// itself is a real ambiguity about which spelling the bundle answers to.
+	// Nothing here is keyed by anything. Applying the rule anyway would put
+	// back exactly the friction --with <path> exists to remove: a generator
+	// writing a part to a tempfile would have to embed that tempfile's random
+	// basename as the part's id.
+	generated := filepath.Join(dir, "tachyon-session-4f2a9b.md")
+	writeFile(t, generated, "---\nid: docs-only\nname: Docs only\n---\n")
+	p, err = ReadProfile(generated)
+	if err != nil {
+		t.Fatalf("a part whose id is not its file name was refused: %v", err)
+	}
+	if p.ID != "docs-only" {
+		t.Errorf("the part's id is %q, want the one it declared", p.ID)
+	}
+	// The catalog still refuses the same file, because there the rule means
+	// something. Asserted here so the two cannot quietly become one.
+	if _, err := parseProfile("---\nid: docs-only\n---\n", "tachyon-session-4f2a9b.md"); err == nil {
+		t.Error("the catalog accepted a profile whose id and file name disagree")
+	}
+}

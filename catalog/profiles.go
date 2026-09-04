@@ -3,6 +3,7 @@ package catalog
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/chrispian/cairn/profile"
@@ -31,9 +32,63 @@ var frontmatterKeys = []string{
 	"id", "extends", "abstract", "name", "description", "provider", "model", "spec",
 }
 
-// parseProfile reads one profile file. stem is the file's base name without
-// its extension, which is the profile's id.
-func parseProfile(text, stem string) (profile.Profile, error) {
+// ErrProfileID reports a profile whose declared id is not one a profile may
+// have.
+var ErrProfileID = errors.New("invalid profile id")
+
+// parseProfile reads one profile file out of the bundle's profiles directory.
+// name is the file's base name, and the part of it before the extension is the
+// profile's id.
+//
+// It is [parseFile] plus the two rules that are the catalog's rather than the
+// format's — see each of them below. A profile read from a path outside the
+// bundle goes through [parseFile] instead and is held to neither.
+func parseProfile(text, name string) (profile.Profile, error) {
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	p, err := parseFile(text, stem)
+	if err != nil {
+		return profile.Profile{}, err
+	}
+
+	// A CATALOG profile id holds no path separator, and this says so out loud
+	// rather than leaving it to be inferred from where ids come from.
+	//
+	// It is what makes `cairn boot x --with <part>` decidable. A --with value
+	// holding a separator is a path and anything else is a catalog id, and that
+	// rule is only sound while the two sets cannot overlap. Reading it off the
+	// file name — an id is a stem, a stem has no separator — is true today and
+	// is an inference about the store rather than a rule about ids, so an id
+	// arriving from anywhere else would carry no such promise.
+	//
+	// Checked ahead of the agreement below because it is the more specific
+	// diagnostic: "sub/dir" disagreeing with the file name is true and is not
+	// what is wrong with it.
+	if id := strings.TrimSpace(p.ID); strings.ContainsRune(id, '/') || strings.ContainsRune(id, filepath.Separator) {
+		return profile.Profile{}, fmt.Errorf("%w: %q holds a path separator, and a profile id is a name", ErrProfileID, id)
+	}
+
+	// The id and the file name are one fact written twice, and this is where
+	// they are held to agreeing. The file name wins nothing: a profile whose
+	// frontmatter says otherwise is refused rather than quietly renamed,
+	// because an extends chain names a profile by id and a bundle where the
+	// two spellings differ resolves one and lists the other.
+	//
+	// It is a rule about the CATALOG and not about profiles, which is why it
+	// lives here rather than in [parseFile]. The map is keyed by the declared
+	// id — readProfiles writes out[p.ID] — while the listing that fills it
+	// walks file names, so the two spellings disagreeing is a real ambiguity
+	// about which one the bundle answers to. A profile read from a path is in
+	// no such map; see [ReadProfile].
+	if strings.TrimSpace(p.ID) != stem {
+		return profile.Profile{}, fmt.Errorf("the frontmatter id is %q and the file is named %q: rename one to match the other",
+			p.ID, name)
+	}
+	return p, nil
+}
+
+// parseFile reads a profile file's frontmatter and prose, whatever directory
+// it came out of. fallbackID is the id a file that declares none takes.
+func parseFile(text, fallbackID string) (profile.Profile, error) {
 	front, body, err := splitFrontmatter(text)
 	if err != nil {
 		return profile.Profile{}, err
@@ -48,7 +103,7 @@ func parseProfile(text, stem string) (profile.Profile, error) {
 		return profile.Profile{}, errors.New("the frontmatter is not a mapping")
 	}
 
-	p := profile.Profile{ID: stem, Spec: profile.Spec{}}
+	p := profile.Profile{ID: fallbackID, Spec: profile.Spec{}}
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key, value := root.Content[i], root.Content[i+1]
 		var err error
@@ -81,15 +136,6 @@ func parseProfile(text, stem string) (profile.Profile, error) {
 		}
 	}
 
-	// The id and the file name are one fact written twice, and this is where
-	// they are held to agreeing. The file name wins nothing: a profile whose
-	// frontmatter says otherwise is refused rather than quietly renamed,
-	// because an extends chain names a profile by id and a bundle where the
-	// two spellings differ resolves one and lists the other.
-	if strings.TrimSpace(p.ID) != stem {
-		return profile.Profile{}, fmt.Errorf("the frontmatter id is %q and the file is named %q: rename one to match the other",
-			p.ID, stem+profileExt)
-	}
 	p.Body = body
 	return p, nil
 }

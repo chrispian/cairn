@@ -35,6 +35,28 @@ usage:
   cairn show <binding|profile> [flags]      print what the profile resolves to
   cairn list [flags]                        enumerate the catalog
 
+flags for boot and show:
+  --with <part>          a profile merged after the extends chain resolves, closest-wins
+                         and in the order given. Repeatable. A part is an ordinary
+                         profile, so anything composable is also bootable and inspectable
+                         on its own. A value holding a path separator, or beginning with
+                         ".", "~" or "$", names a file; anything else is a catalog id, so
+                         a part in the current directory is written ./part.md.
+                         A profile the resolution has already reached — the target,
+                         anything it extends, or a part named earlier — is folded once
+                         where it first landed, so naming it again adds nothing and does
+                         not move it: a part brings what it adds, and never reverts what
+                         a profile closer to it already settled. Such a part is named on
+                         stderr, so a flag that changed nothing is not silent about it
+  --skill <a,b,c>        a skill the boot directory carries, added to the ones the profile
+                         resolves to. Comma-separated and repeatable, the two forms
+                         equivalent and composing. Additive only: nothing in cairn removes
+                         a member of a collection keyed by its own id, so a session that
+                         wants fewer skills boots a different profile
+  --set <slot>=<value>   an inline literal for a named slot, merged last. Repeatable. It
+                         replaces a declared slot of that name whole, section included,
+                         exactly as a part declaring that slot would
+
 flags for boot:
   --scope <path|alias>   the directory the instance works in; overrides the binding's
   --boot-root <path>     where boot directories are planted; defaults to $CAIRN_BOOT_ROOT,
@@ -347,6 +369,8 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		jsonFlag    = fs.Bool("json", false, "print one JSON object describing the boot instead of the bare path")
 		profileFlag = fs.String("profile", "", profileFlagUsage)
 	)
+	var compose composition
+	compose.bind(fs)
 	target, rest := splitTarget(args)
 	if err := fs.Parse(rest); err != nil {
 		return err
@@ -384,10 +408,19 @@ func runBoot(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 
-	resolved, err := profile.Resolve(ctx, cat, profileID)
+	// The composition resolves through the same call whether or not anything
+	// was composed: --with, --skill and --set contribute nothing when they
+	// were not given, and a second code path for the plain case is a second
+	// place for the two to disagree about what a boot resolves to.
+	resolved, _, err := compose.resolve(ctx, cat, home, env, profileID)
 	if err != nil {
 		return err
 	}
+	// Reported before anything is written, beside the other things an operator
+	// hears about a resolution rather than a render.
+	compose.reportAbsorbedParts(stderr, resolved)
+	// The target's own leaf decides this, never a part — a part is a fragment
+	// and may well be abstract. See profile.ResolveComposition.
 	if resolved.Abstract {
 		return fmt.Errorf("profile %q is abstract: it exists to be extended, not booted", resolved.ID)
 	}

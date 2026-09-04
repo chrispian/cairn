@@ -8,6 +8,8 @@ before you change anything in it.
 - scope: <!-- cairn:value scope -->
 - session: <!-- cairn:value session -->
 
+<!-- cairn:slot direction -->
+
 <!-- cairn:slot git -->
 
 <!-- cairn:slot recent -->

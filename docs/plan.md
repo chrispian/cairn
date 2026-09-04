@@ -912,7 +912,7 @@ looked up, so a `show` that then failed still left a directory and a schema'd
 file behind. It is the mitigation §3 owes the operator: a
 value the cascade composed from three profiles reads exactly like a value one
 profile wrote, so each manifest key is printed beside the profiles in the chain
-that declare it.
+that declare it, and beside any flag that contributed one.
 Per key, not per member — naming the profile behind one merged slot is
 provenance the cascade does not keep, and adding it is a change to `Resolve`
 rather than to its caller. Like `install` and unlike `boot`, `show` accepts an

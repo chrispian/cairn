@@ -603,3 +603,174 @@ func specKeys(s Spec) []string {
 	slices.Sort(out)
 	return out
 }
+
+// TestResolveCompositionFoldsPartsAfterTheChain covers the whole of what a
+// composition is: one fold over the target's chain followed by each part's,
+// under the rules the extends cascade already had.
+func TestResolveCompositionFoldsPartsAfterTheChain(t *testing.T) {
+	ctx := context.Background()
+	l := fakeLoader{
+		"base": {ID: "base", Abstract: true, Name: "Base", Provider: "claude", Model: "opus",
+			Body: "base prose", Spec: spec(t, map[string]string{"skills": `["base-skill"]`})},
+		"engineer": {ID: "engineer", Extends: "base", Name: "Engineer", Model: "sonnet",
+			Body: "engineer prose", Spec: spec(t, map[string]string{"skills": `["code-review"]`})},
+		"docs-only": {ID: "docs-only", Name: "Docs only",
+			Spec: spec(t, map[string]string{"skills": `["docs-review"]`})},
+		// A part that is abstract and extends something, so both of the
+		// properties a part is allowed to have are exercised at once.
+		"fragment": {ID: "fragment", Extends: "docs-only", Abstract: true,
+			Spec: spec(t, map[string]string{"subagents": `["reviewer"]`})},
+	}
+
+	got, err := ResolveComposition(ctx, l, "engineer", []string{"docs-only", "fragment"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	// The chain is the fold order: the target's, then whatever each part adds
+	// to it. docs-only appears once — the second chain reaches it again, and a
+	// profile already folded is not folded a second time.
+	want := []string{"base", "engineer", "docs-only", "fragment"}
+	if !slices.Equal(got.Chain, want) {
+		t.Errorf("the chain is %v, want %v", got.Chain, want)
+	}
+	if got.ID != "engineer" {
+		t.Errorf("the composition resolved as %q, want the target it was booted by", got.ID)
+	}
+	// The keyed collection unions across every contributor, which is the
+	// cascade's own rule and not a second one.
+	if s := string(got.Spec["skills"]); s != `["base-skill","code-review","docs-review"]` {
+		t.Errorf("the composed skills are %s", s)
+	}
+	// Abstract is the target's leaf. A part exists to be merged rather than
+	// booted, so letting one decide this would refuse the case composition
+	// exists for.
+	if got.Abstract {
+		t.Error("an abstract part made the composition abstract")
+	}
+	// Every part's prose is concatenated after the chain's, in fold order,
+	// because the body is additive wherever it comes from.
+	if want := "base prose\n\nengineer prose"; !strings.HasPrefix(got.Body, want) {
+		t.Errorf("the body is %q, want it to open with %q", got.Body, want)
+	}
+}
+
+// TestResolveCompositionNamesThePartThatFailed pins that a part which cannot
+// be walked is reported as a part rather than as the profile being booted.
+func TestResolveCompositionNamesThePartThatFailed(t *testing.T) {
+	l := fakeLoader{"engineer": {ID: "engineer"}}
+	_, err := ResolveComposition(context.Background(), l, "engineer", []string{"nope"})
+	if !errors.Is(err, errFakeNotFound) {
+		t.Fatalf("a part that is not there resolved: %v", err)
+	}
+	for _, want := range []string{`"engineer"`, `"nope"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the failure does not name %s: %v", want, err)
+		}
+	}
+}
+
+// TestResolveIsACompositionWithNoParts pins that the plain resolution is the
+// composition's own path and not a second one beside it.
+func TestResolveIsACompositionWithNoParts(t *testing.T) {
+	ctx := context.Background()
+	l := fakeLoader{
+		"base":     {ID: "base", Abstract: true, Spec: spec(t, map[string]string{"skills": `["a"]`})},
+		"engineer": {ID: "engineer", Extends: "base", Spec: spec(t, map[string]string{"skills": `["b"]`})},
+	}
+	plain, err := Resolve(ctx, l, "engineer")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	composed, err := ResolveComposition(ctx, l, "engineer", nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !slices.Equal(plain.Chain, composed.Chain) ||
+		string(plain.Spec["skills"]) != string(composed.Spec["skills"]) {
+		t.Errorf("resolving with no parts differs from Resolve: %+v and %+v", plain, composed)
+	}
+}
+
+// TestAPartDoesNotRevertWhatTheTargetOverrode is the reproduction, asserted on
+// the two fields it silently changed.
+//
+// base is abstract and declares a name and a model; target extends base and
+// overrides both; part extends base and says nothing about either. Folding
+// part's whole chain put base back in front of target, so adding a part that
+// mentions neither field changed both — the operator asked for one thing to be
+// added and two unrelated things reverted.
+//
+// The rule that prevents it is that no profile is ever folded after one of its
+// own descendants. This is the test that fails if somebody reads the skip in
+// ResolveComposition as an optimization and removes it.
+func TestAPartDoesNotRevertWhatTheTargetOverrode(t *testing.T) {
+	ctx := context.Background()
+	l := fakeLoader{
+		"base":   {ID: "base", Abstract: true, Name: "BASE NAME", Model: "base-model"},
+		"target": {ID: "target", Extends: "base", Name: "TARGET NAME", Model: "target-model"},
+		"part":   {ID: "part", Extends: "base", Description: "what the part adds"},
+	}
+
+	plain, err := Resolve(ctx, l, "target")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	composed, err := ResolveComposition(ctx, l, "target", []string{"part"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	if composed.Name != plain.Name || composed.Model != plain.Model {
+		t.Errorf("composing a part changed the target's own overrides: name %q -> %q, model %q -> %q",
+			plain.Name, composed.Name, plain.Model, composed.Model)
+	}
+	if composed.Name != "TARGET NAME" || composed.Model != "target-model" {
+		t.Errorf("the composition resolved to name %q and model %q", composed.Name, composed.Model)
+	}
+	// What the part does add still arrives — the skip drops the ancestor that
+	// was already folded, never the part itself.
+	if composed.Description != "what the part adds" {
+		t.Errorf("the part contributed nothing: description is %q", composed.Description)
+	}
+	// And the shared ancestor is in the chain once, at the position its own
+	// descendant put it.
+	if want := []string{"base", "target", "part"}; !slices.Equal(composed.Chain, want) {
+		t.Errorf("the chain is %v, want %v", composed.Chain, want)
+	}
+}
+
+// TestAPartDoesNotRevertWhatAnEarlierPartOverrode is the same inversion one
+// step over, and the reason the skip is cumulative rather than against the
+// target's chain alone.
+//
+// Two parts share an ancestor with each other and not with the target. Skipping
+// only what the target's chain folded would put that ancestor between the two
+// parts, reverting whatever the first one overrode — the identical failure, in
+// the case that does not get reported first.
+func TestAPartDoesNotRevertWhatAnEarlierPartOverrode(t *testing.T) {
+	ctx := context.Background()
+	l := fakeLoader{
+		"target": {ID: "target", Name: "TARGET NAME"},
+		"shared": {ID: "shared", Abstract: true, Model: "shared-model",
+			Spec: spec(t, map[string]string{"skills": `["shared-skill"]`})},
+		"first":  {ID: "first", Extends: "shared", Model: "first-model"},
+		"second": {ID: "second", Extends: "shared", Description: "the second part"},
+	}
+
+	got, err := ResolveComposition(ctx, l, "target", []string{"first", "second"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Model != "first-model" {
+		t.Errorf("the model is %q, want the first part's override to stand", got.Model)
+	}
+	if want := []string{"target", "shared", "first", "second"}; !slices.Equal(got.Chain, want) {
+		t.Errorf("the chain is %v, want %v", got.Chain, want)
+	}
+	// The shared ancestor's own contribution is in the composition once, from
+	// where the first part folded it.
+	if s := string(got.Spec["skills"]); s != `["shared-skill"]` {
+		t.Errorf("the composed skills are %s", s)
+	}
+}

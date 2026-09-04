@@ -63,6 +63,92 @@ type Loader interface {
 // abstract profile, because `cairn install` legitimately resolves one and only
 // a direct boot has reason to object.
 func Resolve(ctx context.Context, l Loader, id string) (*Resolved, error) {
+	return ResolveComposition(ctx, l, id, nil)
+}
+
+// ResolveComposition resolves id and then each part in order, folding the whole
+// sequence into one [Resolved].
+//
+// A composition needs no second mechanism, and this is why: an extends chain is
+// a sequence of profiles folded closest-wins, an explicit list of parts is a
+// sequence of profiles folded closest-wins, and one fold does both. Each part's
+// own extends chain is walked before it merges, so the sequence folded is id's
+// chain, then the first part's, then the second's, and a part is closer than
+// everything ahead of it.
+//
+// A part is an ordinary profile and is loaded through the same [Loader]. That
+// is what lets `cairn boot x --with ./part.md` work without the loader below
+// knowing what a path is: the caller keys the file under an id of its own
+// choosing, and the part's own extends resolves through the catalog like any
+// other.
+//
+// # A part contributes what it adds, not what was already settled
+//
+// A profile the fold has already reached is skipped when a later chain names it
+// again.
+//
+// This is [walk]'s own rule at the outer level, and nothing more. A walk
+// already refuses to visit a profile twice within one chain; the fold is a
+// sequence of chains, and the same guard belongs across the sequence. Read it
+// that way rather than as a composition rule of its own: the defect it closes
+// was not a missing rule, it was cairn failing to apply its own rule one level
+// out. What both spellings keep is that no profile is ever folded after one of
+// its own descendants.
+//
+// So this is not an optimization, and removing it is not a simplification.
+//
+// What it prevents is a composition reverting the target's own overrides.
+// `cairn boot engineer --with <part>`, where the part extends the same abstract
+// base engineer does and says nothing about the key in question, folds base a
+// second time — and that second copy lands in front of engineer. So base's
+// value wins over the leaf that overrode it, and the value that wins is the
+// ANCESTOR'S, contributed from inside the part's chain by a profile the part
+// never mentions and the operator never named.
+//
+// Every key is exposed, not only the scalar fields, and the concrete harm is
+// what got this caught. spec.templates is an objectByKey, so against cairn's
+// own examples/bundle the composed spec.templates for AGENTS.md flipped from
+// engineer.md to base.md: `cairn boot engineer --with <any part extending
+// base>` wrote the boot directory's AGENTS.md from BASE's template under
+// engineer's heading, telling the agent it is something other than what it is.
+// A flag that was supposed to add one thing silently replaced the instructions.
+// spec.files, spec.trees, spec.slots, spec.mcp and spec.settings are the same
+// shape. And a key only that ancestor declares would reach a merger it should
+// never have reached, coming back re-encoded where a single declarer is
+// promised byte for byte — see [Resolve].
+//
+// A chain is linear and ancestor-first, which is what makes the skip safe to
+// state so broadly: an id appearing in two chains is followed, in both, only by
+// its own descendants. So a second occurrence is always an ancestor arriving
+// behind a descendant that already had its say, and it is always already folded
+// at its correct position, with its contribution in the accumulation. Nothing
+// is lost by skipping it, and everything after it in the later chain still
+// folds, in order, and still beats what is ahead of it.
+//
+// The skip is cumulative — against the target's chain and against every earlier
+// part, not against the target's alone. Two parts sharing an ancestor with each
+// other but not with the target is the same inversion one step over: the shared
+// ancestor would land between them and revert whatever the first part
+// overrode. Restricting the skip to the target's chain would fix the case that
+// gets reported and leave its twin standing.
+//
+// Ordinary extends resolution is untouched by all of it. A single chain cannot
+// repeat an id — [walk] refuses that as a cycle — so with no parts there is
+// never anything to skip.
+//
+// A part every profile of whose chain was already folded contributed nothing,
+// and is named in [Resolved.AlreadyFolded] so the caller can say so. Skipping
+// silently is the one thing this must not do: the operator typed a flag and it
+// changed nothing, which is the shape cairn reports everywhere else — a
+// declared slot that filled nothing, a value marker it cannot fill.
+//
+// # Abstract
+//
+// [Resolved.Abstract] is id's own leaf and never a part's. Abstract marks a
+// profile that exists to be extended rather than booted, which is exactly what
+// a part is; letting one decide whether the composition may boot would refuse
+// the case this exists for.
+func ResolveComposition(ctx context.Context, l Loader, id string, parts []string) (*Resolved, error) {
 	if l == nil {
 		return nil, fmt.Errorf("resolving profile %q: %w", id, ErrNilLoader)
 	}
@@ -71,12 +157,46 @@ func Resolve(ctx context.Context, l Loader, id string) (*Resolved, error) {
 	if err != nil {
 		return nil, err
 	}
+	abstract := chain[len(chain)-1].Abstract
+
+	var alreadyFolded []string
+	folded := make(map[string]bool, len(ids))
+	for _, walked := range ids {
+		folded[walked] = true
+	}
+	for _, part := range parts {
+		// Each part gets its own walk, and so its own cycle guard: two parts
+		// naming one profile is a composition an operator meant, where one
+		// chain arriving back at a profile it already walked is not.
+		partChain, partIDs, err := walk(ctx, l, part)
+		if err != nil {
+			return nil, fmt.Errorf("composing profile %q with %q: %w", id, part, err)
+		}
+		contributed := false
+		for i, partID := range partIDs {
+			if folded[partID] {
+				continue
+			}
+			folded[partID] = true
+			chain = append(chain, partChain[i])
+			ids = append(ids, partID)
+			contributed = true
+		}
+		// Recorded rather than inferred by the caller. Whether a part added
+		// anything is known exactly here and nowhere else: a caller could
+		// compare chains and guess, and would have to reproduce this loop to
+		// do it.
+		if !contributed {
+			alreadyFolded = append(alreadyFolded, part)
+		}
+	}
 
 	out := &Resolved{
-		ID:       id,
-		Chain:    ids,
-		Abstract: chain[len(chain)-1].Abstract,
-		Spec:     Spec{},
+		ID:            id,
+		Chain:         ids,
+		Abstract:      abstract,
+		AlreadyFolded: alreadyFolded,
+		Spec:          Spec{},
 	}
 
 	bodies := make([]string, 0, len(chain))

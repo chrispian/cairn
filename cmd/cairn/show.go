@@ -44,10 +44,16 @@ const columnGap = 2
 // are what the profiles declared and the order is the cascade's, at every
 // depth. A note promising the same of both would be wrong for exactly the key
 // it was written to explain.
-const specNote = specIndent + "The names beside a key are the profiles in the chain that declare it. One name\n" +
-	specIndent + "means the value below is that profile's own declaration, converted from YAML\n" +
-	specIndent + "and laid out here, and otherwise untouched. Two or more means the cascade\n" +
-	specIndent + "composed it: the members are what those profiles declared, and the order is not.\n"
+//
+// A name may also be a flag. --skill and --set contribute to a manifest key
+// without being profiles and so without appearing in the chain, and a document
+// that credited the profile with what was typed at the terminal would fail at
+// exactly the thing this column is for. See composition.contributors.
+const specNote = specIndent + "The names beside a key are the profiles in the chain that declare it, followed\n" +
+	specIndent + "by any flag that contributed one. A single profile's name means the value below\n" +
+	specIndent + "is that profile's own declaration, converted from YAML and laid out here, and\n" +
+	specIndent + "otherwise untouched. Anything else is a composition: the members are what those\n" +
+	specIndent + "contributors declared, and the order is not.\n"
 
 // runShow resolves a target and prints what it resolves to. It is the
 // mitigation docs/plan.md §3 names: a manifest key is composed member by
@@ -80,6 +86,13 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		scopeFlag   = fs.String("scope", "", "the scope to report, as a path or a scope alias")
 		profileFlag = fs.String("profile", "", profileFlagUsage)
 	)
+	// Every flag `cairn boot` composes with, and this is not a convenience.
+	// The document below is the answer to "what will this resolve to", and a
+	// preview that could not be handed the composition the boot will be handed
+	// would be blind to precisely the part that makes a composition differ from
+	// its base — which is the one thing the reader is checking.
+	var compose composition
+	compose.bind(fs)
 	target, rest := splitTarget(args)
 	if err := fs.Parse(rest); err != nil {
 		return err
@@ -124,10 +137,18 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if err != nil {
 		return err
 	}
-	resolved, err := profile.Resolve(ctx, cat, profileID)
+	// The loader is kept, not discarded: a part read from a file is not in the
+	// catalog, and [declaringProfiles] re-reads every profile in the chain to
+	// say which of them declared each key. Handing it the catalog instead
+	// would fail on exactly the composition this command exists to preview.
+	resolved, loader, err := compose.resolve(ctx, cat, home, environment(bundle), profileID)
 	if err != nil {
 		return err
 	}
+	// The one thing this command reports outside its document, alongside a
+	// scope that would not resolve. Both are facts about the resolution rather
+	// than about a render, which is what this command does not do.
+	compose.reportAbsorbedParts(stderr, resolved)
 
 	// The resolved spec does not depend on scope — scope is an instance value
 	// substituted at boot, not a thing the cascade composes. So the flag is
@@ -165,9 +186,14 @@ func runShow(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		scopeDir = ""
 	}
 
-	declared, err := declaringProfiles(ctx, cat, resolved)
+	declared, err := declaringProfiles(ctx, loader, resolved)
 	if err != nil {
 		return err
+	}
+	// After the profiles, because a flag merges last. --with is already in the
+	// chain and names itself there; these two are not.
+	for key, flags := range compose.contributors() {
+		declared[key] = append(declared[key], flags...)
 	}
 
 	_, err = fmt.Fprint(stdout, showDocument(resolved, scopeDir, cat.Root(), declared))
@@ -224,6 +250,11 @@ func declaringProfiles(ctx context.Context, l profile.Loader, resolved *profile.
 // unreadable, and it is a whole persona long: printing it would bury the
 // manifest this command exists to show. `cairn boot` renders it, which is
 // where it is read.
+//
+// The chain is the fold order, and it is printed because precedence is what a
+// reader checks a composition for: the parts a --with added stand after the
+// extends chain, each naming what it contributed. See
+// profile.ResolveComposition.
 //
 // Keys are sorted, and so are the members of every collection the cascade
 // composed — see profile.sortedValues, which says why that order is

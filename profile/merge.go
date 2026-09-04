@@ -92,6 +92,26 @@ func mergeSpecKey(key string, older, newer json.RawMessage) (json.RawMessage, er
 	return mergeAt(key, specMergers[key], older, newer)
 }
 
+// Merge folds one more contributor onto a composed manifest value, under the
+// rule [specMergers] composes key by — the same fold the cascade runs, called
+// once with a value that came from somewhere other than a profile.
+//
+// It exists for the instance flags. `--skill a,b` contributes ids to
+// [SpecKeySkills] and `--set <slot>=<value>` contributes an inline slot to
+// [SpecKeySlots], and both are meant to land exactly as a part declaring the
+// same thing would. Merging them here rather than beside the flag is what makes
+// that literally true instead of approximately: there is one table of keyed
+// collections, and a caller that reimplemented a union would be a second one.
+//
+// The overlay is the closer value: it replaces where the key replaces, and
+// takes precedence member by member where the key is keyed. A composed value
+// carrying nothing returns the overlay, and an overlay carrying nothing clears
+// the key, which is the cascade's own rule for a null and not a special case
+// here.
+func Merge(key string, composed, overlay json.RawMessage) (json.RawMessage, error) {
+	return mergeAt(key, specMergers[key], composed, overlay)
+}
+
 // MergeSettings folds an overlay onto a composed settings document under the
 // rule [specMergers] composes [SpecKeySettings] by: a member the overlay
 // declares replaces the one beneath it, a member it does not mention stands,
@@ -115,7 +135,7 @@ func MergeSettings(composed, overlay json.RawMessage) (json.RawMessage, error) {
 	if isUndeclared(overlay) {
 		return composed, nil
 	}
-	return mergeAt(SpecKeySettings, specMergers[SpecKeySettings], composed, overlay)
+	return Merge(SpecKeySettings, composed, overlay)
 }
 
 // mergeAt applies m, guarding the cases where there is nothing to compose.

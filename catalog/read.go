@@ -69,7 +69,7 @@ func readProfiles(root string) (map[string]profile.Profile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
-		p, err := parseProfile(string(text), strings.TrimSuffix(entry.Name(), profileExt))
+		p, err := parseProfile(string(text), entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
@@ -79,6 +79,52 @@ func readProfiles(root string) (map[string]profile.Profile, error) {
 		return nil, fmt.Errorf("%w: %s holds no %s file", ErrNoProfilesDir, dir, profileExt)
 	}
 	return out, nil
+}
+
+// ReadProfile reads one profile out of a file named directly, instead of out
+// of a bundle's profiles directory.
+//
+// It is how a composition loads a part by path. The part is an ordinary
+// profile in the ordinary format — the same frontmatter keys, the same closed
+// set, the same manifest conversion, the same diagnostics. What it is not is a
+// catalog entry: the file has no bundle to be listed in and no id the bundle
+// knows, so the caller decides what to call it, and its extends still resolves
+// against the catalog.
+//
+// The file is NOT held to being named after the id it declares, and that is
+// the difference between this and [parseProfile].
+//
+// The reason is narrow and it is the whole of it: [parseProfile]'s rule is
+// about the catalog's map, which is keyed by id while the listing walks file
+// names, so a bundled file disagreeing with itself resolves under one spelling
+// and lists under the other. That reason does not transfer, because there is no
+// map here keyed by anything a profile declares — a part is keyed by the path
+// it was read from, and its id is overwritten with that path by the caller. The
+// check would be made and its result discarded.
+//
+// What the rule cost is likewise narrow, and worth being accurate about: a
+// generated part that declares no id already worked, taking the file's name.
+// It bit only a generator that writes an id AND picks one the tempfile it
+// landed in is not named after — which is the natural thing to write, and a
+// requirement to name the file after the id would be the friction the path form
+// exists to remove, wearing a different hat.
+//
+// Any extension is read, not only [profileExt]. The bundle's directory listing
+// skips a file that is not a profile because it cannot tell one from a README;
+// a path names exactly one file, and refusing to read the file the operator
+// pointed at because of how it is spelled would be a rule with nothing behind
+// it.
+func ReadProfile(path string) (*profile.Profile, error) {
+	text, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read the profile %s: %w", path, err)
+	}
+	base := filepath.Base(path)
+	p, err := parseFile(string(text), strings.TrimSuffix(base, filepath.Ext(base)))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return &p, nil
 }
 
 // bindingFile is one binding as its file is written: the profile it boots and

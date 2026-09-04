@@ -1,0 +1,449 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"path/filepath"
+	"strings"
+
+	"github.com/chrispian/cairn/catalog"
+	"github.com/chrispian/cairn/profile"
+	"github.com/hollis-labs/agentkit/agentcontext"
+)
+
+// The three composition flags, described once so that `cairn boot` and
+// `cairn show` describe them identically. They are one set on purpose: show is
+// the "what will this resolve to" preview, and a preview that could not be
+// handed the same composition the boot will be handed would be blind to
+// exactly the part that makes a composition differ from its base.
+const (
+	// The order clause carries its own exception, because the exception is
+	// silent: a part already folded contributes nothing and says nothing, so an
+	// operator who does not know the rule sees a flag they typed do nothing at
+	// all. See profile.ResolveComposition — a part contributes what it adds,
+	// and what it adds is what has not already been folded.
+	withFlagUsage = "a profile merged after the extends chain resolves, closest-wins and in the " +
+		"order given; a catalog id, or a path when the value holds a separator or begins " +
+		`with ".", "~" or "$". Repeatable. A profile the resolution has already reached — ` +
+		"the target, anything it extends, or a part named earlier — is folded once, where it " +
+		"first landed, so naming it again adds nothing and does not move it, and cairn says " +
+		"so on stderr rather than leaving the flag silently doing nothing"
+
+	// The additive-only rule is in the help rather than left to be discovered.
+	// Cairn has no spelling anywhere for removing one member of a collection
+	// keyed by its own id — the null that clears a member of an object has
+	// nowhere to be written in a list — so an operator who reads this flag as
+	// "choose the skills" and passes one id would get that id added to the
+	// profile's own, which is the moment to say so.
+	skillFlagUsage = "a skill the boot directory carries, added to the ones the profile resolves " +
+		"to. Comma-separated and repeatable, the two forms equivalent and composing. " +
+		"Additive only: nothing in cairn removes a member of a collection keyed by its own " +
+		"id, so a session that wants fewer skills boots a different profile"
+
+	setFlagUsage = "an inline literal for a named slot, merged last — it replaces a declared " +
+		"slot of that name whole, section included, exactly as a part declaring that slot " +
+		"would. Repeatable"
+)
+
+// composition is what a command is given beyond the profile it names: the
+// parts merged after the extends chain, the skills added to the resolved set,
+// and the slots supplied inline.
+//
+// All three are instance concerns rather than authoring ones, which is the
+// test for what earns a flag here. spec.skills is what one boot directory
+// carries — install.skills is what every session on the machine loads — and a
+// --set value is a one-off direction for this materialization. A direction
+// worth reusing is an ordinary profile and arrives through --with.
+type composition struct {
+	with   partList
+	skills skillList
+	sets   slotList
+
+	// written maps the id a part was loaded under back to the --with value the
+	// operator typed. The two differ for a path — the id is the expansion — and
+	// a diagnostic quotes what was written, so the pair is kept here rather
+	// than reconstructed by whoever needs to name one.
+	written map[string]string
+}
+
+// bind registers the three flags on fs.
+func (c *composition) bind(fs *flag.FlagSet) {
+	fs.Var(&c.with, "with", withFlagUsage)
+	fs.Var(&c.skills, "skill", skillFlagUsage)
+	fs.Var(&c.sets, "set", setFlagUsage)
+}
+
+// reportAbsorbedParts prints a line for each --with that contributed nothing:
+// every profile in the part's own chain had already been folded, so the flag
+// was typed and changed nothing.
+//
+// It is a report and exit 0, not a refusal, and the wording says what happened
+// rather than complaining about it. Naming a part the resolution already covers
+// is a legitimate thing to do — it makes a composition explicit about what it
+// rests on — and the operator may well have meant it.
+//
+// It exists because the alternative is the only silent no-op in the command. A
+// declared slot that fills nothing earns a line; a cairn:value marker cairn
+// cannot fill earns a line; an explicit flag that contributes nothing should
+// not be the one thing that says nothing. Both shapes reach here — a part
+// already in the target's chain, including the target itself, and a part naming
+// an ancestor an earlier part already brought, which is the one an operator is
+// least likely to predict.
+//
+// It must stay quiet for a part that contributed. A diagnostic that fires on
+// the ordinary case is noise, and noise is read past, which is worse than the
+// silence it replaced.
+func (c *composition) reportAbsorbedParts(stderr io.Writer, resolved *profile.Resolved) {
+	for _, id := range resolved.AlreadyFolded {
+		named := id
+		if raw, ok := c.written[id]; ok {
+			named = raw
+		}
+		_, _ = fmt.Fprintf(stderr, "cairn: --with %s: already in the chain, contributed nothing\n", named)
+	}
+}
+
+// contributors names, per manifest key, the flag that contributed to it.
+//
+// It exists for `cairn show`, which reports which profiles declared each key
+// because a value composed from three profiles reads exactly like a value one
+// profile wrote. A flag is a contributor the chain cannot name — --with lands
+// in the chain and shows there, but --skill and --set do not — so without this
+// the one command whose job is attribution would quietly credit the profile
+// with what was typed at the terminal.
+//
+// The names are the flags as they are spelled, because that is what the reader
+// would have to change to change the value.
+func (c *composition) contributors() map[string][]string {
+	out := map[string][]string{}
+	if len(c.skills) > 0 {
+		out[profile.SpecKeySkills] = []string{"--skill"}
+	}
+	if len(c.sets) > 0 {
+		out[profile.SpecKeySlots] = []string{"--set"}
+	}
+	return out
+}
+
+// resolve resolves profileID together with everything the composition adds,
+// and returns the loader the parts were read through so that a caller which
+// re-reads the chain — `cairn show`, attributing each manifest key — reads the
+// same profiles the cascade folded.
+//
+// The order is the whole of the rule. The extends chain resolves, then each
+// part in the order given, then the skills, then the slots: every contributor
+// is closer than the one ahead of it, and the last word belongs to the flag
+// typed at the terminal.
+func (c *composition) resolve(ctx context.Context, cat *catalog.Catalog, home string,
+	env profile.Expander, profileID string) (*profile.Resolved, profile.Loader, error) {
+
+	loader, parts, err := c.load(ctx, cat, home, env)
+	if err != nil {
+		return nil, nil, err
+	}
+	resolved, err := profile.ResolveComposition(ctx, loader, profileID, parts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := c.skills.mergeInto(resolved.Spec); err != nil {
+		return nil, nil, err
+	}
+	if err := c.sets.mergeInto(resolved.Spec); err != nil {
+		return nil, nil, err
+	}
+	return resolved, loader, nil
+}
+
+// load turns each --with value into an id the cascade can walk, reading the
+// ones that name a file and checking the ones that name a catalog profile.
+//
+// This is the one place the id-or-path question is decided. Everything below
+// it sees ids: a part read from a file is keyed in [partLoader] under the path
+// it was read from, so [profile.ResolveComposition] walks it exactly as it
+// walks a catalog id, and its own extends resolves against the catalog because
+// the loader falls through to the catalog for every id it was not handed.
+//
+// A catalog id is looked up here rather than left to fail during the walk. The
+// walk's diagnostic is right for a broken extends and wrong for this: a bare
+// "x.md" is the one ambiguous input the detection rule creates, and the whole
+// mitigation for it is the sentence below, which the walk has no way to say.
+func (c *composition) load(ctx context.Context, cat *catalog.Catalog, home string,
+	env profile.Expander) (profile.Loader, []string, error) {
+
+	loader := &partLoader{cat: cat, paths: map[string]*profile.Profile{}}
+	if len(c.with) == 0 {
+		return loader, nil, nil
+	}
+
+	c.written = make(map[string]string, len(c.with))
+	parts := make([]string, 0, len(c.with))
+	for _, raw := range c.with {
+		if !partIsPath(raw) {
+			// A name. It is a catalog id or it is nothing, and "or it is
+			// nothing" is where the operator who meant a file ends up.
+			if _, err := cat.Profile(ctx, raw); err != nil {
+				if errors.Is(err, catalog.ErrProfileNotFound) {
+					return nil, nil, fmt.Errorf("--with: %s: no profile named %q; if you meant a file, write %q",
+						cat.Root(), raw, "./"+raw)
+				}
+				return nil, nil, err
+			}
+			c.written[raw] = raw
+			parts = append(parts, raw)
+			continue
+		}
+
+		// A path. $VAR and ~/ expand the way they do in every manifest value
+		// that names somewhere to read from — the expander is the one this
+		// command already threads down from the composition root, so a part
+		// may be written "$CAIRN_PROFILE_ROOT/parts/docs-only.md" and relocate
+		// with the bundle.
+		expanded, err := profile.ExpandPath(raw, home, env)
+		if err != nil {
+			return nil, nil, fmt.Errorf("--with %q: %w", raw, err)
+		}
+		if strings.TrimSpace(expanded) == "" {
+			return nil, nil, fmt.Errorf("--with %q: names no file — a variable in it is not set", raw)
+		}
+		p, err := catalog.ReadProfile(expanded)
+		if err != nil {
+			return nil, nil, fmt.Errorf("--with %q: %w", raw, err)
+		}
+		// The path is what the part is keyed under, and keying by the id the
+		// file declares is what would let a part read from ./engineer.md
+		// shadow the catalog's engineer for every id the rest of the
+		// composition resolves, extends included. The two spellings never
+		// meet.
+		//
+		// Overwriting the profile's own ID is the smaller half and it does one
+		// thing: package profile reports a merge that failed as `profile %q`,
+		// reading it off the [profile.Profile] rather than off the chain, so
+		// without this a part that will not compose is blamed on a bare
+		// "docs-only" and the operator has no way to tell which of the two
+		// files by that name it meant. The chain and the declaring-profile
+		// column come from the ids passed to the walk and would name the path
+		// either way.
+		p.ID = expanded
+		loader.paths[expanded] = p
+		c.written[expanded] = raw
+		parts = append(parts, expanded)
+	}
+	return loader, parts, nil
+}
+
+// partIsPath reports whether a --with value names a file rather than a profile
+// in the catalog: it holds a path separator, or begins with ".", "~" or "$".
+//
+// The rule is spelled out rather than probed for, and nothing here touches the
+// filesystem. Deciding by whether the file happens to exist would make one
+// spelling mean two different things depending on the working directory, and
+// would silently resolve a catalog profile when a generated part was missing —
+// which is the failure a launcher would least like to have hidden from it.
+//
+// It is sound because a profile id holds no separator; catalog.parseProfile
+// refuses one, so the two sets cannot overlap.
+//
+// One input is genuinely ambiguous and resolves as a name: a bare "x.md" has
+// no separator and no leading marker. That is the right call — a name is what
+// most --with values are — and the not-found diagnostic in [composition.load]
+// is the whole mitigation for it.
+//
+// It is deliberately not [pathLike], which decides the same question for
+// --scope. A scope is a directory, so "." and "$HOME" are already covered by
+// the separator and absolute tests there, and a leading "." is far more likely
+// to be a relative file here than a directory there.
+func partIsPath(raw string) bool {
+	return strings.ContainsRune(raw, '/') ||
+		strings.ContainsRune(raw, filepath.Separator) ||
+		strings.HasPrefix(raw, ".") ||
+		strings.HasPrefix(raw, "~") ||
+		strings.HasPrefix(raw, "$")
+}
+
+// partLoader reads a composition's profiles: the parts loaded from a file by
+// the path they were read from, and everything else through the catalog.
+//
+// The fall-through is the whole point and is pinned by a test. A part loaded
+// from a path is an ordinary profile, so its extends names a catalog profile
+// and resolves there; a loader that answered only from its own map would make
+// a path-loaded part the one profile in cairn that cannot inherit, which is a
+// restriction nobody wrote and everybody would infer.
+type partLoader struct {
+	cat   *catalog.Catalog
+	paths map[string]*profile.Profile
+}
+
+// Profile implements [profile.Loader].
+func (l *partLoader) Profile(ctx context.Context, id string) (*profile.Profile, error) {
+	if p, ok := l.paths[id]; ok {
+		return p, nil
+	}
+	return l.cat.Profile(ctx, id)
+}
+
+// partList collects --with in the order the parts were given. Order is the
+// merge order, so nothing here sorts or reorders: two parts touching one key
+// are resolved by which was typed last, and that has to survive the flag.
+//
+// It does not deduplicate either, and that is a division of labour rather than
+// an oversight. A part named twice is folded once, but the fold is what decides
+// that — [profile.ResolveComposition] skips a profile it has already reached,
+// which it must do anyway for a part that merely shares an ancestor with the
+// target. Repeating the rule here would be a second copy of it, and a second
+// copy is what drifts.
+type partList []string
+
+// String implements [flag.Value].
+func (l *partList) String() string { return strings.Join(*l, " ") }
+
+// Set implements [flag.Value].
+func (l *partList) Set(v string) error {
+	if strings.TrimSpace(v) == "" {
+		return errors.New("names no part")
+	}
+	*l = append(*l, strings.TrimSpace(v))
+	return nil
+}
+
+// skillList collects --skill, which is comma-separated and repeatable both.
+// The two forms are equivalent and compose: `--skill a,b --skill c` and
+// `--skill a --skill b,c` are the same three skills, so a launcher composing a
+// list never has to decide which shape cairn wants.
+type skillList []string
+
+// String implements [flag.Value].
+func (l *skillList) String() string { return strings.Join(*l, ",") }
+
+// Set implements [flag.Value].
+//
+// A value that names no skill at all is refused rather than ignored. A flag
+// that takes a value and does nothing with it is worse than one that says the
+// value was empty.
+func (l *skillList) Set(v string) error {
+	before := len(*l)
+	for _, id := range strings.Split(v, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			*l = append(*l, id)
+		}
+	}
+	if len(*l) == before {
+		return errors.New("names no skill")
+	}
+	return nil
+}
+
+// mergeInto folds the collected ids into spec's skills, last and by id —
+// exactly what a part declaring the same ids would do, through the same table
+// of keyed collections. There are no new merge semantics here and that is the
+// point: skills are one more contributor to a union that already had several.
+//
+// Additive, permanently as far as this flag is concerned. See [skillFlagUsage].
+func (l skillList) mergeInto(spec profile.Spec) error {
+	if len(l) == 0 {
+		return nil
+	}
+	raw, err := composedJSON([]string(l))
+	if err != nil {
+		return fmt.Errorf("--skill: %w", err)
+	}
+	merged, err := profile.Merge(profile.SpecKeySkills, spec[profile.SpecKeySkills], raw)
+	if err != nil {
+		return fmt.Errorf("--skill: %w", err)
+	}
+	spec[profile.SpecKeySkills] = merged
+	return nil
+}
+
+// slotList collects --set. A slot named twice keeps the last value, because
+// the members merge by name in the order they were given.
+type slotList []slotValue
+
+// slotValue is one --set: the slot's name and the literal it stands for.
+type slotValue struct {
+	name  string
+	value string
+}
+
+// String implements [flag.Value].
+func (l *slotList) String() string {
+	out := make([]string, 0, len(*l))
+	for _, s := range *l {
+		out = append(out, s.name+"="+s.value)
+	}
+	return strings.Join(out, " ")
+}
+
+// Set implements [flag.Value].
+//
+// The value may be empty — `--set note=` is a slot that stands for nothing,
+// which renders nothing, and is a legitimate way to silence a section for one
+// materialization. The name may not be.
+func (l *slotList) Set(v string) error {
+	name, value, ok := strings.Cut(v, "=")
+	if !ok {
+		return fmt.Errorf("takes <slot>=<value>, and %q holds no \"=\"", v)
+	}
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("%q names no slot", v)
+	}
+	*l = append(*l, slotValue{name: strings.TrimSpace(name), value: value})
+	return nil
+}
+
+// mergeInto folds each --set into spec's slots as an inline slot, last and by
+// name, which is how spec.slots composes for every other contributor.
+//
+// Cairn gains no "direction" concept from this. What arrives is a slot like
+// any other, named by the profile that declared the marker it fills, and cairn
+// goes on owning shape rather than content.
+//
+// The member is built as a minimal object rather than by marshalling an
+// [agentcontext.SlotSpec]: the library's source is a tagged union carrying a
+// parameter block per kind, none of which JSON omits, so marshalling one would
+// put seven empty blocks into a manifest an operator reads out of `cairn show`.
+// The kind is the library's own constant, so the one field that could drift
+// cannot.
+func (l slotList) mergeInto(spec profile.Spec) error {
+	if len(l) == 0 {
+		return nil
+	}
+	members := make([]any, 0, len(l))
+	for _, s := range l {
+		members = append(members, map[string]any{
+			"name": s.name,
+			"source": map[string]any{
+				"kind":   string(agentcontext.SlotSourceKindInline),
+				"inline": map[string]any{"content": s.value},
+			},
+		})
+	}
+	raw, err := composedJSON(members)
+	if err != nil {
+		return fmt.Errorf("--set: %w", err)
+	}
+	merged, err := profile.Merge(profile.SpecKeySlots, spec[profile.SpecKeySlots], raw)
+	if err != nil {
+		return fmt.Errorf("--set: %w", err)
+	}
+	spec[profile.SpecKeySlots] = merged
+	return nil
+}
+
+// composedJSON serializes a flag's contribution to a manifest key with HTML
+// escaping off, for the reason every other encoder in cairn has it off: "&",
+// "<" and ">" are ordinary characters in the text an operator types, and a
+// manifest carries what they wrote rather than a re-spelling of it.
+func composedJSON(v any) (json.RawMessage, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
+}
